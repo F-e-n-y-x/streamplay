@@ -1,0 +1,26 @@
+# Dependencies (reinstalled inside the image)
+node_modules
+client/node_modules
+
+# Build output (rebuilt inside the image)
+dist
+client/dist
+
+# Env / secrets / runtime data
+.env
+.env.local
+sync-data.json
+cloudflare_debug.png
+*.log
+
+# Reference material & meta
+StreamPlay-og repo
+temp_repo
+.git
+.github
+.gitignore
+*.md
+.vscode
+.idea
+.DS_Store
+Thumbs.db

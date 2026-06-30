@@ -1,0 +1,43 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# StreamPlay — Portainer Stack
+#
+# How to use in Portainer:
+#   1. Portainer → Stacks → "Add stack" → give it a name (e.g. streamplay).
+#   2. Paste this whole file into the "Web editor".
+#   3. Scroll to "Environment variables" and add:
+#        TMDB_API_KEY = <your TMDB v3 key>   (required)
+#        WYZIE_KEY    = <optional, blank ok>
+#   4. Click "Deploy the stack".
+#   5. Open http://<your-server-ip>:3000
+#
+# Updating: pull a newer image tag by changing `:latest` to e.g. `:v1.0.0`,
+# or just re-pull `:latest` and redeploy the stack.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  streamplay:
+    image: ghcr.io/f-e-n-y-x/streamplay:latest
+    container_name: streamplay
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      FLARESOLVERR_URL: http://flaresolverr:8191/
+      WYZIE_KEY: ${WYZIE_KEY:-}
+      PROVIDER_TIMEOUT_MS: "45000"
+      SYNC_DATA_FILE: /app/data/sync-data.json
+    volumes:
+      - streamplay-data:/app/data
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      TZ: UTC
+
+volumes:
+  streamplay-data:

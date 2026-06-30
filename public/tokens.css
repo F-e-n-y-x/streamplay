@@ -1,0 +1,86 @@
+/* =============================================================================
+   StreamPlay — "Projection booth" design tokens
+   Cool near-black ink + a single warm amber (projector light) accent.
+   Type: Space Grotesk (display) · Inter (UI) · JetBrains Mono (data/manifest).
+   ========================================================================== */
+
+:root {
+    color-scheme: dark;
+
+    /* Ink ramp — base background → highest-contrast text */
+    --ink-0:  #08080b;   /* deepest (under scrims) */
+    --ink-1:  #0b0b0f;   /* app background */
+    --ink-2:  #121217;   /* surface */
+    --ink-3:  #181820;   /* elevated surface */
+    --ink-4:  #20212a;   /* hover / raised */
+    --line:   #262732;   /* hairline border */
+    --line-2: #343543;   /* stronger border */
+
+    --text:       #f4f2ec;  /* warm white */
+    --text-dim:   #a4a1ac;  /* secondary */
+    --text-faint: #6d6a78;  /* tertiary / placeholders */
+
+    /* Amber — projector light. Used ONLY for active/now-playing/focus/key action. */
+    --amber:        #f0b454;
+    --amber-strong: #f8c873;
+    --amber-soft:   rgba(240, 180, 84, 0.13);
+    --amber-line:   rgba(240, 180, 84, 0.35);
+    --on-amber:     #1a1205;
+
+    /* Status (muted, semantic only) */
+    --good: #5cc98c;  --good-soft: rgba(92, 201, 140, 0.13);
+    --warn: #e0a458;  --warn-soft: rgba(224, 164, 88, 0.13);
+    --bad:  #f0664e;  --bad-soft:  rgba(240, 102, 78, 0.13);
+
+    --ring: var(--amber);
+    --overlay: rgba(6, 6, 9, 0.72);
+
+    /* Type */
+    --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    --font-sans:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    --font-mono:    'JetBrains Mono', 'SF Mono', Consolas, monospace;
+
+    --t-xs:   0.75rem;    /* 12 */
+    --t-sm:   0.8125rem;  /* 13 */
+    --t-base: 0.9375rem;  /* 15 */
+    --t-md:   1.0625rem;  /* 17 */
+    --t-lg:   1.25rem;    /* 20 */
+    --t-xl:   1.625rem;   /* 26 */
+    --t-2xl:  2.25rem;    /* 36 */
+    --t-3xl:  3.25rem;    /* 52 */
+    --t-4xl:  4.5rem;     /* 72 */
+
+    --lead-tight: 1.1;
+    --lead-snug:  1.35;
+    --lead-base:  1.6;
+
+    --tr-tight: -0.03em;
+    --tr-snug:  -0.015em;
+    --tr-wide:  0.08em;
+
+    /* Spacing — 4px grid */
+    --s-1: 0.25rem; --s-2: 0.5rem; --s-3: 0.75rem; --s-4: 1rem; --s-5: 1.25rem;
+    --s-6: 1.5rem; --s-7: 2rem; --s-8: 2.5rem; --s-10: 3.5rem; --s-12: 5rem; --s-16: 7rem;
+
+    /* Radius */
+    --r-sm: 6px; --r-md: 10px; --r-lg: 14px; --r-xl: 20px; --r-full: 999px;
+
+    /* Elevation — quiet, border-led */
+    --sh-sm: 0 1px 2px rgba(0,0,0,0.4);
+    --sh-md: 0 8px 24px rgba(0,0,0,0.45);
+    --sh-lg: 0 24px 60px rgba(0,0,0,0.6);
+    --sh-amber: 0 0 0 1px var(--amber-line), 0 8px 30px rgba(240,180,84,0.12);
+
+    /* Motion */
+    --ease: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-io: cubic-bezier(0.4, 0, 0.2, 1);
+    --d-1: 130ms; --d-2: 200ms; --d-3: 320ms;
+
+    --header-h: 60px;
+    --container: 1240px;
+    --container-wide: 1640px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root { --d-1: 0ms; --d-2: 0ms; --d-3: 0ms; }
+}

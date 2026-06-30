@@ -1,0 +1,34 @@
+services:
+  streamplay:
+    image: ghcr.io/f-e-n-y-x/streamplay:latest
+    # To build from source instead of pulling the published image, comment out
+    # the `image:` line above and uncomment the next line:
+    # build: .
+    container_name: streamplay
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY:?set TMDB_API_KEY in your .env}
+      FLARESOLVERR_URL: http://flaresolverr:8191/
+      WYZIE_KEY: ${WYZIE_KEY:-}
+      PROVIDER_TIMEOUT_MS: ${PROVIDER_TIMEOUT_MS:-45000}
+      SYNC_DATA_FILE: /app/data/sync-data.json
+    volumes:
+      - streamplay-data:/app/data
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: flaresolverr
+    restart: unless-stopped
+    environment:
+      LOG_LEVEL: info
+      TZ: UTC
+    # Uncomment to reach FlareSolverr directly from the host (not required):
+    # ports:
+    #   - "8191:8191"
+
+volumes:
+  streamplay-data:

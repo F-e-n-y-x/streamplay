@@ -1,0 +1,213 @@
+/* =============================================================================
+   Design Tokens — Geist / Vercel-neutral system
+   -----------------------------------------------------------------------------
+   The single source of truth for color, type, space, radius, elevation, motion.
+   Components must reference these tokens — never raw hex / px values.
+
+   Layers (in order):
+     1. Primitive scales   — raw values, per theme (gray-1..12, accent, status)
+     2. Semantic tokens    — role-based aliases (--background, --foreground, …)
+     3. System scales       — spacing / type / radius / shadow / motion (theme-agnostic)
+     4. Compatibility       — legacy names kept alive for older markup
+
+   Theme is controlled by the `data-theme` attribute on <html>:
+     <html data-theme="dark">  (default)   |   <html data-theme="light">
+   ========================================================================== */
+
+/* ── 1 + 2. DARK THEME (default) ─────────────────────────────────────────── */
+:root,
+:root[data-theme="dark"] {
+    /* Make native controls (select popups, scrollbars, date pickers) render dark */
+    color-scheme: dark;
+
+    /* Neutral ramp: 1 = app background → 12 = highest-contrast text */
+    --gray-1:  #121212;
+    --gray-2:  #181818;
+    --gray-3:  #1f1f1f;
+    --gray-4:  #262626;
+    --gray-5:  #2d2d2d;
+    --gray-6:  #353535;
+    --gray-7:  #404040;
+    --gray-8:  #4f4f4f;
+    --gray-9:  #636363;
+    --gray-10: #909090;
+    --gray-11: #a8a8a8;
+    --gray-12: #fafafa;
+
+    /* Accent (single hue — use sparingly for focus / links / key emphasis) */
+    --accent-soft:    rgba(56, 139, 253, 0.15);
+    --accent:         #3b82f6;
+    --accent-strong:  #60a5fa;
+    --accent-foreground: #ffffff;
+
+    /* Status (semantic — never decorative) */
+    --success: #3fb950;  --success-soft: rgba(63, 185, 80, 0.15);
+    --warning: #d29922;  --warning-soft: rgba(210, 153, 34, 0.15);
+    --error:   #f85149;  --error-soft:   rgba(248, 81, 73, 0.15);
+    --info:    var(--accent);  --info-soft: var(--accent-soft);
+
+    /* Semantic surfaces & text */
+    --background:      var(--gray-1);
+    --surface:         var(--gray-2);
+    --surface-2:       var(--gray-3);
+    --surface-hover:   var(--gray-4);
+    --overlay:         rgba(0, 0, 0, 0.6);
+
+    --border:          var(--gray-6);
+    --border-strong:   var(--gray-7);
+
+    --foreground:        var(--gray-12);
+    --muted-foreground:  var(--gray-11);
+    --subtle-foreground: var(--gray-10);
+
+    /* Primary action — Geist signature: solid white on dark */
+    --primary:            #fafafa;
+    --primary-hover:      #e3e3e3;
+    --primary-foreground: #0a0a0a;
+
+    --ring: var(--accent);
+
+    /* Elevation — dark leans on borders; shadows are deep + quiet */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.40);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+/* ── 1 + 2. LIGHT THEME ──────────────────────────────────────────────────── */
+:root[data-theme="light"] {
+    color-scheme: light;
+
+    --gray-1:  #ffffff;
+    --gray-2:  #fafafa;
+    --gray-3:  #f5f5f5;
+    --gray-4:  #ededed;
+    --gray-5:  #e6e6e6;
+    --gray-6:  #e3e3e3;
+    --gray-7:  #d4d4d4;
+    --gray-8:  #bdbdbd;
+    --gray-9:  #999999;
+    --gray-10: #7d7d7d;
+    --gray-11: #5c5c5c;
+    --gray-12: #171717;
+
+    --accent-soft:    rgba(0, 112, 243, 0.10);
+    --accent:         #0070f3;
+    --accent-strong:  #0761d1;
+    --accent-foreground: #ffffff;
+
+    --success: #1a7f37;  --success-soft: rgba(26, 127, 55, 0.10);
+    --warning: #9a6700;  --warning-soft: rgba(154, 103, 0, 0.10);
+    --error:   #cf222e;  --error-soft:   rgba(207, 34, 46, 0.10);
+    --info:    var(--accent);  --info-soft: var(--accent-soft);
+
+    --background:      var(--gray-1);
+    --surface:         var(--gray-2);
+    --surface-2:       var(--gray-3);
+    --surface-hover:   var(--gray-4);
+    --overlay:         rgba(0, 0, 0, 0.4);
+
+    --border:          var(--gray-6);
+    --border-strong:   var(--gray-7);
+
+    --foreground:        var(--gray-12);
+    --muted-foreground:  var(--gray-11);
+    --subtle-foreground: var(--gray-10);
+
+    --primary:            #171717;
+    --primary-hover:      #2f2f2f;
+    --primary-foreground: #ffffff;
+
+    --ring: var(--accent);
+
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+/* ── 3. SYSTEM SCALES (theme-agnostic) ───────────────────────────────────── */
+:root {
+    /* Type — 14px base, the Geist default */
+    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    --font-mono: 'Geist Mono', 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+
+    --text-xs:   0.75rem;   /* 12 */
+    --text-sm:   0.8125rem; /* 13 */
+    --text-base: 0.875rem;  /* 14 */
+    --text-md:   0.9375rem; /* 15 */
+    --text-lg:   1rem;      /* 16 */
+    --text-xl:   1.125rem;  /* 18 */
+    --text-2xl:  1.375rem;  /* 22 */
+    --text-3xl:  1.75rem;   /* 28 */
+    --text-4xl:  2.25rem;   /* 36 */
+
+    --leading-tight: 1.2;
+    --leading-snug:  1.4;
+    --leading-base:  1.55;
+
+    --weight-normal:   400;
+    --weight-medium:   500;
+    --weight-semibold: 600;
+
+    --tracking-tight: -0.02em;
+    --tracking-snug:  -0.01em;
+
+    /* Spacing — 4px base grid */
+    --space-1:  0.25rem; /*  4 */
+    --space-2:  0.5rem;  /*  8 */
+    --space-3:  0.75rem; /* 12 */
+    --space-4:  1rem;    /* 16 */
+    --space-5:  1.25rem; /* 20 */
+    --space-6:  1.5rem;  /* 24 */
+    --space-8:  2rem;    /* 32 */
+    --space-10: 2.5rem;  /* 40 */
+    --space-12: 3rem;    /* 48 */
+    --space-16: 4rem;    /* 64 */
+
+    /* Radius */
+    --radius-sm:   4px;
+    --radius-md:   6px;
+    --radius-lg:   8px;
+    --radius-xl:   12px;
+    --radius-2xl:  16px;
+    --radius-full: 9999px;
+    --radius: var(--radius-md);
+
+    /* Motion */
+    --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+    --duration-1: 120ms;
+    --duration-2: 180ms;
+    --duration-3: 240ms;
+
+    /* Layout */
+    --container-max: 1600px;
+    --header-height: 64px;
+}
+
+/* ── 4. COMPATIBILITY ALIASES ────────────────────────────────────────────── */
+/* Older markup / inline styles reference these legacy names. Mapped onto the
+   semantic layer so they stay correct across themes. Prefer the names above. */
+:root {
+    --primary-color:    var(--accent);     /* legacy decorative "primary" = accent */
+    --text-main:        var(--foreground);
+    --text-muted:       var(--muted-foreground);
+    --danger:           var(--error);
+    --border-color:     var(--border);
+    --bg-dark:          var(--background);
+    --bg-card:          var(--surface);
+    --border-radius:    var(--radius-lg);
+    --border-radius-sm: var(--radius-md);
+    --border-radius-lg: var(--radius-xl);
+    --transition-fast:  var(--duration-1) var(--ease-out);
+    --transition-normal:var(--duration-2) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --duration-1: 0ms;
+        --duration-2: 0ms;
+        --duration-3: 0ms;
+    }
+}

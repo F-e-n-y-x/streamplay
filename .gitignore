@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Build output
+dist/
+client/dist/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.local
+*.local
+
+# Runtime data
+sync-data.json
+cloudflare_debug.png
+*.log
+
+# Original Kotlin plugin (kept locally for reference, not part of this repo)
+StreamPlay-og repo/
+temp_repo/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
