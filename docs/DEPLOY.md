@@ -19,7 +19,7 @@ docker compose up -d
 - Update: `docker compose pull && docker compose up -d`.
 
 Pin a specific version instead of `latest` by editing the image tag, e.g.
-`ghcr.io/f-e-n-y-x/streamplay:v1.0.0`.
+`ghcr.io/f-e-n-y-x/streamplay:1.0.0`.
 
 ---
 
@@ -72,8 +72,10 @@ Images are published to GitHub Container Registry by CI on every push:
 
 | Trigger | Tags produced |
 | --- | --- |
-| Git tag `v1.2.3` | `:v1.2.3`, `:1.2`, `:1`, `:latest`, `:sha-<short>` |
+| Git tag `v1.2.3` | `:1.2.3`, `:1.2`, `:1`, `:latest`, `:sha-<short>` |
 | Push to `main` | `:edge`, `:sha-<short>` |
+
+(The `v` prefix on the git tag is dropped in the image tag, per semver convention.)
 
 Cut a release by tagging a commit:
 

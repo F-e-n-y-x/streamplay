@@ -46,7 +46,7 @@ docker compose up -d
 Open **http://localhost:3000**.
 
 The published image lives at **`ghcr.io/f-e-n-y-x/streamplay`** and is tagged per release
-(`:v1.0.0`, `:1.0`, `:1`, `:latest`) plus a rolling `:edge` from `main`.
+(`:1.0.0`, `:1.0`, `:1`, `:latest`) plus a rolling `:edge` from `main`.
 
 ### Portainer
 
