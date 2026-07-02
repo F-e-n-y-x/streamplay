@@ -1,5 +1,15 @@
 import { Router } from 'express';
 import axios from 'axios';
+import { dohAxios } from '../utils/dns';
+
+/** ENOTFOUND/EAI_AGAIN => the upstream host didn't resolve; DoH usually fixes it. */
+const proxyErr = (e: any): string => {
+    const code = e?.code || '';
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+        return `proxy error: DNS lookup failed (${code}). Set DOH_ENABLED=true in .env to resolve provider hosts over HTTPS.`;
+    }
+    return `proxy error: ${e?.message || e}`;
+};
 
 /**
  * Stream proxy.
@@ -36,10 +46,39 @@ const proxify = (absUrl: string, hB64: string, isPlaylist: boolean): string => {
     return `/api/proxy?${params.toString()}`;
 };
 
-/** Rewrite an HLS manifest so all referenced URIs flow back through the proxy. */
-const rewriteManifest = (body: string, baseUrl: string, hB64: string): string => {
+/**
+ * Rewrite an HLS manifest so all referenced URIs flow back through the proxy.
+ * When `forceAudio` is set, the matching EXT-X-MEDIA audio rendition is made the
+ * DEFAULT (and the others un-defaulted) so players that pick the default audio
+ * play the requested track — this is how we deliver dub/sub per source.
+ */
+const rewriteManifest = (body: string, baseUrl: string, hB64: string, forceAudio?: string): string => {
     const isMaster = body.includes('#EXT-X-STREAM-INF');
     const resolve = (u: string) => { try { return new URL(u, baseUrl).toString(); } catch { return u; } };
+
+    const audioMatches = (line: string): boolean => {
+        const name = (/NAME="([^"]+)"/.exec(line) || [])[1] || '';
+        const lang = (/LANGUAGE="([^"]+)"/.exec(line) || [])[1] || '';
+        return name.toLowerCase() === (forceAudio || '').toLowerCase() || lang.toLowerCase() === (forceAudio || '').toLowerCase();
+    };
+    // Only re-default audio if the requested track actually exists — otherwise we'd
+    // strip DEFAULT=YES from every rendition and leave the group with no default.
+    if (forceAudio) {
+        const anyMatch = body.split('\n').some((l) => /#EXT-X-MEDIA:/i.test(l) && /TYPE=AUDIO/i.test(l) && audioMatches(l));
+        if (!anyMatch) forceAudio = undefined;
+    }
+
+    const setDefault = (line: string, on: boolean): string => {
+        let out = line;
+        out = /DEFAULT=(YES|NO)/.test(out) ? out.replace(/DEFAULT=(YES|NO)/, `DEFAULT=${on ? 'YES' : 'NO'}`) : out.replace('#EXT-X-MEDIA:', `#EXT-X-MEDIA:DEFAULT=${on ? 'YES' : 'NO'},`);
+        // Force AUTOSELECT to match DEFAULT so players don't auto-pick an un-defaulted track.
+        out = /AUTOSELECT=(YES|NO)/.test(out) ? out.replace(/AUTOSELECT=(YES|NO)/, `AUTOSELECT=${on ? 'YES' : 'NO'}`) : out.replace('#EXT-X-MEDIA:', `#EXT-X-MEDIA:AUTOSELECT=${on ? 'YES' : 'NO'},`);
+        return out;
+    };
+    const applyForceAudio = (line: string): string => {
+        if (!forceAudio || !/#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line)) return line;
+        return setDefault(line, audioMatches(line));
+    };
 
     // URI="..." attributes (keys, media renditions, maps)
     const rewriteAttrUris = (line: string): string =>
@@ -56,7 +95,8 @@ const rewriteManifest = (body: string, baseUrl: string, hB64: string): string =>
             const trimmed = line.trim();
             if (!trimmed) return line;
             if (trimmed.startsWith('#')) {
-                return /URI="/.test(trimmed) ? rewriteAttrUris(line) : line;
+                const rewritten = /URI="/.test(trimmed) ? rewriteAttrUris(line) : line;
+                return applyForceAudio(rewritten);
             }
             // a bare URI line: variant playlist (master) or segment (media)
             return proxify(resolve(trimmed), hB64, isMaster);
@@ -81,8 +121,8 @@ router.get('/', async (req, res) => {
 
     try {
         if (isM3u8) {
-            const upstream = await axios.get(url, { headers, responseType: 'text', timeout: 20000, transformResponse: r => r });
-            const rewritten = rewriteManifest(String(upstream.data), url, (req.query.h as string) || '');
+            const upstream = await axios.get(url, { headers, responseType: 'text', timeout: 20000, transformResponse: r => r, ...dohAxios() });
+            const rewritten = rewriteManifest(String(upstream.data), url, (req.query.h as string) || '', req.query.audio as string | undefined);
             res.set('Access-Control-Allow-Origin', '*');
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
             res.set('Cache-Control', 'no-store');
@@ -90,7 +130,7 @@ router.get('/', async (req, res) => {
         }
 
         // binary passthrough (segments, keys, mp4) with Range support
-        const upstream = await axios.get(url, { headers, responseType: 'stream', timeout: 30000, validateStatus: () => true });
+        const upstream = await axios.get(url, { headers, responseType: 'stream', timeout: 30000, validateStatus: () => true, ...dohAxios() });
         res.status(upstream.status);
         res.set('Access-Control-Allow-Origin', '*');
         for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
@@ -100,11 +140,42 @@ router.get('/', async (req, res) => {
         if (!upstream.headers['accept-ranges']) res.set('Accept-Ranges', 'bytes');
         upstream.data.pipe(res);
     } catch (e: any) {
-        res.status(502).send(`proxy error: ${e?.message || e}`);
+        res.status(502).send(proxyErr(e));
     }
 });
 
-/** Subtitle proxy + srt->vtt conversion. */
+/** Convert SubStation Alpha (.ass/.ssa) to WebVTT. Browsers' <track> only speaks VTT. */
+const assToVtt = (ass: string): string => {
+    const toTime = (t: string): string => {
+        const m = /(\d+):(\d{2}):(\d{2})[.,](\d{1,3})/.exec(t.trim());
+        if (!m) return '00:00:00.000';
+        const cs = m[4].padEnd(3, '0').slice(0, 3);           // centiseconds -> ms
+        return `${m[1].padStart(2, '0')}:${m[2]}:${m[3]}.${cs}`;
+    };
+    const clean = (s: string): string => s
+        .replace(/\{[^}]*\}/g, '')            // {\pos..}, {\i1} override tags
+        .replace(/\\N/gi, '\n').replace(/\\h/gi, ' ')
+        .trim();
+    let fmt: string[] = [];
+    let inEvents = false;
+    const cues: string[] = [];
+    for (const line of ass.split(/\r?\n/)) {
+        if (/^\[Events\]/i.test(line)) { inEvents = true; continue; }
+        if (/^\[/.test(line)) { inEvents = false; continue; }
+        if (!inEvents) continue;
+        if (/^Format:/i.test(line)) { fmt = line.slice(7).split(',').map((s) => s.trim().toLowerCase()); continue; }
+        if (/^Dialogue:/i.test(line)) {
+            const si = fmt.indexOf('start'), ei = fmt.indexOf('end'), ti = fmt.indexOf('text');
+            if (ti < 0 || si < 0 || ei < 0) continue;   // malformed Format line — skip, don't crash
+            const parts = line.slice(9).split(',');
+            const text = clean(parts.slice(ti).join(','));
+            if (text) cues.push(`${toTime(parts[si])} --> ${toTime(parts[ei])}\n${text}`);
+        }
+    }
+    return 'WEBVTT\n\n' + cues.join('\n\n') + '\n';
+};
+
+/** Subtitle proxy + srt/ass -> vtt conversion. */
 router.get('/sub', async (req, res) => {
     const rawUrl = req.query.url as string;
     if (!rawUrl) return res.status(400).send('missing url');
@@ -112,25 +183,31 @@ router.get('/sub', async (req, res) => {
     try { url = unb64(rawUrl); } catch { return res.status(400).send('bad url'); }
 
     try {
+        let origin = '';
+        try { origin = new URL(url).origin; } catch { /* */ }
         const upstream = await axios.get(url, {
-            headers: { 'User-Agent': DEFAULT_UA, ...decodeHeaders(req.query.h as string) },
-            responseType: 'text', timeout: 15000, transformResponse: r => r,
+            // Referer = the sub's own origin avoids most CDN hotlink 403s.
+            headers: { 'User-Agent': DEFAULT_UA, ...(origin ? { Referer: origin + '/' } : {}), ...decodeHeaders(req.query.h as string) },
+            responseType: 'text', timeout: 15000, transformResponse: r => r, ...dohAxios(),
         });
         let body = String(upstream.data);
 
-        // Convert SubRip to WebVTT if needed (browsers' <track> needs VTT).
+        const looksAss = /\[Script Info\]|\[V4\+? Styles\]/i.test(body) || /^Dialogue:/im.test(body) || /\.(ass|ssa)(\?|$)/i.test(url);
         const looksSrt = !body.trimStart().startsWith('WEBVTT') && /\d{2}:\d{2}:\d{2},\d{3}\s*-->/.test(body);
-        if (looksSrt) {
+        if (looksAss) {
+            body = assToVtt(body);
+        } else if (looksSrt) {
             body = 'WEBVTT\n\n' + body
                 .replace(/\r+/g, '')
                 .replace(/^\d+\s*$/gm, '')                                   // drop cue numbers
+                .replace(/\{\\[^}]*\}/g, '')                                 // strip {\an8} style override tags
                 .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');           // comma -> dot
         }
         res.set('Access-Control-Allow-Origin', '*');
         res.set('Content-Type', 'text/vtt; charset=utf-8');
         res.send(body);
     } catch (e: any) {
-        res.status(502).send(`sub proxy error: ${e?.message || e}`);
+        res.status(502).send(`sub ${proxyErr(e)}`);
     }
 });
 

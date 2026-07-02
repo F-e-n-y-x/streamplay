@@ -85,7 +85,8 @@ const proxify = (s: Stream): string => {
     if (s.type === 'iframe') return s.link;
     const u = b64(s.link);
     const h = s.headers ? `&h=${b64(JSON.stringify(s.headers))}` : '';
-    return `/api/proxy?url=${u}${h}${s.type === 'm3u8' ? '&m3u8=1' : ''}`;
+    const a = s.audioName ? `&audio=${encodeURIComponent(s.audioName)}` : '';
+    return `/api/proxy?url=${u}${h}${a}${s.type === 'm3u8' ? '&m3u8=1' : ''}`;
 };
 const subProxy = (url: string): string => `/api/proxy/sub?url=${b64(url)}`;
 const hostOf = (url: string): string => { try { return new URL(url).hostname; } catch { return ''; } };
@@ -382,9 +383,9 @@ router.get('/title/tv/:id/season/:n', async (req, res) => {
 // ── /providers + /providers/health ───────────────────────────────────────────
 const KIND_OF = (id: string): string => {
     if (/sub|wyzie/i.test(id)) return 'subtitles';
-    if (/anime|hianime|pahe|kick|reanime|anizone|tosho/i.test(id)) return 'anime';
+    if (/anime|hianime|pahe|kick|reanime|anizone|animeworld|tosho/i.test(id)) return 'anime';
     if (/kisskh/i.test(id)) return 'asian';
-    if (/bolly|rog|hdhub|4khdhub|vega|movies4u|uhd|moviesmod|topmovies|multimovies/i.test(id)) return 'multi';
+    if (/castle|bolly|rog|hdhub|4khdhub|vega|movies4u|uhd|moviesmod|topmovies|multimovies/i.test(id)) return 'multi';
     return 'movie';
 };
 const hostFor = (id: string): string => {
@@ -401,7 +402,11 @@ router.get('/providers', (_req, res) => {
 });
 
 router.get('/providers/health', async (_req, res) => {
-    const results = await Promise.all(providerDomains.map(async (p) => {
+    // Only report providers that are actually served (avoids showing disabled /
+    // anime domains that never produce links).
+    const activeIds = new Set(getProviders().map((p) => p.id));
+    const active = providerDomains.filter((p) => activeIds.has(p.id));
+    const results = await Promise.all(active.map(async (p) => {
         const start = Date.now();
         try {
             const r = await axios.get(p.url, { timeout: 6000, validateStatus: () => true });

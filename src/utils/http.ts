@@ -2,6 +2,7 @@ import axios, { AxiosRequestConfig } from 'axios';
 import * as cheerio from 'cheerio';
 import { flareSolverrGet, isFlareSolverrConfigured } from './flaresolverr';
 import { USER_AGENT } from './encdec';
+import { dohAxios } from './dns';
 
 /**
  * Thin HTTP layer mirroring the Kotlin plugin's `app` / `safeGet` helpers so the
@@ -83,6 +84,7 @@ export interface GetOptions {
 const doRequest = async (config: AxiosRequestConfig): Promise<SpResponse> => {
     const res = await axios({
         ...config,
+        ...dohAxios(),
         // accept all statuses so we can inspect Cloudflare bodies instead of throwing
         validateStatus: () => true,
         // don't auto-follow redirects when the caller wants the location header

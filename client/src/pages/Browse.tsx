@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import type { Card } from "../lib/types";
-import { getSettings, setSettings } from "../lib/settings";
+import { getSettings, setSettings, useSettings } from "../lib/settings";
 import PosterCard from "../components/PosterCard";
 import CategoryPicker, { ANIME_CATEGORIES, GENERIC_CATEGORIES } from "../components/CategoryPicker";
 import { ChevronDown, ChevronLeft, ChevronRight, Film, Globe, Sparkles, Tv } from "../components/icons";
@@ -65,6 +65,7 @@ export default function Browse({ section }: { section: Section }) {
   const [totalPages, setTotalPages] = useState(1);
   const [nonce, setNonce] = useState(0);
   const [rangeOpen, setRangeOpen] = useState(false);
+  const { adult, lang } = useSettings();
 
   const gridRef = useRef<HTMLDivElement>(null);
   const cols = useColumns(gridRef);
@@ -79,7 +80,7 @@ export default function Browse({ section }: { section: Section }) {
       .then((r) => { if (!alive) return; setItems(r.items); setTotalPages(r.totalPages); })
       .catch(() => alive && setItems([]));
     return () => { alive = false; };
-  }, [section, cat, type, region, range, audio, genres, page, nonce, cfg.typeToggle, cfg.region, cfg.track]);
+  }, [section, cat, type, region, range, audio, genres, page, nonce, adult, lang, cfg.typeToggle, cfg.region, cfg.track]);
 
   // Sub/Dub: filter the catalog AND persist as the playback track preference
   function pickAudio(a: "sub" | "dub") {

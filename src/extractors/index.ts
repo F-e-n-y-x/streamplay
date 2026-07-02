@@ -23,6 +23,18 @@ import { TopMoviesProvider } from './topmovies';
 import { BollyflixProvider } from './bollyflix';
 import { CineMacityProvider } from './cinemacity';
 
+// --- Anime providers (title-matched; via the persistent FlareSolverr session) ---
+//     AniZone works (single HLS with JP/KR/EN audio + many subtitle tracks).
+//     AnimePahe resolves real SUB/DUB but its Kwik host is currently
+//     Cloudflare-IP-blocked from our egress, so it's parked in disabledProviders.
+import { AniZoneProvider } from './anizone';
+import { AnimeWorldProvider } from './animeworld';
+import { ConsumetProvider } from './consumet';   // multi-backend aggregator (opt-in via CONSUMET_URL)
+import { AnimePaheProvider } from './animepahe';
+
+// --- CastleTV: Indian multi-language (Hindi/Tamil/…) movies + series via api.hlowb.com ---
+import { CastleProvider } from './castle';
+
 // --- Subtitle providers ---
 import { SubtitleApiProvider } from './subtitleapi';
 import { WyzieSubsProvider } from './wyziesubs';
@@ -47,6 +59,16 @@ import { Hdmovie2Provider } from './hdmovie2';     // hdmo2.com domain degraded 
  * CineMacity, ...) rely on FLARESOLVERR_URL being set in `.env`.
  */
 export const providers: Provider[] = [
+    // === Anime first ===
+    // Dedicated anime providers run (and rank) ahead of the generic movie/TV
+    // sources for anime titles. Each early-returns for non-anime content, so this
+    // ordering costs movies nothing while putting the good sub/dub sources at the
+    // top of the list for anime.
+    AniZoneProvider,      // HLS + multi-audio (JP/KR/EN) + subtitles
+    AnimeWorldProvider,   // Indian dubs (Hindi/Tamil/Telugu) + Eng/Jap via zephyrflick
+    AnimePaheProvider,    // JP/EN native HLS via animepahe.pw + Kwik
+    ConsumetProvider,     // aggregator: Zoro/AnimePahe/Gogo/AnimeKai fallback (needs CONSUMET_URL)
+
     // direct-API (fast, reliable)
     TwoEmbedProvider,
     VidFastProvider,
@@ -59,6 +81,8 @@ export const providers: Provider[] = [
     DahmerMoviesProvider,
     // asian drama
     KissKhProvider,
+    // Indian multi-language movies + series (Hindi/Tamil/Telugu dubs, direct HLS)
+    CastleProvider,
     // scrape / multi (need FlareSolverr for the Cloudflare ones)
     VegaMoviesProvider,
     HdHub4uProvider,

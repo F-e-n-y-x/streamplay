@@ -34,6 +34,59 @@ const cookiesToHeader = (cookies: Array<{ name: string; value: string }>): strin
  * Solve a GET request through FlareSolverr.
  * Returns null if FlareSolverr is not configured or the request fails.
  */
+/**
+ * Persistent-session variant. Some sites (AnimePahe's DDoS-Guard XHR API, AniZone,
+ * AllAnime) only stay unblocked when the *same* FlareSolverr browser session is
+ * reused across requests, so its challenge cookies persist. We keep one session
+ * alive and recreate it on error. Returns the solved HTML (or null).
+ */
+let sessionId: string | null = null;
+let sessionCreating: Promise<string | null> | null = null;   // in-flight create, shared to avoid races
+
+const createSession = async (): Promise<string | null> => {
+    if (!ENDPOINT) return null;
+    if (sessionId) return sessionId;
+    // Coalesce concurrent callers onto one sessions.create so we don't spawn (and
+    // leak) multiple FlareSolverr browser sessions under load.
+    if (sessionCreating) return sessionCreating;
+    sessionCreating = (async () => {
+        try {
+            const r = await axios.post(ENDPOINT!, { cmd: 'sessions.create' }, { timeout: 30000 });
+            sessionId = r.data?.session || null;
+            return sessionId;
+        } catch { return null; }
+        finally { sessionCreating = null; }
+    })();
+    return sessionCreating;
+};
+
+export const flareSolverrGetHtml = async (url: string, maxTimeout = 60000): Promise<string | null> => {
+    if (!ENDPOINT) return null;
+    const req = async (sid: string | null) => {
+        const payload: any = { cmd: 'request.get', url, maxTimeout };
+        if (sid) payload.session = sid;
+        const r = await axios.post(ENDPOINT!, payload, { headers: { 'Content-Type': 'application/json' }, timeout: maxTimeout + 15000 });
+        return r.data;
+    };
+    try {
+        let sid = await createSession();
+        let data: any;
+        try {
+            data = await req(sid);
+        } catch {
+            sessionId = null; sid = await createSession(); data = await req(sid);   // recover crashed session
+        }
+        if (data?.status !== 'ok' || (data.solution && data.solution.status >= 500)) {
+            sessionId = null; sid = await createSession(); data = await req(sid);
+        }
+        return data?.status === 'ok' ? (data.solution?.response ?? null) : null;
+    } catch (e: any) {
+        console.error('[FlareSolverr] session request failed:', e?.message || e);
+        sessionId = null;
+        return null;
+    }
+};
+
 export const flareSolverrGet = async (
     url: string,
     maxTimeout = 60000

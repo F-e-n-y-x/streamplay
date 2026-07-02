@@ -146,7 +146,8 @@ router.post('/:code/bridge', (req, res) => {
     const other = ((req.body && req.body.other) || '').trim();
     if (!other) return res.json({ ok: false, error: 'No code given.' });
     const target = rooms.get(find(other));
-    if (!target || !target.claimed) return res.json({ ok: false, error: 'No device has created that code yet.' });
+    const targetKnown = target && (target.claimed || Object.keys(target.devices).length > 0);
+    if (!targetKnown) return res.json({ ok: false, error: 'No device has created that code yet.' });
     if (find(other) === find(req.params.code)) return res.json({ ok: false, error: 'Already in the same group.' });
     bridge(req.params.code, other);
     res.json({ ok: true });

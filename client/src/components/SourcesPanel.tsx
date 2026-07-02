@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sourcesStreamUrl } from "../lib/api";
+import { copyText } from "../lib/clipboard";
 import { getSettings } from "../lib/settings";
 import type { ProviderRun, StreamLink, SubtitleTrack } from "../lib/types";
 import type { PlayerSource } from "./Player";
@@ -23,7 +24,6 @@ function detectAudio(name: string): string {
 }
 const bucketOf = (q: number) => (q >= 2160 ? "4K" : q >= 1080 ? "1080p" : q >= 720 ? "720p" : "SD");
 const typeRank = (t: string) => (t === "m3u8" ? 0 : t === "mp4" ? 1 : 2);
-const STATE_RANK: Record<string, number> = { found: 0, running: 1, pending: 2, empty: 3, failed: 4, "circuit-broken": 5 };
 const STATE_LABEL: Record<string, string> = { found: "online", running: "scanning…", pending: "queued", empty: "no sources", failed: "unreachable", "circuit-broken": "circuit-broken" };
 const STATE_COLOR: Record<string, string> = { found: "var(--success)", running: "var(--warning)", pending: "var(--border-strong)", empty: "var(--gray-8)", failed: "var(--error)", "circuit-broken": "var(--error)" };
 
@@ -139,17 +139,16 @@ export default function SourcesPanel({
   const audiosPresent = [...new Set(allParsed.map((s) => s.audio).filter(Boolean))];
   const pass = (s: Parsed) => (!activeQ.size || activeQ.has(s.bucket)) && (!activeA.size || activeA.has(s.audio));
 
-  // provider order: found (best quality) → running → pending → empty → failed
+  // Stable, sequential order: providers stay in the fixed registration order they
+  // are scanned in (no re-sorting by status/quality), so the list doesn't shuffle
+  // as results stream in — you can watch each provider get checked in sequence.
   const providers = useMemo(() => {
     return order.map((pid) => {
       const run = runs[pid];
       const items = (byProvider.get(pid) || []).filter(pass);
       const best = items.reduce((m, s) => Math.max(m, s.q), 0);
-      const hasPref = items.some((s) => langRank(s.audio) < 99);
-      return { pid, run, items, best, hasPref, state: run?.state || "pending" };
-    }).sort((a, b) =>
-      (STATE_RANK[a.state] - STATE_RANK[b.state]) || (Number(b.hasPref) - Number(a.hasPref)) || (b.best - a.best) || (b.items.length - a.items.length),
-    );
+      return { pid, run, items, best, state: run?.state || "pending" };
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order, runs, byProvider, activeQ, activeA, prefLangs.join(",")]);
 
@@ -178,15 +177,19 @@ export default function SourcesPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers]);
 
-  // a source failed in the player → remember it and auto-advance to the next playable one
+  // a source failed in the player → remember it and advance to the NEXT playable
+  // source *after* it in list order (not back to the top / last working one)
   useEffect(() => {
     if (!failedUrl) return;
     setFailed((prev) => {
       const next = new Set(prev); next.add(failedUrl);
-      if (next.size <= 8) {
-        const candidate = playableRef.current.find((s) => !next.has(s.url));
-        if (candidate) setTimeout(() => play(candidate), 0);
-      }
+      const list = playableRef.current;
+      const idx = list.findIndex((s) => s.url === failedUrl);
+      // Next non-failed source after the one that failed; wrap to earlier ones as a
+      // last resort. Self-terminates once every source has failed (each URL is added
+      // to `next` exactly once, and candidates must be absent from `next`).
+      const candidate = list.slice(idx + 1).find((s) => !next.has(s.url)) || list.find((s) => !next.has(s.url));
+      if (candidate) setTimeout(() => play(candidate), 0);
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -274,36 +277,26 @@ export default function SourcesPanel({
           );
         })}
 
-        {/* providers still scanning or with no sources → compact status rows */}
-        {providers.some((p) => !p.items.length) && (
-          <>
-            <div className="pstat-label">Other providers</div>
-            {providers.filter((p) => !p.items.length).map(({ pid, run, state }) => (
-              <div className="pstat" key={pid}>
-                <StatusDot state={state} />
-                <span className="pn">{run?.name || pid}</span>
-                <span className="ps">{STATE_LABEL[state]}</span>
-              </div>
-            ))}
-          </>
-        )}
+        {/* Only working providers are listed above. While others are still being
+            checked, show a quiet progress line; failed / no-source ones are hidden. */}
+        {(() => {
+          const scanning = providers.filter((p) => !p.items.length && (p.state === "running" || p.state === "pending"));
+          if (!scanning.length) return null;
+          return (
+            <div className="pstat scanning">
+              <span className="spin" style={{ width: 12, height: 12, marginRight: 8, verticalAlign: -1 }} />
+              Checking {scanning.length} more provider{scanning.length === 1 ? "" : "s"}…
+            </div>
+          );
+        })()}
       </div>
-
-      {subs.length > 0 && (
-        <div className="rail-subs">
-          <div className="block-label">Subtitles ({subs.length})</div>
-          <div className="chips">
-            {subs.slice(0, 40).map((s, i) => (<a className="badge" key={i} href={s.url} target="_blank" rel="noopener noreferrer" title={s.url}>{s.lang || "Sub"}</a>))}
-          </div>
-        </div>
-      )}
 
       {linkMenu && (
         <div className="menu link-menu" style={{ position: "fixed", top: linkMenu.top, right: linkMenu.right }} onClick={(e) => e.stopPropagation()}>
           <div className="menu-label">Stream link</div>
           <a className="menu-item" href={`vlc://${originalUrl(linkMenu.url)}`}>Open in VLC</a>
           <a className="menu-item" href={originalUrl(linkMenu.url)} target="_blank" rel="noopener noreferrer">Open in new tab</a>
-          <button className="menu-item" onClick={() => { navigator.clipboard.writeText(originalUrl(linkMenu.url)).catch(() => {}); setCopied(linkMenu.url); setTimeout(() => setCopied((c) => (c === linkMenu.url ? null : c)), 1500); setLinkMenu(null); }}>Copy link</button>
+          <button className="menu-item" onClick={() => { copyText(originalUrl(linkMenu.url)); setCopied(linkMenu.url); setTimeout(() => setCopied((c) => (c === linkMenu.url ? null : c)), 1500); setLinkMenu(null); }}>Copy link</button>
         </div>
       )}
     </div>

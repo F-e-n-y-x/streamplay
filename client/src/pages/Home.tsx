@@ -5,16 +5,19 @@ import Row from "../components/Row";
 import HeroSlider from "../components/HeroSlider";
 import ContinueCard from "../components/ContinueCard";
 import { useStore, continueWatching } from "../lib/store";
+import { useSettings } from "../lib/settings";
 
 export default function Home() {
   const [rows, setRows] = useState<HomeRow[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useStore();
+  const { adult, lang } = useSettings();
   const cw = continueWatching();
 
   useEffect(() => {
+    setRows(null); setErr(null);
     api.home().then(setRows).catch((e) => setErr(String(e)));
-  }, []);
+  }, [adult, lang]);
 
   if (err) return <div className="container"><div className="empty">Couldn't reach the backend.<br /><span className="subtle">{err}</span></div></div>;
   if (!rows) return <HomeSkeleton />;

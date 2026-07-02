@@ -14,10 +14,24 @@ services:
       WYZIE_KEY: ${WYZIE_KEY:-}
       PROVIDER_TIMEOUT_MS: ${PROVIDER_TIMEOUT_MS:-45000}
       SYNC_DATA_FILE: /app/data/sync-data.json
+      # DNS-over-HTTPS — set DOH_ENABLED=true in your .env if provider hosts fail
+      # to resolve on your network (proxy 502s mentioning DNS). See .env.example.
+      DOH_ENABLED: ${DOH_ENABLED:-false}
+      DOH_PROVIDER: ${DOH_PROVIDER:-google}
+      # Optional anime aggregator — uncomment the `consumet` service below to enable.
+      CONSUMET_URL: ${CONSUMET_URL:-}
     volumes:
       - streamplay-data:/app/data
     depends_on:
       - flaresolverr
+
+  # Optional: self-hosted Consumet aggregator (Zoro/AnimePahe/Gogo/AnimeKai fallback).
+  # NOTE (Jul 2026): most of its back-ends are currently down; enable when they revive.
+  # Uncomment this service AND set CONSUMET_URL=http://consumet:3000 in your .env.
+  # consumet:
+  #   image: riimuru/consumet-api:latest
+  #   container_name: consumet
+  #   restart: unless-stopped
 
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest

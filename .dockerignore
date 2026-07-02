@@ -24,3 +24,7 @@ temp_repo
 .idea
 .DS_Store
 Thumbs.db
+
+# Reference projects — keep them out of the build context
+castleTV
+Anime-api

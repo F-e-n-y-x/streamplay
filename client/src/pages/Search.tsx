@@ -3,18 +3,20 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../lib/api";
 import type { Card } from "../lib/types";
 import PosterCard from "../components/PosterCard";
+import { useSettings } from "../lib/settings";
 
 export default function Search() {
   const [params] = useSearchParams();
   const q = params.get("q") ?? "";
   const [items, setItems] = useState<Card[] | null>(null);
+  const { adult, lang } = useSettings();
 
   useEffect(() => {
     let alive = true;
     setItems(null);
     api.search(q).then((r) => alive && setItems(r.items)).catch(() => alive && setItems([]));
     return () => { alive = false; };
-  }, [q]);
+  }, [q, adult, lang]);
 
   return (
     <div className="container">

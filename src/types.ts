@@ -4,6 +4,8 @@ export interface Stream {
     type: 'm3u8' | 'mp4' | 'iframe';
     quality?: string;
     headers?: Record<string, string>;
+    /** For HLS with alternate audio: force this audio rendition (by NAME) to be the default. */
+    audioName?: string;
 }
 
 export interface Subtitle {

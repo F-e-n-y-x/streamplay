@@ -212,5 +212,24 @@ export function randomCode(): string {
   return (Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6)).toLowerCase();
 }
 
-// auto-connect on load if a code is stored
-if (code) connectStream();
+/** Re-seed the server room from local data, then open the live stream.
+ *  Used on page load so a device that changed things offline (or whose server
+ *  room was reset) re-uploads its data and pulls back the merged result. */
+async function resumeSync() {
+  if (!code) return;
+  syncState = "connecting"; emit();
+  try {
+    const res = await fetch(`/api/sync/${encodeURIComponent(code)}/bulk`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ history: data.history, favs: data.favs }),
+    });
+    const merged = await res.json();
+    if (merged.history) data.history = merged.history;
+    if (merged.favs) data.favs = merged.favs;
+    save(); emit();
+  } catch { /* offline — the stream will retry and snapshot-merge */ }
+  connectStream();
+}
+
+// auto-resume sync on load if a code is stored
+if (code) resumeSync();

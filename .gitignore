@@ -26,3 +26,9 @@ temp_repo/
 Thumbs.db
 .vscode/
 .idea/
+
+# Dropped-in reference project (separate anime API)
+Anime-api/
+
+# Dropped-in reference projects (separate apps — not part of StreamPlay)
+castleTV/

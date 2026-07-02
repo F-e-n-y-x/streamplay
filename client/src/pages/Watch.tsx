@@ -108,6 +108,23 @@ function EpisodeBar({ id, seasons, season, episode, onPick }: {
 }) {
   const cur = seasons.find((s) => s.seasonNumber === season) || seasons[0];
   const count = Math.max(cur?.episodeCount ?? 0, 1);
+  const RANGE = 50;
+
+  // Split long seasons into 1-50 / 51-100 … ranges.
+  const ranges = useMemo(() => {
+    if (count <= RANGE) return [] as { start: number; end: number }[];
+    const out: { start: number; end: number }[] = [];
+    for (let start = 1; start <= count; start += RANGE) out.push({ start, end: Math.min(start + RANGE - 1, count) });
+    return out;
+  }, [count]);
+
+  // Default the visible range to the one holding the current episode.
+  const [rangeStart, setRangeStart] = useState(() => Math.floor((episode - 1) / RANGE) * RANGE + 1);
+  useEffect(() => { setRangeStart(Math.floor((episode - 1) / RANGE) * RANGE + 1); }, [episode, season]);
+
+  const from = ranges.length ? rangeStart : 1;
+  const to = ranges.length ? Math.min(rangeStart + RANGE - 1, count) : count;
+
   return (
     <div className="episode-bar">
       <div className="section-head"><h2><Film size={16} style={{ verticalAlign: -2, marginRight: 6 }} />Episodes</h2></div>
@@ -116,8 +133,15 @@ function EpisodeBar({ id, seasons, season, episode, onPick }: {
           <button key={s.seasonNumber} className={`tab ${s.seasonNumber === season ? "active" : ""}`} onClick={() => onPick(s.seasonNumber, 1)}>{s.name}</button>
         ))}
       </div>
+      {ranges.length > 1 && (
+        <div className="ep-ranges">
+          {ranges.map((r) => (
+            <button key={r.start} className={`ep-range ${r.start === rangeStart ? "active" : ""}`} onClick={() => setRangeStart(r.start)}>{r.start}–{r.end}</button>
+          ))}
+        </div>
+      )}
       <div className="ep-grid">
-        {Array.from({ length: count }, (_, i) => i + 1).map((e) => (
+        {Array.from({ length: to - from + 1 }, (_, i) => from + i).map((e) => (
           <button key={e} className={`ep ${e === episode ? "active" : ""}`} onClick={() => onPick(season, e)}>{e}</button>
         ))}
       </div>

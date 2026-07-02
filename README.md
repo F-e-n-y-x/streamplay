@@ -46,7 +46,7 @@ docker compose up -d
 Open **http://localhost:3000**.
 
 The published image lives at **`ghcr.io/f-e-n-y-x/streamplay`** and is tagged per release
-(`:1.0.0`, `:1.0`, `:1`, `:latest`) plus a rolling `:edge` from `main`.
+(`:1.1.0`, `:1.1`, `:1`, `:latest`) plus a rolling `:edge` from `main`.
 
 ### Portainer
 
@@ -81,10 +81,12 @@ All settings are environment variables (see [`.env.example`](.env.example)):
 | --- | --- | --- |
 | `PORT` | `3000` | Port the server listens on. |
 | `TMDB_API_KEY` | — | **Required.** TMDB v3 API key for all metadata/browse/search. |
-| `FLARESOLVERR_URL` | — | FlareSolverr endpoint for Cloudflare bypass. In Compose: `http://flaresolverr:8191/`. Blank → bundled Puppeteer fallback. |
+| `FLARESOLVERR_URL` | — | FlareSolverr endpoint for Cloudflare bypass. In Compose: `http://flaresolverr:8191/`. Blank disables Cloudflare-gated providers. |
 | `WYZIE_KEY` | — | Optional key for WYZIE subtitles. Blank disables that provider. |
 | `PROVIDER_TIMEOUT_MS` | `45000` | Per-provider timeout before a source is dropped. |
 | `SYNC_DATA_FILE` | `./sync-data.json` | Where multi-device sync state is persisted (a Docker volume path in Compose). |
+| `DOH_ENABLED` | `false` | Resolve provider/CDN hosts over DNS-over-HTTPS. Turn on if `/api/proxy` returns DNS 502s or streams won't load (common on a NAS / a blocking ISP). |
+| `DOH_PROVIDER` | `google` | DoH resolver: `google`, `cloudflare`, or `quad9`. |
 
 ---
 

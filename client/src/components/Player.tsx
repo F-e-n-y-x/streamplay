@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import Hls from "hls.js";
 import { getSettings } from "../lib/settings";
-import { Check, Maximize, Pause, Play, RotateCcw, Settings, Subtitles, Volume2, VolumeX, X } from "./icons";
+import { copyText } from "../lib/clipboard";
+import { Check, Copy, ExternalLink, Maximize, Pause, Play, RotateCcw, Settings, Subtitles, Volume2, VolumeX, X } from "./icons";
+
+/** ISO/short language code → display name for the audio menu. */
+const LANG_NAMES: Record<string, string> = {
+  ja: "Japanese", jpn: "Japanese", en: "English", eng: "English", hi: "Hindi", hin: "Hindi",
+  ta: "Tamil", tam: "Tamil", te: "Telugu", tel: "Telugu", ml: "Malayalam", mal: "Malayalam",
+  kn: "Kannada", kan: "Kannada", ko: "Korean", kor: "Korean", zh: "Chinese", zho: "Chinese",
+  fr: "French", fra: "French", es: "Spanish", spa: "Spanish", de: "German", deu: "German",
+  it: "Italian", ita: "Italian", pt: "Portuguese", ru: "Russian", ar: "Arabic", bn: "Bengali",
+  mr: "Marathi", pa: "Punjabi", ur: "Urdu", th: "Thai", id: "Indonesian", vi: "Vietnamese", und: "Original",
+};
+const langName = (code: string) => LANG_NAMES[(code || "").toLowerCase()] || (code ? code.toUpperCase() : "Original");
 
 export interface PlayerSource {
   title: string;
@@ -78,6 +90,9 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   const wrap = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
+  const shakaRef = useRef<any>(null);
+  const engineRef = useRef<"shaka" | "hls" | "native">("native");
+  const activeTabRef = useRef<HTMLButtonElement>(null);
   const hideTimer = useRef<number | undefined>(undefined);
   const autostarted = useRef(false);
   const resumed = useRef(false);
@@ -94,17 +109,23 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   const [fullscreen, setFullscreen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
-  const [ccOpen, setCcOpen] = useState(false);
   const [ccIndex, setCcIndex] = useState(-1);
   const [autoMuted, setAutoMuted] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [sheetTab, setSheetTab] = useState("");
+  const [copiedUrl, setCopiedUrl] = useState(false);
   const [levels, setLevels] = useState<{ index: number; height: number; bitrate: number }[]>([]);
   const [curLevel, setCurLevel] = useState(-1); // -1 = Auto
   const [audioTracks, setAudioTracks] = useState<{ id: number; label: string }[]>([]);
   const [curAudio, setCurAudio] = useState(-1);
+  // Audio renditions parsed from the manifest (used when hls.js doesn't expose them).
+  const [manifestAudios, setManifestAudios] = useState<{ name: string; lang: string }[]>([]);
+  const [curMAudio, setCurMAudio] = useState("");
+  const pendingSeek = useRef<number | null>(null);
 
   const tracks = source.subtitles ?? [];
   const prefLangs = (getSettings() as unknown as { audioLanguages?: string[] }).audioLanguages ?? [];
+  const animeTrack = (getSettings() as unknown as { anime?: "sub" | "dub" }).anime ?? "sub";
   const wantAutoplay = (getSettings() as unknown as { autoplay?: boolean }).autoplay ?? true;
 
   // start (or autoplay) the current video, with muted fallback for blocked autoplay
@@ -120,43 +141,139 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
     });
   }, []);
 
-  // Attach the source (hls.js for m3u8 where needed).
+  // Attach the source. Engine priority for HLS: Shaka (broad codecs + reliable
+  // audio-track APIs) → hls.js → native. Plain mp4 plays natively.
   useEffect(() => {
     const el = video.current;
     if (!el) return;
     setError(null); setLoading(true); autostarted.current = false;
     setLevels([]); setAudioTracks([]); setCurLevel(-1); setCurAudio(-1);
-    if (source.type === "m3u8" && !el.canPlayType("application/vnd.apple.mpegurl") && Hls.isSupported()) {
-      const inst = new Hls({ enableWorker: true });
+    setManifestAudios([]); setCurMAudio("");
+
+    let cancelled = false;
+    let cleanup = () => { /* replaced by the active engine */ };
+
+    // Preferred audio: anime Sub/Dub first, then the preferred-language list.
+    const autoPick = (langs: { name: string; lang: string }[]) => {
+      if (langs.length <= 1) return undefined;
+      const has = (re: RegExp) => langs.find((a) => re.test(a.name) || re.test(a.lang));
+      const jp = has(/\b(jp|jpn|japanese)\b/i);
+      const want = jp ? (animeTrack === "dub" ? has(/\b(en|eng|english)\b/i) : jp) : undefined;
+      if (want) return want;
+      if (prefLangs.length) return langs.find((a) => prefLangs.some((p) => `${a.name} ${a.lang}`.toLowerCase().includes(p.toLowerCase())));
+      return undefined;
+    };
+
+    // ── native (iOS Safari / mp4) ──
+    const startNative = () => {
+      engineRef.current = "native";
+      el.src = source.url;
+      const nativeAudio = () => {
+        const nat = (el as unknown as { audioTracks?: { length: number; [i: number]: { label?: string; language?: string; enabled: boolean } } }).audioTracks;
+        if (!nat || nat.length <= 1) return;
+        const at = Array.from({ length: nat.length }, (_v, i) => ({ id: i, label: nat[i].label || nat[i].language || `Track ${i + 1}` }));
+        setAudioTracks(at);
+        setCurAudio(Array.from({ length: nat.length }).findIndex((_v, i) => nat[i].enabled));
+      };
+      el.addEventListener("loadedmetadata", nativeAudio);
+      cleanup = () => el.removeEventListener("loadedmetadata", nativeAudio);
+    };
+
+    // ── hls.js (fallback) — parses alt-audio from the manifest, switches via &audio= reload ──
+    const startHls = () => {
+      if (cancelled) return;
+      if (!Hls.isSupported()) { startNative(); return; }
+      engineRef.current = "hls";
+      const inst = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 60, maxMaxBufferLength: 600, backBufferLength: 60, fragLoadingMaxRetry: 6, manifestLoadingMaxRetry: 4, levelLoadingMaxRetry: 4 });
       hls.current = inst;
-      inst.loadSource(source.url);
-      inst.attachMedia(el);
-      inst.on(Hls.Events.MANIFEST_PARSED, () => {
-        // quality levels (distinct resolutions, highest first)
-        const lv = inst.levels.map((l, index) => ({ index, height: l.height || 0, bitrate: l.bitrate || 0 }))
-          .filter((l) => l.height > 0).sort((a, b) => b.height - a.height);
-        setLevels(lv);
-        if (wantAutoplay && !autostarted.current) { autostarted.current = true; start(); }
-      });
       const syncAudio = () => {
         const at = inst.audioTracks.map((t) => ({ id: t.id, label: t.name || t.lang || `Track ${t.id + 1}` }));
-        setAudioTracks(at);
-        setCurAudio(inst.audioTrack);
-        // auto-pick the user's preferred audio language if present
-        if (at.length > 1 && prefLangs.length) {
-          const want = at.find((t) => prefLangs.some((p) => t.label.toLowerCase().includes(p.toLowerCase())));
-          if (want && want.id !== inst.audioTrack) inst.audioTrack = want.id;
-        }
+        setAudioTracks(at); setCurAudio(inst.audioTrack);
       };
+      inst.attachMedia(el);
+      fetch(source.url).then((r) => r.text()).then((txt) => {
+        const list = [...txt.matchAll(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*/gi)].map((mm) => {
+          const line = mm[0];
+          const name = /NAME="([^"]+)"/.exec(line)?.[1];
+          const lang = /LANGUAGE="([^"]+)"/.exec(line)?.[1] || "";
+          return name ? { name, lang, def: /DEFAULT=YES/i.test(line) } : null;
+        }).filter(Boolean) as { name: string; lang: string; def: boolean }[];
+        setManifestAudios(list.map(({ name, lang }) => ({ name, lang })));
+        let chosen = (list.find((a) => a.def) || list[0])?.name || "";
+        let loadUrl = source.url;
+        const want = autoPick(list);
+        if (want && want.name !== chosen) {
+          chosen = want.name;
+          const base = source.url.replace(/[?&]$/, "");
+          loadUrl = `${base}${base.includes("?") ? "&" : "?"}audio=${encodeURIComponent(want.name)}`;
+        }
+        setCurMAudio(chosen);
+        inst.loadSource(loadUrl);
+      }).catch(() => inst.loadSource(source.url));
+      inst.on(Hls.Events.MANIFEST_PARSED, () => {
+        const lv = inst.levels.map((l, index) => ({ index, height: l.height || 0, bitrate: l.bitrate || 0 })).filter((l) => l.height > 0).sort((a, b) => b.height - a.height);
+        setLevels(lv); syncAudio();
+        if (pendingSeek.current != null && el) { el.currentTime = pendingSeek.current; pendingSeek.current = null; start(); }
+        else if (wantAutoplay && !autostarted.current) { autostarted.current = true; start(); }
+      });
       inst.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncAudio);
       inst.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, d) => setCurAudio(d.id));
       inst.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => setCurLevel(inst.autoLevelEnabled ? -1 : d.level));
       inst.on(Hls.Events.ERROR, (_e, data) => { if (data.fatal) { setError("This source failed to load."); onFail?.(); } });
-      return () => { inst.destroy(); hls.current = null; };
-    }
-    el.src = source.url;
+      cleanup = () => { inst.destroy(); hls.current = null; };
+    };
+
+    // ── Shaka (primary) — exposes audio languages + qualities reliably ──
+    const startShaka = async () => {
+      try {
+        // @ts-expect-error — shaka's compiled build ships non-ES-module typings
+        const shakaMod: any = await import("shaka-player/dist/shaka-player.compiled.js");
+        const shaka: any = shakaMod.default || shakaMod;
+        if (cancelled) return;
+        shaka.polyfill.installAll();
+        if (!shaka.Player.isBrowserSupported()) throw new Error("shaka unsupported");
+        const player = new shaka.Player();
+        await player.attach(el);
+        if (cancelled) { try { player.destroy(); } catch { /* */ } return; }
+        shakaRef.current = player;
+        engineRef.current = "shaka";
+        player.configure({ streaming: { bufferingGoal: 60, rebufferingGoal: 2, retryParameters: { maxAttempts: 5, baseDelay: 500, backoffFactor: 2 } } });
+        let fellBack = false;
+        player.addEventListener("error", (ev: any) => {
+          if (ev?.detail?.severity === 2 && !fellBack && !cancelled) { fellBack = true; try { player.destroy(); } catch { /* */ } shakaRef.current = null; startHls(); }
+        });
+        await player.load(source.url, (resumeAt && resumeAt > 5) ? resumeAt : undefined);
+        if (cancelled) { try { player.destroy(); } catch { /* */ } return; }
+        resumed.current = true;
+        const variants: any[] = player.getVariantTracks?.() || [];
+        const audios = (player.getAudioLanguages?.() || []).map((c: string) => ({ name: langName(c), lang: c }));
+        setManifestAudios(audios);
+        const active = variants.find((v) => v.active);
+        let chosen = active ? langName(active.language) : (audios[0]?.name || "");
+        const want = autoPick(audios);
+        if (want && want.lang !== active?.language) { try { player.selectAudioLanguage(want.lang); } catch { /* */ } chosen = want.name; }
+        setCurMAudio(chosen);
+        const heights = [...new Set(variants.map((v) => v.height).filter(Boolean))].sort((a, b) => (b as number) - (a as number)) as number[];
+        setLevels(heights.map((h, index) => ({ index, height: h, bitrate: 0 })));
+        setCurLevel(-1);
+        cleanup = () => { try { player.destroy(); } catch { /* */ } shakaRef.current = null; };
+        if (wantAutoplay && !autostarted.current) { autostarted.current = true; start(); }
+      } catch {
+        if (!cancelled) startHls();
+      }
+    };
+
+    if (source.type === "m3u8") startShaka();
+    else startNative();
+
+    return () => { cancelled = true; cleanup(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [source]);
+
+  // Keep the active options tab scrolled into view so it's never clipped.
+  useEffect(() => {
+    if (sheetOpen) activeTabRef.current?.scrollIntoView({ inline: "nearest", block: "nearest" });
+  }, [sheetOpen, sheetTab]);
 
   // Toggle the selected caption track.
   useEffect(() => {
@@ -208,12 +325,75 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
     if (document.fullscreenElement) document.exitFullscreen();
     else wrap.current?.requestFullscreen?.();
   }
-  function pickQuality(index: number) { const h = hls.current; if (!h) return; h.currentLevel = index; setCurLevel(index); setSettingsOpen(false); }
-  function pickAudio(id: number) { const h = hls.current; if (!h) return; h.audioTrack = id; setCurAudio(id); setSettingsOpen(false); }
+  function pickQuality(index: number) {
+    if (engineRef.current === "shaka" && shakaRef.current) {
+      const p = shakaRef.current;
+      try {
+        if (index < 0) { p.configure({ abr: { enabled: true } }); }
+        else {
+          const height = levels.find((l) => l.index === index)?.height;
+          p.configure({ abr: { enabled: false } });
+          const vars = (p.getVariantTracks() || []) as any[];
+          const active = vars.find((v) => v.active);
+          const target = vars.filter((v) => v.height === height).find((v) => v.language === active?.language) || vars.find((v) => v.height === height);
+          if (target) p.selectVariantTrack(target, true);
+        }
+      } catch { /* */ }
+      setCurLevel(index);
+      return;
+    }
+    const h = hls.current; if (!h) return; h.currentLevel = index; setCurLevel(index);
+  }
+  // Switch a manifest-declared audio rendition by reloading the master with our
+  // proxy's &audio= (which re-defaults that track), resuming at the same position.
+  function pickManifestAudio(name: string) {
+    if (name === curMAudio) return;
+    // Shaka switches audio in place, no reload.
+    if (engineRef.current === "shaka" && shakaRef.current) {
+      const a = manifestAudios.find((x) => x.name === name);
+      if (a) { try { shakaRef.current.selectAudioLanguage(a.lang); } catch { /* */ } setCurMAudio(name); }
+      return;
+    }
+    // hls.js: reload the master with our &audio= re-default, resuming position.
+    const inst = hls.current; const el = video.current;
+    if (!inst || !el) return;
+    const base = source.url.replace(/([?&])audio=[^&]*/i, "$1").replace(/[?&]$/, "");
+    const sep = base.includes("?") ? "&" : "?";
+    pendingSeek.current = el.currentTime;
+    setCurMAudio(name);
+    inst.loadSource(`${base}${sep}audio=${encodeURIComponent(name)}`);
+  }
+  function pickAudio(id: number) {
+    const h = hls.current;
+    if (h) { h.audioTrack = id; setCurAudio(id); return; }
+    // native HLS (iOS): toggle the AudioTrackList
+    const nat = (video.current as unknown as { audioTracks?: { length: number; [i: number]: { enabled: boolean } } })?.audioTracks;
+    if (nat) { for (let i = 0; i < nat.length; i++) nat[i].enabled = i === id; setCurAudio(id); }
+  }
 
   const pct = duration ? (current / duration) * 100 : 0;
   const bufPct = duration ? (buffered / duration) * 100 : 0;
-  const hasSettings = levels.length > 1 || audioTracks.length > 1;
+  // Tag anime audio tracks as SUB (Japanese) / DUB (English) when both exist.
+  const animeAudio = audioTracks.some((t) => /\b(jp|jpn|japanese)\b/i.test(t.label))
+    || manifestAudios.some((a) => /\b(jp|jpn|japanese)\b/i.test(a.name));
+  const audioLabel = (label: string) => {
+    if (!animeAudio) return label;
+    if (/\b(jp|jpn|japanese)\b/i.test(label)) return `${label} · SUB`;
+    if (/\b(en|eng|english)\b/i.test(label)) return `${label} · DUB`;
+    return label;
+  };
+  const ccOn = ccIndex >= 0;
+  // Absolute URL of the (proxied) stream — plays in VLC with headers already injected.
+  const streamAbs = source.url.startsWith("/") ? `${location.origin}${source.url}` : source.url;
+  const copyStream = () => { copyText(streamAbs).then((ok) => { if (ok) { setCopiedUrl(true); setTimeout(() => setCopiedUrl(false), 1500); } }); };
+  // Audio is ALWAYS a tab. Quality/Subtitles show when present. VLC always.
+  const sheetTabs = [
+    { id: "audio", label: "Audio" },
+    ...(levels.length > 1 ? [{ id: "quality", label: "Quality" }] : []),
+    ...(tracks.length > 0 ? [{ id: "subs", label: "Subtitles" }] : []),
+    { id: "vlc", label: "VLC" },
+  ];
+  const activeTab = sheetTabs.some((t) => t.id === sheetTab) ? sheetTab : sheetTabs[0].id;
 
   return (
     <div
@@ -233,7 +413,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
         onPause={() => { setPlaying(false); setShowControls(true); const el = video.current; if (onProgress && el && el.duration > 0) onProgress(el.currentTime, el.duration); }}
         onWaiting={() => setLoading(true)}
         onPlaying={() => setLoading(false)}
-        onCanPlay={() => { setLoading(false); if (wantAutoplay && !autostarted.current && source.type !== "m3u8") { autostarted.current = true; start(); } }}
+        onCanPlay={() => { setLoading(false); if (wantAutoplay && !autostarted.current && engineRef.current === "native") { autostarted.current = true; start(); } }}
         onLoadedMetadata={(e) => {
           const el = e.currentTarget; setDuration(el.duration);
           if (!resumed.current && resumeAt && resumeAt > 5 && resumeAt < el.duration - 5) { el.currentTime = resumeAt; }
@@ -300,52 +480,79 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
           <span className="time">{fmt(current)} / {fmt(duration)}</span>
           <span className="grow" />
           {tracks.length > 0 && (
-            <div className="menu-wrap">
-              <button aria-label="Subtitles" onClick={() => setCcOpen((v) => !v)}><Subtitles size={20} /></button>
-              {ccOpen && (
-                <div className="menu above right" onMouseLeave={() => setCcOpen(false)}>
-                  <div className="menu-label">Subtitles</div>
-                  <button className={`menu-item ${ccIndex < 0 ? "active" : ""}`} onClick={() => { setCcIndex(-1); setCcOpen(false); }}>Off</button>
-                  {tracks.slice(0, 40).map((t, i) => (<button key={i} className={`menu-item ${ccIndex === i ? "active" : ""}`} onClick={() => { setCcIndex(i); setCcOpen(false); }}>{t.lang || `Track ${i + 1}`}</button>))}
-                </div>
-              )}
-            </div>
+            <button className={ccOn ? "active" : ""} aria-label="Toggle subtitles" aria-pressed={ccOn} onClick={() => setCcIndex((i) => (i < 0 ? 0 : -1))}><Subtitles size={20} /></button>
           )}
-          {hasSettings && (
-            <div className="menu-wrap">
-              <button aria-label="Quality & audio" onClick={() => setSettingsOpen((v) => !v)}><Settings size={20} /></button>
-              {settingsOpen && (
-                <div className="menu above right vp-settings" onMouseLeave={() => setSettingsOpen(false)}>
-                  {audioTracks.length > 1 && (
-                    <>
-                      <div className="menu-label">Audio</div>
-                      {audioTracks.map((t) => (
-                        <button key={t.id} className={`menu-item ${curAudio === t.id ? "active" : ""}`} onClick={() => pickAudio(t.id)}>
-                          <span>{t.label}</span>{curAudio === t.id && <Check size={14} />}
-                        </button>
-                      ))}
-                    </>
-                  )}
-                  {levels.length > 1 && (
-                    <>
-                      <div className="menu-label">Quality</div>
-                      <button className={`menu-item ${curLevel < 0 ? "active" : ""}`} onClick={() => pickQuality(-1)}>
-                        <span>Auto{curLevel < 0 ? "" : ""}</span>{curLevel < 0 && <Check size={14} />}
-                      </button>
-                      {levels.map((l) => (
-                        <button key={l.index} className={`menu-item ${curLevel === l.index ? "active" : ""}`} onClick={() => pickQuality(l.index)}>
-                          <span>{l.height}p{l.bitrate ? ` · ${Math.round(l.bitrate / 1000)}k` : ""}</span>{curLevel === l.index && <Check size={14} />}
-                        </button>
-                      ))}
-                    </>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+          <button aria-label="Audio, quality & subtitles" onClick={() => setSheetOpen(true)}><Settings size={20} /></button>
           <button aria-label="Fullscreen" onClick={toggleFullscreen}><Maximize size={20} /></button>
         </div>
       </div>
+
+      {sheetOpen && (
+        <>
+          <div className="vp-scrim" onClick={() => setSheetOpen(false)} />
+          <div className="vp-sheet" role="dialog" aria-label="Player options" onClick={(e) => e.stopPropagation()}>
+            <div className="vp-sheet-head">
+              <div className="vp-tabs">
+                {sheetTabs.map((t) => (
+                  <button key={t.id} ref={activeTab === t.id ? activeTabRef : undefined} className={`vp-tab ${activeTab === t.id ? "active" : ""}`} onClick={() => setSheetTab(t.id)}>{t.label}</button>
+                ))}
+              </div>
+              <button className="vp-sheet-x" aria-label="Close" onClick={() => setSheetOpen(false)}><X size={18} /></button>
+            </div>
+            <div className="vp-sheet-body">
+              {activeTab === "audio" && (
+                <div className="vp-sec">
+                  {audioTracks.length > 1 ? (
+                    audioTracks.map((t) => (
+                      <button key={t.id} className={`vp-opt ${curAudio === t.id ? "active" : ""}`} onClick={() => pickAudio(t.id)}>
+                        <span>{audioLabel(t.label)}</span>{curAudio === t.id && <Check size={16} />}
+                      </button>
+                    ))
+                  ) : manifestAudios.length > 1 ? (
+                    manifestAudios.map((a) => (
+                      <button key={a.name} className={`vp-opt ${curMAudio === a.name ? "active" : ""}`} onClick={() => pickManifestAudio(a.name)}>
+                        <span>{audioLabel(a.name)}</span>{curMAudio === a.name && <Check size={16} />}
+                      </button>
+                    ))
+                  ) : (
+                    <>
+                      <button className="vp-opt active"><span>{manifestAudios[0]?.name || audioTracks[0]?.label || "Default"}</span><Check size={16} /></button>
+                      <div className="vp-hint">This stream has one selectable track. If VLC shows more audio, they're embedded (muxed) and can't be switched in a browser — open it in VLC (VLC tab) to access them all.</div>
+                    </>
+                  )}
+                </div>
+              )}
+              {activeTab === "quality" && (
+                <div className="vp-sec">
+                  <button className={`vp-opt ${curLevel < 0 ? "active" : ""}`} onClick={() => pickQuality(-1)}><span>Auto</span>{curLevel < 0 && <Check size={16} />}</button>
+                  {levels.map((l) => (
+                    <button key={l.index} className={`vp-opt ${curLevel === l.index ? "active" : ""}`} onClick={() => pickQuality(l.index)}>
+                      <span>{l.height}p</span>{curLevel === l.index && <Check size={16} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {activeTab === "subs" && (
+                <div className="vp-sec">
+                  <button className={`vp-opt ${ccIndex < 0 ? "active" : ""}`} onClick={() => setCcIndex(-1)}><span>Off</span>{ccIndex < 0 && <Check size={16} />}</button>
+                  {tracks.map((t, i) => (
+                    <button key={i} className={`vp-opt ${ccIndex === i ? "active" : ""}`} onClick={() => setCcIndex(i)}>
+                      <span>{t.lang || `Track ${i + 1}`}</span>{ccIndex === i && <Check size={16} />}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {activeTab === "vlc" && (
+                <div className="vp-sec">
+                  <a className="vp-opt" href={`vlc://${streamAbs}`}><span>Open in VLC</span><ExternalLink size={16} /></a>
+                  <button className="vp-opt" onClick={copyStream}><span>{copiedUrl ? "Copied!" : "Copy stream link"}</span>{copiedUrl ? <Check size={16} /> : <Copy size={16} />}</button>
+                  <div className="vp-hint">VLC handles every audio track &amp; subtitle format natively — useful if a track won't switch here.</div>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

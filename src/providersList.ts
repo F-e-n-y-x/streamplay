@@ -23,5 +23,8 @@ export const providerDomains = [
     { id: 'xpass', name: 'Xpass', url: 'https://play.xpass.top' },
     { id: 'vaplayer', name: 'Vaplayer', url: 'https://streamdata.vaplayer.ru' },
     { id: 'peachify', name: 'Peachify', url: 'https://peachify.top' },
-    { id: 'anineko', name: 'AniNeko', url: 'https://anineko.to' }
+    { id: 'anineko', name: 'AniNeko', url: 'https://anineko.to' },
+    { id: 'anizone', name: 'AniZone', url: 'https://anizone.to' },
+    { id: 'animeworld', name: 'AnimeWorld', url: 'https://watchanimeworld.net' },
+    { id: 'castle', name: 'CastleTV', url: 'https://api.hlowb.com' }
 ];

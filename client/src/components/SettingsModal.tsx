@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { getSettings, setSettings, type ClientSettings } from "../lib/settings";
+import { useSettings, updateSettings, type ClientSettings } from "../lib/settings";
 import { useStore, getSyncState, getSyncCode, getDeviceName, setDeviceName, getRoster, createSync, joinSync, disableSync, forgetDevice, bridgeCode, randomCode } from "../lib/store";
 import Dropdown from "./Dropdown";
+import { copyText } from "../lib/clipboard";
 import { Check, Copy, X } from "./icons";
 
 const AUDIO_LANGS = [
@@ -17,7 +18,7 @@ const QUALITIES: { value: ClientSettings["quality"]; label: string }[] = [
 ];
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [draft, setDraft] = useState<ClientSettings>(getSettings());
+  const s = useSettings();          // live settings — every change persists immediately
   useStore();
   const syncState = getSyncState();
   const syncCode = getSyncCode();
@@ -32,10 +33,9 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [bridge, setBridge] = useState("");
   const [bridgeMsg, setBridgeMsg] = useState("");
 
-  function save() { setSettings(draft); onClose(); }
-  function removeAudio(lang: string) { setDraft({ ...draft, audioLanguages: draft.audioLanguages.filter((l) => l !== lang) }); }
-  function addAudio(lang: string) { if (lang && !draft.audioLanguages.includes(lang)) setDraft({ ...draft, audioLanguages: [...draft.audioLanguages, lang] }); }
-  const availableAudio = AUDIO_LANGS.filter((l) => !draft.audioLanguages.includes(l));
+  function removeAudio(lang: string) { updateSettings({ audioLanguages: s.audioLanguages.filter((l) => l !== lang) }); }
+  function addAudio(lang: string) { if (lang && !s.audioLanguages.includes(lang)) updateSettings({ audioLanguages: [...s.audioLanguages, lang] }); }
+  const availableAudio = AUDIO_LANGS.filter((l) => !s.audioLanguages.includes(l));
 
   async function doCreate() { setMsg(""); try { await createSync(createCode); } catch (e: any) { setMsg(e.message); } }
   async function doJoin() { setMsg(""); try { await joinSync(joinCode); } catch (e: any) { setMsg(e.message); } }
@@ -55,7 +55,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           <div className="field">
             <label>Preferred audio languages</label>
             <div className="rchips">
-              {draft.audioLanguages.map((lang, i) => (
+              {s.audioLanguages.map((lang, i) => (
                 <span key={lang} className={i === 0 ? "rchip primary" : "rchip"}>
                   <span className="idx">{i + 1}</span>{lang}
                   <button className="x" aria-label="Remove" onClick={() => removeAudio(lang)}><X size={12} /></button>
@@ -69,8 +69,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           <div className="field">
             <label>Anime track</label>
             <div className="segmented">
-              <button className={draft.anime === "sub" ? "seg-opt active" : "seg-opt"} onClick={() => setDraft({ ...draft, anime: "sub" })}>Subbed</button>
-              <button className={draft.anime === "dub" ? "seg-opt active" : "seg-opt"} onClick={() => setDraft({ ...draft, anime: "dub" })}>Dubbed</button>
+              <button className={s.anime === "sub" ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ anime: "sub" })}>Subbed</button>
+              <button className={s.anime === "dub" ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ anime: "dub" })}>Dubbed</button>
             </div>
             <div className="hint">Preferred audio track for anime titles.</div>
           </div>
@@ -79,7 +79,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             <label>Default quality</label>
             <div className="segmented">
               {QUALITIES.map((q) => (
-                <button key={q.value} className={draft.quality === q.value ? "seg-opt active" : "seg-opt"} onClick={() => setDraft({ ...draft, quality: q.value })}>{q.label}</button>
+                <button key={q.value} className={s.quality === q.value ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ quality: q.value })}>{q.label}</button>
               ))}
             </div>
             <div className="hint">Pre-selects this quality filter when sources load.</div>
@@ -88,7 +88,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           <div className="field">
             <div className="field-row">
               <label htmlFor="autoplay">Autoplay</label>
-              <button id="autoplay" role="switch" aria-checked={draft.autoplay} className={draft.autoplay ? "switch on" : "switch"} onClick={() => setDraft({ ...draft, autoplay: !draft.autoplay })} />
+              <button id="autoplay" role="switch" aria-checked={s.autoplay} className={s.autoplay ? "switch on" : "switch"} onClick={() => updateSettings({ autoplay: !s.autoplay })} />
             </div>
             <div className="hint">Start the best source automatically.</div>
           </div>
@@ -96,7 +96,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           <div className="field">
             <div className="field-row">
               <label htmlFor="adult">Show 18+ content</label>
-              <button id="adult" role="switch" aria-checked={draft.adult} className={draft.adult ? "switch on" : "switch"} onClick={() => setDraft({ ...draft, adult: !draft.adult })} />
+              <button id="adult" role="switch" aria-checked={s.adult} className={s.adult ? "switch on" : "switch"} onClick={() => updateSettings({ adult: !s.adult })} />
             </div>
             <div className="hint">Off by default — adult / hentai titles are hidden across browse and search.</div>
           </div>
@@ -119,7 +119,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               </div>
               <div className="sync-row">
                 <code className="sync-code">{syncCode}</code>
-                <button className="btn btn-sm" onClick={() => { navigator.clipboard.writeText(syncCode).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }).catch(() => {}); }}>{copied ? <><Check size={14} /> Copied</> : <><Copy size={14} /> Copy</>}</button>
+                <button className="btn btn-sm" onClick={() => { copyText(syncCode).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } }); }}>{copied ? <><Check size={14} /> Copied</> : <><Copy size={14} /> Copy</>}</button>
                 <button className="btn btn-sm" onClick={() => disableSync()}>Disconnect</button>
               </div>
               <div className="hint">Enter this code on another device to link it. Up to many devices can share one code.</div>
@@ -172,8 +172,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         </div>
 
         <div className="modal-foot">
-          <button className="btn" onClick={onClose}>Cancel</button>
-          <button className="btn btn-primary" onClick={save}>Save</button>
+          <span className="subtle" style={{ fontSize: "var(--text-xs)", marginRight: "auto" }}>Changes are saved automatically.</span>
+          <button className="btn btn-primary" onClick={onClose}>Done</button>
         </div>
       </div>
     </div>
