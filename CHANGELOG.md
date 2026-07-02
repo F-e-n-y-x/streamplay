@@ -46,11 +46,6 @@ Bundled bug-fix + improvement release.
 - Unused Puppeteer/Chromium fallback and its dependencies (removes Node 22
   `EBADENGINE` install warnings). FlareSolverr is the Cloudflare solver.
 
-### Security
-- Do **not** self-host `Sherwoodweedy598/MiruroAPI` or `keplerking100/TatakaiAPI`:
-  both are malicious forks shipping a Lua-loader infostealer disguised as a
-  downloadable "installer." Nothing from them is used in this project.
-
 ## 1.0.0
 
 - Initial release: self-hosted movie / TV / anime streaming aggregator (Express +
