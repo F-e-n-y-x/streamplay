@@ -177,7 +177,6 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
   const [error, setError] = useState<string | null>(null);
   const [ended, setEnded] = useState(false);
   const [ccIndex, setCcIndex] = useState(-1);
-  const [autoMuted, setAutoMuted] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetTab, setSheetTab] = useState("");
   // Swipe-down-to-dismiss for the options bottom sheet (mobile).
@@ -484,8 +483,6 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
     else el.pause();
   }, []);
 
-  const unmute = () => { const el = video.current; if (el) { el.muted = false; setMuted(false); } setAutoMuted(false); };
-
   const seekBy = useCallback((delta: number) => {
     const el = video.current;
     if (!el) return;
@@ -671,11 +668,6 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
 
       <TorrentStats url={source.url} />
 
-
-      {autoMuted && playing && (
-        <button className="unmute-pill" onClick={unmute}><VolumeX size={14} /> Muted — click to unmute</button>
-      )}
-
       <div className="center">
         {error ? null : loading && !playing ? (
           <div className="spinner" />
@@ -734,7 +726,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
           <button aria-label="Back 10 seconds" title="Back 10s (←)" onClick={() => seekBy(-10)}><Rewind10 size={20} /></button>
           <button aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>{playing ? <Pause size={20} /> : <Play size={20} />}</button>
           <button aria-label="Forward 10 seconds" title="Forward 10s (→)" onClick={() => seekBy(10)}><Forward10 size={20} /></button>
-          <button className="mute-btn" aria-label={muted ? "Unmute" : "Mute"} onClick={() => { if (video.current) video.current.muted = !video.current.muted; setAutoMuted(false); }}>{muted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}</button>
+          <button className="mute-btn" aria-label={muted ? "Unmute" : "Mute"} onClick={() => { if (video.current) video.current.muted = !video.current.muted; }}>{muted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}</button>
           <input className="vol" type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume} onChange={(e) => { if (video.current) { video.current.volume = Number(e.target.value); video.current.muted = false; } }} aria-label="Volume" />
           <span className="time">{fmt(current)} / {fmt(duration)}</span>
           <span className="grow" />
