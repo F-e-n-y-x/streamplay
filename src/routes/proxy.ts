@@ -14,13 +14,25 @@ import { guardUrl, ssrfAgents } from '../utils/ssrf';
  * of) an internal address is refused at connect time — not just at guardUrl.
  * The WARP fallback egresses through Cloudflare, which can't reach the LAN.
  */
+// Re-validate every redirect hop. On the direct branch the guarded DNS lookup already
+// rejects internal targets at connect time, but the WARP fallback resolves DNS remotely
+// through the SOCKS proxy, so that lookup never runs there — a 302 to an internal literal
+// host would otherwise be followed unchecked. guardUrl on each hop closes that gap on both
+// branches. ('bad url' from a reconstruction hiccup is ignored so legit redirects aren't
+// broken; only an explicit blocked-host/scheme aborts.)
+const guardRedirect = (options: any): void => {
+    const href = options.href || `${options.protocol || 'https:'}//${options.host || options.hostname || ''}${options.path || ''}`;
+    const blocked = guardUrl(href);
+    if (blocked && blocked !== 'bad url') throw new Error(`blocked redirect: ${blocked}`);
+};
+
 async function fetchUpstream(url: string, config: AxiosRequestConfig): Promise<AxiosResponse> {
     try {
-        return await axios.get(url, { ...config, ...ssrfAgents() });
+        return await axios.get(url, { ...config, ...ssrfAgents(), beforeRedirect: guardRedirect });
     } catch (e) {
         const agent = proxyWarpAgent();
         if (!agent) throw e;
-        return await axios.get(url, { ...config, httpAgent: agent, httpsAgent: agent });
+        return await axios.get(url, { ...config, httpAgent: agent, httpsAgent: agent, beforeRedirect: guardRedirect });
     }
 }
 
