@@ -90,6 +90,28 @@ All settings are environment variables (see [`.env.example`](.env.example)):
 
 ---
 
+## Security & exposing your instance
+
+StreamPlay is built for **personal, self-hosted use on a trusted network** (your LAN, a
+Tailscale/VPN, or behind an authenticating reverse proxy). Its API is intentionally
+**unauthenticated** for that setting:
+
+- **Sync rooms** (`/api/sync/:code/*`) are keyed only by the sync code — anyone who can reach the
+  server *and* knows a code can read/write that room's history/favourites. The `/bulk` endpoint
+  stores whatever it's sent, with no per-room size cap (room *count* is capped).
+- **The playback proxy** (`/api/proxy?url=…`) will fetch and stream arbitrary external URLs. It is
+  **SSRF-guarded** — requests that resolve to private/loopback/link-local/metadata addresses are
+  refused, and every redirect hop is re-checked — so it cannot reach your LAN, but on a public
+  instance it is an open forward-proxy others could borrow.
+- **CORS** is open (`*`), so any origin can call the API.
+
+**Do not expose the port directly to the public internet without an auth layer** (a reverse proxy
+with Basic Auth / OAuth, or a private network). For a semi-public instance you can lock down the
+sensitive write/diagnostic endpoints with tokens:
+
+- `ADMIN_TOKEN` — required to change the runtime Torznab indexer config (`/api/config/torznab`).
+- `DEBUG_TOKEN` — required to use the single-provider diagnostic (`/api/debug/provider`).
+
 ## API
 
 The web client is served at `/`; the JSON/SSE API lives under `/api`.
