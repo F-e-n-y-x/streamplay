@@ -89,6 +89,11 @@ genuinely robust. There are **no Critical or High issues.** Findings are Medium 
   player, and the two libraries overlap heavily in capability.
 - **Proposed fix:** Confirm whether both are actually needed at runtime; if hls.js (or native HLS on
   Safari) covers the real source set, dropping Shaka removes ~209 kB gz. Investigate before removing.
+- **RESOLUTION (Phase 2): no action — the premise was overstated.** On closer inspection Shaka is
+  already **lazy-loaded**: hls.js is the primary engine (`Player.tsx:456`) and Shaka is only fetched via
+  a dynamic `import()` as a fallback when hls.js hits a fatal error (`Player.tsx:391,400`). The build
+  confirms it's a separate chunk most sessions never download, so there's no upfront cost to remove, and
+  dropping it would only lose DRM/codec fallback coverage. Left as-is.
 
 ### L2 — Dead "auto-muted" UI path in the player
 - **Where:** `client/src/components/Player.tsx:180` (`useState(false)`), `:675` (`{autoMuted && …}` pill),
@@ -120,6 +125,10 @@ genuinely robust. There are **no Critical or High issues.** Findings are Medium 
   keys are correctly env-only. So this is informational, not a secret leak.
 - **Proposed fix:** None required for correctness. Optionally move to env for rotation. **Do not**
   treat as a credential-exposure incident.
+- **RESOLUTION (Phase 2): intentionally not changed.** Moving these to env gives no real security
+  benefit: to keep the providers working when the env var is unset, the current value must remain as a
+  committed default — so it stays in the repo/history either way. Env-with-committed-default is pure
+  churn across 7 files for zero benefit, so it was skipped (revisit only if you want rotation hooks).
 
 ### L6 — SSRF guard not re-applied on the WARP-fallback fetch branch
 - **Where:** `src/routes/proxy.ts:17-25` (`fetchUpstream`) — the WARP retry uses `proxyWarpAgent()`
@@ -174,6 +183,22 @@ Since there are no Critical/High items, I suggest this order — **all low-risk,
 3. **M3/M4** are **documentation/behavior decisions** — I will **not** change API behavior without your explicit go-ahead; tell me if you want the deployment note, the `ADMIN_TOKEN` gate, or nothing.
 4. **L1** (drop Shaka) and **L5/L7** (keys→env, add lint/tests) are **suggestions** I'd rather confirm scope on first.
 
-**Stopping here for your approval before modifying any code (per the Phase-2 gate).**
-Reply with which items to fix (e.g. "do M1, M2, L2–L4, L6") and I'll proceed one issue at a time,
-re-running build + type-check and committing after each.
+---
+
+## Phase 2 — resolution (completed)
+
+All fixes landed on branch `audit-fixes`, one commit each, build + type-check green throughout.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| M1 (404 route) | ✅ Fixed | catch-all route + NotFound; verified in-browser |
+| M2 (`.note` mobile) | ✅ Fixed | `.note` → block; verified at 360 & 768px |
+| M3 (sync bound) | ✅ Hardened | per-room 10k entry cap + eviction (Express already caps bodies at ~100kb). Sync UX unchanged — **no forced auth** added (that would break personal multi-device use); see README for public-exposure guidance |
+| M4 (open proxy / CORS) | 📝 Documented | README "Security & exposing your instance" section; no behavior change (as agreed) |
+| L2 (dead mute code) | ✅ Removed | |
+| L3 (stale health pill) | ✅ Fixed | polls every 60s |
+| L4 (`post` error bodies) | ✅ Fixed | keeps JSON `{ok,error}`, throws clean status on non-JSON failure |
+| L6 (SSRF WARP fallback) | ✅ Hardened | `beforeRedirect` guard on both branches; verified internal still 403s + real HLS still proxies |
+| L7 (no tests) | ✅ Added | 13 unit tests (SSRF guard + HLS/subtitle rewriters) on Node's built-in runner via tsx (**zero new deps**) + CI workflow. ESLint deliberately omitted to avoid churn on existing intentional `eslint-disable` usage |
+| L1 (dual HLS engines) | ⏭️ No-op | premise overstated — Shaka is already lazy-loaded (fallback-only dynamic import); see L1 resolution above |
+| L5 (keys → env) | ⏭️ Skipped | no real benefit; committed default must remain — see L5 resolution above |
