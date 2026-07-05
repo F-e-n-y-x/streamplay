@@ -26,7 +26,17 @@ async function post<T>(path: string, body: unknown, token?: string): Promise<T> 
     headers: { "Content-Type": "application/json", ...(token ? { "X-Admin-Token": token } : {}) },
     body: JSON.stringify(body),
   });
-  return (await res.json()) as T;
+  // Keep a JSON error body (endpoints return `{ ok:false, error }` on a 4xx so the UI can
+  // show the reason), but if a failure comes back as non-JSON (e.g. a 500 HTML page) surface
+  // a clean status error instead of throwing an opaque JSON parse error.
+  const text = await res.text();
+  let data: unknown = null;
+  try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON body */ }
+  if (data == null) {
+    if (!res.ok) throw new Error(`API ${res.status} for ${path}`);
+    return null as T;
+  }
+  return data as T;
 }
 
 export interface TorznabInfo { kind: string; url: string; hasKey: boolean; source: "ui" | "env" }
