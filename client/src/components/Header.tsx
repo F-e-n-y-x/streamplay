@@ -26,7 +26,15 @@ export default function Header() {
   // Hide-on-scroll for the SECOND bar applies ONLY on the player page.
   const onWatch = pathname.startsWith("/watch");
 
-  useEffect(() => { api.health().then(setHealth).catch(() => setHealth(null)); }, []);
+  // Poll health so the Live/Fallback pill reflects TMDB going down (or recovering)
+  // instead of freezing at whatever it was on first mount.
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.health().then((h) => { if (alive) setHealth(h); }).catch(() => { if (alive) setHealth(null); });
+    load();
+    const t = setInterval(load, 60_000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   useEffect(() => { if (searchOpen) overlayInput.current?.focus(); }, [searchOpen]);
 
   // Both bars behave like this:
