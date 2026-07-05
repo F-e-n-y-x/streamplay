@@ -16,6 +16,9 @@ import { createSlug } from '../utils/common';
 export const MultiMoviesProvider: Provider = {
     id: 'multimovies',
     name: 'MultiMovies',
+    // Cloudflare-gated and reuses the solved clearance on a direct admin-ajax POST,
+    // so (in `required` mode) route it through WARP to keep solve + follow-up on one IP.
+    requiresWarp: true,
     invoke: async (data: LinkData): Promise<ExtractorResult> => {
         const result: ExtractorResult = { streams: [], subtitles: [] };
         try {

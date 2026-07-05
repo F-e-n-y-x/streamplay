@@ -32,7 +32,9 @@ export const MoviesModProvider: Provider = {
 
             const hTag = season == null ? 'h4' : 'h3';
             const aTag = season == null ? 'Download' : 'Episode';
-            const sTag = season == null ? '' : `(S0${season}|Season ${season})`;
+            // Zero-pad the season so double-digit seasons match too (S01 … S10, S12).
+            // The old `S0${season}` produced "S010" for season 10 and never matched.
+            const sTag = season == null ? '' : `(S${String(season).padStart(2, '0')}|Season ${season})`;
 
             const res = (await safeGet(href, { cloudflare: true })).document;
 
@@ -52,7 +54,10 @@ export const MoviesModProvider: Provider = {
                     if (link) return;
                     if (res(a).text().includes(aTag)) {
                         const h = res(a).attr('href') || '';
-                        link = h.includes('=') ? h.split('=').pop() || '' : h;
+                        // Take everything AFTER the first '=' (the `?url=<value>` payload).
+                        // `split('=').pop()` was wrong: a base64 value ending in '=='
+                        // padding made pop() return '' and the quality was silently dropped.
+                        link = h.includes('=') ? h.slice(h.indexOf('=') + 1) : h;
                     }
                 });
                 if (!link) continue;

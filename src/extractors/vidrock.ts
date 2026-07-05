@@ -53,7 +53,10 @@ export const VidrockProvider: Provider = {
                 const lang: string = src?.language || 'Unknown';
                 if (!rawUrl || rawUrl === 'null') continue;
 
-                const safeUrl = rawUrl.includes('%') ? decodeURIComponent(rawUrl) : rawUrl;
+                // Decode per-iteration in its own try: a single malformed '%' must
+                // not throw and abort the whole loop (losing every later source).
+                let safeUrl = rawUrl;
+                if (rawUrl.includes('%')) { try { safeUrl = decodeURIComponent(rawUrl); } catch { safeUrl = rawUrl; } }
                 const displayName = `Vidrock [${key}] ${lang}`;
 
                 if (safeUrl.includes('/playlist/')) {

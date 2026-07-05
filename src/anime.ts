@@ -1,5 +1,5 @@
-import axios from 'axios';
-import { AnimeIds } from './types';
+import net from './utils/net';
+import { AnimeIds, LinkData } from './types';
 
 /**
  * Resolve a TMDB movie/show to anime provider IDs.
@@ -17,13 +17,34 @@ const SEARCH_QUERY = `
 query ($search: String, $type: MediaType, $format: [MediaFormat]) {
   Page(page: 1, perPage: 10) {
     media(search: $search, type: $type, format_in: $format, sort: SEARCH_MATCH) {
-      id idMal seasonYear format
-      title { romaji english }
+      id idMal seasonYear format synonyms
+      title { romaji english native }
     }
   }
 }`;
 
-interface AniHit { id: number; idMal?: number; seasonYear?: number }
+interface AniHit { id: number; idMal?: number; seasonYear?: number; title?: { romaji?: string; english?: string; native?: string }; synonyms?: string[] }
+
+/** Ordered, de-duplicated alt titles from an AniList hit (romaji/english/native + synonyms). */
+const titlesOf = (hit: AniHit): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of [hit.title?.romaji, hit.title?.english, hit.title?.native, ...(hit.synonyms || [])]) {
+        const s = (t || '').trim();
+        const k = s.toLowerCase();
+        // Skip pure-ASCII-less duplicates and empties; keep native (JP) too — some
+        // sites (AniZone via orgTitle) match on it.
+        if (s && !seen.has(k)) { seen.add(k); out.push(s); }
+    }
+    return out;
+};
+
+// Cache resolved ids per TMDB title. AniList (~90 req/min) and MALSync throttle
+// hard, and the SSE route resolves the same title on every /sources request, so
+// without this a rewatch or a quick retry can rate-limit the whole anime chain.
+const idCache = new Map<string, AnimeIds>();
+const CACHE_TTL = 6 * 60 * 60 * 1000; // 6h
+const cacheAt = new Map<string, number>();
 
 async function anilistSearch(title: string, isMovie: boolean, year?: number): Promise<AniHit | null> {
     try {
@@ -32,7 +53,7 @@ async function anilistSearch(title: string, isMovie: boolean, year?: number): Pr
             type: 'ANIME',
             format: isMovie ? ['MOVIE'] : ['TV', 'ONA', 'OVA', 'TV_SHORT'],
         };
-        const res = await axios.post(ANILIST, { query: SEARCH_QUERY, variables },
+        const res = await net.post(ANILIST, { query: SEARCH_QUERY, variables },
             { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
         const media: AniHit[] = res.data?.data?.Page?.media ?? [];
         if (!media.length) return null;
@@ -42,21 +63,38 @@ async function anilistSearch(title: string, isMovie: boolean, year?: number): Pr
     } catch { return null; }
 }
 
-export const resolveAnimeIds = async (tmdbId: number, type: 'movie' | 'tv', title?: string, date?: string): Promise<AnimeIds> => {
+export const resolveAnimeIds = async (tmdbId: number, type: 'movie' | 'tv', title?: string, date?: string, orgTitle?: string): Promise<AnimeIds> => {
+    const cacheKey = `${type}:${tmdbId}`;
+    const cachedTs = cacheAt.get(cacheKey);
+    if (cachedTs && Date.now() - cachedTs < CACHE_TTL) {
+        const hit = idCache.get(cacheKey);
+        if (hit) return hit;
+    }
+
     const year = date ? parseInt(String(date).slice(0, 4)) || undefined : undefined;
     const isMovie = type === 'movie';
 
     let anilistId: number | undefined;
     let malId: number | undefined;
+    let titles: string[] | undefined;
 
-    // 1) TMDB → AniList by title (with a year hint for disambiguation).
-    const hit = title ? await anilistSearch(title, isMovie, year) : null;
-    if (hit) { anilistId = hit.id; malId = hit.idMal ?? undefined; }
+    // 1) TMDB → AniList. Try several forms of the name: the full TMDB English title
+    //    ("Haganai: I Don't Have Many Friends") frequently returns 0 on AniList, while
+    //    a colon-trimmed form ("Haganai") or the original/Japanese title match and give
+    //    us the romaji ("Boku wa Tomodachi ga Sukunai") the anime sites index by.
+    const candidates: string[] = [];
+    const addCand = (s?: string) => { const t = (s || '').trim(); if (t && !candidates.some((c) => c.toLowerCase() === t.toLowerCase())) candidates.push(t); };
+    addCand(title);
+    addCand(title?.split(/[:\-–—(]/)[0]);
+    addCand(orgTitle);
+    let hit: AniHit | null = null;
+    for (const q of candidates) { hit = await anilistSearch(q, isMovie, year); if (hit) break; }
+    if (hit) { anilistId = hit.id; malId = hit.idMal ?? undefined; titles = titlesOf(hit); }
 
     // 2) Backfill MAL id via ani.zip (which *does* accept anilist_id) if needed.
     if (anilistId && !malId) {
         try {
-            const r = await axios.get(`https://api.ani.zip/mappings?anilist_id=${anilistId}`, { timeout: 10000 });
+            const r = await net.get(`https://api.ani.zip/mappings?anilist_id=${anilistId}`, { timeout: 10000 });
             malId = r.data?.mappings?.mal_id ?? undefined;
         } catch { /* ignore */ }
     }
@@ -67,7 +105,7 @@ export const resolveAnimeIds = async (tmdbId: number, type: 'movie' | 'tv', titl
     let animepaheUrl: string | undefined;
     if (malId) {
         try {
-            const r = await axios.get(`${MALSYNC}/mal/anime/${malId}`, { timeout: 10000 });
+            const r = await net.get(`${MALSYNC}/mal/anime/${malId}`, { timeout: 10000 });
             const sites = r.data?.Sites ?? r.data?.sites;
             if (sites) {
                 if (sites.Zoro) zoroIds = Object.keys(sites.Zoro);
@@ -77,5 +115,27 @@ export const resolveAnimeIds = async (tmdbId: number, type: 'movie' | 'tv', titl
         } catch { /* ignore */ }
     }
 
-    return { malId, anilistId, zoroIds, kaasSlug, animepaheUrl };
+    const ids: AnimeIds = { malId, anilistId, zoroIds, kaasSlug, animepaheUrl, titles };
+    // Only cache a resolved hit; a miss (all-undefined) should be retried next time
+    // in case AniList/MALSync were transiently down.
+    if (anilistId || malId) { idCache.set(cacheKey, ids); cacheAt.set(cacheKey, Date.now()); }
+    return ids;
+};
+
+/**
+ * Ordered, de-duplicated list of titles an anime provider should try when searching:
+ * TMDB's title/original, PLUS the AniList romaji/english/native/synonyms. This is the
+ * fix for "the anime exists on the site but the provider finds nothing" — TMDB's
+ * English name (e.g. "Haganai: I Don't Have Many Friends") rarely matches a site that
+ * indexes by romaji ("Boku wa Tomodachi ga Sukunai") or a short title ("Haganai").
+ */
+export const animeSearchTitles = (data: LinkData): string[] => {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of [data.title, data.orgTitle, data.jpTitle, ...(data.animeIds?.titles || [])]) {
+        const s = (t || '').trim();
+        const k = s.toLowerCase();
+        if (s && !seen.has(k)) { seen.add(k); out.push(s); }
+    }
+    return out;
 };

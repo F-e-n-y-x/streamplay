@@ -16,6 +16,9 @@ export default function HeroSlider({ slides }: { slides: Card[] }) {
   }, [n]);
 
   if (!n) return null;
+  // Clamp the active index: when the slide set shrinks (e.g. Home refetches after a
+  // settings change) a stale `i >= n` would render a blank hero until the next tick.
+  const cur = i % n;
   const go = (d: number) => setI((x) => (x + d + n) % n);
 
   // Swipe / drag to change slide (works for touch + mouse; a real click doesn't move far enough to trigger).
@@ -37,7 +40,7 @@ export default function HeroSlider({ slides }: { slides: Card[] }) {
       onTouchEnd={(e) => onUp(e.changedTouches[0].clientX)}
     >
       {slides.map((s, idx) => (
-        <div key={`${s.type}-${s.id}`} className={`hero-slide ${idx === i ? "active" : ""}`} aria-hidden={idx !== i}>
+        <div key={`${s.type}-${s.id}`} className={`hero-slide ${idx === cur ? "active" : ""}`} aria-hidden={idx !== cur}>
           <div className="bg" style={{ backgroundImage: `url(${s.backdropUrl})` }} />
           <div className="scrim" />
           <div className="content">
@@ -59,7 +62,7 @@ export default function HeroSlider({ slides }: { slides: Card[] }) {
       {n > 1 && (
         <div className="hero-dots">
           {slides.map((_, idx) => (
-            <button key={idx} className={`hero-dot ${idx === i ? "active" : ""}`} onClick={() => setI(idx)} aria-label={`Go to slide ${idx + 1}`} />
+            <button key={idx} className={`hero-dot ${idx === cur ? "active" : ""}`} onClick={() => setI(idx)} aria-label={`Go to slide ${idx + 1}`} />
           ))}
         </div>
       )}

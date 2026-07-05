@@ -1,4 +1,4 @@
-import axios from 'axios';
+import net from './net';
 
 /**
  * Helpers for the `enc-dec.app` service that the StreamPlay providers use to
@@ -60,13 +60,13 @@ const gated = async <T>(fn: () => Promise<T>): Promise<T | null> => {
 /** GET an enc-dec endpoint and return the parsed JSON body (`{ status, result, ... }`). */
 export const encDecGet = (path: string, headers?: Record<string, string>): Promise<any | null> =>
     gated(async () => {
-        const res = await axios.get(`${ENC_DEC_API}/${path}`, { headers, timeout: 15000 });
+        const res = await net.get(`${ENC_DEC_API}/${path}`, { headers, timeout: 15000 });
         return res.data;
     });
 
 /** POST a JSON body to an enc-dec endpoint and return the parsed JSON body. */
 export const encDecPost = (path: string, body: any, headers?: Record<string, string>): Promise<any | null> =>
     gated(async () => {
-        const res = await axios.post(`${ENC_DEC_API}/${path}`, body, { headers, timeout: 15000 });
+        const res = await net.post(`${ENC_DEC_API}/${path}`, body, { headers, timeout: 15000 });
         return res.data;
     });

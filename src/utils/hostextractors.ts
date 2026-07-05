@@ -16,6 +16,7 @@
  *     embedwish, mwish, swhoi, sfastwish, ridoo, streamruby, etc.
  */
 
+import { AsyncLocalStorage } from 'async_hooks';
 import { app } from './http';
 import { getIndexQuality, qualityLabel } from './common';
 import { USER_AGENT } from './encdec';
@@ -39,7 +40,11 @@ const emptyResult = (): HostResult => ({ streams: [], subtitles: [] });
  * Kotlin `getPacked` helper.
  */
 export const getPacked = (text: string): string | null => {
-    const m = /(eval\(function\(p,a,c,k,e,d\)\{.*?\}\([^]*?\)\))/.exec(text);
+    // Cap the scanned length: the lazy `.*?`/`[^]*?` can backtrack heavily on a large
+    // body with a near-match, stalling the event loop (ReDoS). A packed payload we care
+    // about is always near the top of a player script, well within this window.
+    const scan = text.length > 512 * 1024 ? text.slice(0, 512 * 1024) : text;
+    const m = /(eval\(function\(p,a,c,k,e,d\)\{.*?\}\([^]*?\)\))/.exec(scan);
     return m ? m[1] : null;
 };
 
@@ -55,7 +60,9 @@ export const getAndUnpack = (input: string): string => {
 
     // Pull out the four arguments to the inner function call:
     //   }('<payload>', <radix>, <count>, '<words>'.split('|'), 0, {}))
-    const m = /\}\s*\(\s*'(.*?)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'(.*?)'\.split\('\|'\)/s.exec(packed);
+    // Escape-aware payload/words captures ((?:\\.|[^'\\])*): a plain `'(.*?)'` stops at
+    // the first quote and truncates payloads that legitimately contain an escaped `\'`.
+    const m = /\}\s*\(\s*'((?:\\.|[^'\\])*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:\\.|[^'\\])*)'\.split\('\|'\)/s.exec(packed);
     if (!m) return '';
 
     let payload = m[1];
@@ -252,15 +259,19 @@ const resolveHubCloud = async (url: string, referer?: string): Promise<HostResul
             } else if (label.includes('download file')) {
                 push('Download File', link);
             } else if (label.includes('buzzserver')) {
-                // BuzzServer answers the real link via an HX-Redirect header.
+                // BuzzServer answers the real link via an HX-Redirect response header.
+                // Stop at the 3xx (maxRedirects:0) so the header survives, then read it.
                 try {
                     const resp = await app.get(`${link}/download`, {
                         referer: link,
                         headers: { 'User-Agent': USER_AGENT },
+                        maxRedirects: 0,
                     });
-                    const dlink = resp.text; // header not exposed; best-effort below
-                    const hx = /hx-redirect"?\s*:\s*"?([^"\n]+)/i.exec(dlink);
-                    if (hx) push('BuzzServer', hx[1]);
+                    const base = getBaseUrl(link);
+                    const hxHeader = resp.responseHeaders['hx-redirect'] || resp.responseHeaders['location'] || '';
+                    // Fallback: some deployments echo it in the body.
+                    const hx = hxHeader || /hx-redirect"?\s*:\s*"?([^"\n]+)/i.exec(resp.text)?.[1] || '';
+                    if (hx) push('BuzzServer', /^https?:/i.test(hx) ? hx : absolute(base, hx));
                 } catch { /* ignore */ }
             } else if (
                 label.includes('pixeldra') ||
@@ -329,9 +340,13 @@ const resolveGDFlix = async (url: string, referer?: string): Promise<HostResult>
                 });
             } else if (t.includes('instant dl')) {
                 try {
-                    const resp = await app.get(link, { referer: newUrl });
-                    const loc = /location"?\s*:\s*"?([^"\n]+)/i.exec(resp.text);
-                    const instant = loc && loc[1].includes('url=') ? loc[1].split('url=')[1] : '';
+                    // Instant-DL 302s to `...?url=<file>`. Stop at the 3xx so the
+                    // Location header survives (auto-follow would swallow it).
+                    const resp = await app.get(link, { referer: newUrl, maxRedirects: 0 });
+                    const locHeader = resp.responseHeaders['location'] || '';
+                    const locBody = /location"?\s*:\s*"?([^"\n]+)/i.exec(resp.text)?.[1] || '';
+                    const loc = locHeader || locBody;
+                    const instant = loc.includes('url=') ? loc.split('url=')[1] : (locHeader && /^https?:/i.test(locHeader) ? locHeader : '');
                     if (instant) {
                         result.streams.push({
                             server: 'GDFlix [Instant Download]',
@@ -590,12 +605,34 @@ const resolveHblinks = async (url: string): Promise<HostResult> => {
  * @param url     the embed / file-host URL collected by a multi-provider
  * @param referer optional referer to send with the host requests
  */
+// Recursion guard: several resolvers (vcloud, gdmirrorbot, hblinks, hubdrive)
+// re-enter loadExtractor for their child links. A page that links back to itself
+// — by accident or maliciously — would otherwise fan out without end, holding a
+// request slot and piling up FlareSolverr solves (and could blow the stack). We
+// carry a depth + visited-set through the async context (like reqctx) so nested
+// calls are bounded without threading params through every resolver signature.
+interface ExtractorCtx { depth: number; visited: Set<string> }
+const extractorAls = new AsyncLocalStorage<ExtractorCtx>();
+const MAX_EXTRACTOR_DEPTH = 4;
+
 export const loadExtractor = async (url: string, referer?: string): Promise<HostResult> => {
     if (!url || !/^https?:/i.test(url)) return emptyResult();
 
     const host = getHost(url);
     if (!host) return emptyResult();
 
+    // depth / cycle guard (see ExtractorCtx above)
+    const parent = extractorAls.getStore();
+    const depth = (parent?.depth ?? 0) + 1;
+    const visited = parent?.visited ?? new Set<string>();
+    if (depth > MAX_EXTRACTOR_DEPTH) { console.error(`[loadExtractor] max depth ${MAX_EXTRACTOR_DEPTH} at ${host}`); return emptyResult(); }
+    const key = url.split('#')[0];
+    if (visited.has(key)) { console.error(`[loadExtractor] cycle: already resolving ${host}`); return emptyResult(); }
+    visited.add(key);
+    return extractorAls.run({ depth, visited }, () => loadExtractorInner(url, host, referer));
+};
+
+const loadExtractorInner = async (url: string, host: string, referer?: string): Promise<HostResult> => {
     try {
         if (host.includes('hubcloud')) {
             // dynamic-domain hosts may rotate; the path/shape stays the same.

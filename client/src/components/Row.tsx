@@ -1,10 +1,10 @@
-import { useRef } from "react";
 import type { Card } from "../lib/types";
 import PosterCard from "./PosterCard";
+import { useDragScroll } from "../lib/useDragScroll";
 import { ChevronLeft, ChevronRight } from "./icons";
 
 export default function Row({ title, items }: { title: string; items: Card[] }) {
-  const track = useRef<HTMLDivElement>(null);
+  const track = useDragScroll<HTMLDivElement>();   // click-and-drag to scroll (desktop)
   if (!items.length) return null;
 
   const scroll = (dir: number) => track.current?.scrollBy({ left: dir * 600, behavior: "smooth" });

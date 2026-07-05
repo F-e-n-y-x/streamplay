@@ -12,12 +12,21 @@ services:
       TMDB_API_KEY: ${TMDB_API_KEY:?set TMDB_API_KEY in your .env}
       FLARESOLVERR_URL: http://flaresolverr:8191/
       WYZIE_KEY: ${WYZIE_KEY:-}
+      # TheTVDB — better cartoon (production/DVD order) + Indian/international series
+      # data. Free key at thetvdb.com → Dashboard → API. See .env.example.
+      TVDB_API_KEY: ${TVDB_API_KEY:-}
+      TVDB_PIN: ${TVDB_PIN:-}
       PROVIDER_TIMEOUT_MS: ${PROVIDER_TIMEOUT_MS:-45000}
       SYNC_DATA_FILE: /app/data/sync-data.json
       # DNS-over-HTTPS — set DOH_ENABLED=true in your .env if provider hosts fail
       # to resolve on your network (proxy 502s mentioning DNS). See .env.example.
       DOH_ENABLED: ${DOH_ENABLED:-false}
       DOH_PROVIDER: ${DOH_PROVIDER:-google}
+      # Cloudflare WARP proxy (opt-in) — beat IP blocks / DNS poisoning. Uncomment
+      # the `warp` + `flaresolverr-warp` services below, then set WARP_MODE in .env.
+      WARP_MODE: ${WARP_MODE:-off}
+      WARP_PROXY_URL: ${WARP_PROXY_URL:-}
+      WARP_FLARESOLVERR_URL: ${WARP_FLARESOLVERR_URL:-}
       # Optional anime aggregator — uncomment the `consumet` service below to enable.
       CONSUMET_URL: ${CONSUMET_URL:-}
     volumes:
@@ -44,5 +53,45 @@ services:
     # ports:
     #   - "8191:8191"
 
+  # ── OPTIONAL: Cloudflare WARP proxy ──────────────────────────────────────────
+  # Uncomment this whole block to give StreamPlay a clean Cloudflare WARP egress IP
+  # (fixes AnimePahe/Kwik "your IP is banned", ISP DNS poisoning, geo-blocks). Then
+  # in your .env set WARP_MODE (off|required|fallback|all) and (both via the `warp`
+  # container, since flaresolverr-warp shares warp's network namespace):
+  #   WARP_PROXY_URL=socks5://warp:1080
+  #   WARP_FLARESOLVERR_URL=http://warp:8191/
+  #
+  # warp:
+  #   image: caomingjun/warp:latest        # https://github.com/cmj2002/warp-docker
+  #   container_name: warp
+  #   restart: unless-stopped
+  #   environment:
+  #     WARP_SLEEP: 2
+  #   cap_add:
+  #     - MKNOD
+  #     - AUDIT_WRITE
+  #     - NET_ADMIN
+  #   sysctls:
+  #     - net.ipv6.conf.all.disable_ipv6=0
+  #     - net.ipv4.conf.all.src_valid_mark=1
+  #   volumes:
+  #     - warp-data:/var/lib/cloudflare-warp
+  #
+  # A SECOND FlareSolverr whose browser egresses THROUGH warp (shares warp's network
+  # namespace). This is the instance that solves Kwik with the clean IP. Because it
+  # shares warp's netns, other services reach it at http://warp:8191/ (NOT
+  # flaresolverr-warp). warp must therefore not also bind 8191 elsewhere.
+  # flaresolverr-warp:
+  #   image: ghcr.io/flaresolverr/flaresolverr:latest
+  #   container_name: flaresolverr-warp
+  #   restart: unless-stopped
+  #   network_mode: service:warp
+  #   environment:
+  #     LOG_LEVEL: info
+  #     TZ: UTC
+  #   depends_on:
+  #     - warp
+
 volumes:
   streamplay-data:
+  # warp-data:

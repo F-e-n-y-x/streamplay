@@ -1,25 +1,18 @@
-import { useEffect, useState } from "react";
-import { api } from "../lib/api";
-import type { Card, HomeRow } from "../lib/types";
+import type { Card } from "../lib/types";
 import Row from "../components/Row";
 import HeroSlider from "../components/HeroSlider";
 import ContinueCard from "../components/ContinueCard";
 import { useStore, continueWatching } from "../lib/store";
-import { useSettings } from "../lib/settings";
+import { useHome } from "../lib/queries";
+import { useDragScroll } from "../lib/useDragScroll";
 
 export default function Home() {
-  const [rows, setRows] = useState<HomeRow[] | null>(null);
-  const [err, setErr] = useState<string | null>(null);
   useStore();
-  const { adult, lang } = useSettings();
   const cw = continueWatching();
+  const cwTrack = useDragScroll<HTMLDivElement>();
+  const { data: rows, error } = useHome();
 
-  useEffect(() => {
-    setRows(null); setErr(null);
-    api.home().then(setRows).catch((e) => setErr(String(e)));
-  }, [adult, lang]);
-
-  if (err) return <div className="container"><div className="empty">Couldn't reach the backend.<br /><span className="subtle">{err}</span></div></div>;
+  if (error) return <div className="container"><div className="empty">Couldn't reach the backend.<br /><span className="subtle">{String(error)}</span></div></div>;
   if (!rows) return <HomeSkeleton />;
 
   // top backdrops across rows for the slider (deduped)
@@ -41,7 +34,7 @@ export default function Home() {
       {cw.length > 0 && (
         <section className="section">
           <div className="section-head"><h2>Continue Watching</h2></div>
-          <div className="row-track">{cw.map((h) => <ContinueCard key={h.key} h={h} />)}</div>
+          <div className="row-track" ref={cwTrack}>{cw.map((h) => <ContinueCard key={h.key} h={h} />)}</div>
         </section>
       )}
 

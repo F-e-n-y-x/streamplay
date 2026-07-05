@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { sourcesStreamUrl } from "../lib/api";
 import { copyText } from "../lib/clipboard";
-import { getSettings } from "../lib/settings";
+import { getSettings, useSettings, updateSettings } from "../lib/settings";
 import type { ProviderRun, StreamLink, SubtitleTrack } from "../lib/types";
 import type { PlayerSource } from "./Player";
-import { Check, ChevronRight, Copy } from "./icons";
+import ProviderPrefsEditor from "./ProviderPrefsEditor";
+import { Check, ChevronRight, Copy, RotateCcw, SlidersHorizontal, Zap } from "./icons";
 
 /** Decode the original stream URL from a /api/proxy?url=<b64url> link (for external/VLC use). */
 function originalUrl(proxied: string): string {
@@ -49,17 +50,32 @@ function parse(link: StreamLink, providerName: string): Parsed {
   return { ...link, variant, audio: detectAudio(name), q, bucket: bucketOf(q), external: /\bvlc\b/i.test(name) };
 }
 
+// For anime, these are the PRIMARY providers — the ones we want to load and play
+// from first. They're registered first server-side (so they head the list), and
+// the autoplay below waits for them before falling back to a generic source.
+const PRIMARY_ANIME = new Set(["allanime", "anizone", "animepahe", "animeworld"]);
+const isTerminal = (state?: string) => state === "found" || state === "empty" || state === "failed";
+
 export default function SourcesPanel({
-  type, id, season, episode, onPlay, currentUrl, failedUrl,
+  type, id, season, episode, isAnime, kind, onPlay, currentUrl, failedUrl, failSeq,
 }: {
   type: "movie" | "tv";
   id: number;
   season?: number;
   episode?: number;
+  isAnime?: boolean;
+  /** Content kind for provider prefs / sticky: anime | movie | series | asian. */
+  kind: string;
   onPlay: (s: PlayerSource, subs: SubtitleTrack[]) => void;
   currentUrl: string | null;
   failedUrl?: string | null;
+  /** Increments on every playback failure so re-failing the SAME url still advances. */
+  failSeq?: number;
 }) {
+  const liveSettings = useSettings();
+  const pref = liveSettings.providerPrefs[kind] || { order: [] as string[], hidden: [] as string[] };
+  const sticky = liveSettings.stickyProvider[kind];
+  const [editorOpen, setEditorOpen] = useState(false);
   const [order, setOrder] = useState<string[]>([]);
   const [runs, setRuns] = useState<Record<string, ProviderRun>>({});
   const [links, setLinks] = useState<StreamLink[]>([]);
@@ -68,9 +84,11 @@ export default function SourcesPanel({
   const [activeQ, setActiveQ] = useState<Set<string>>(new Set());
   const [activeA, setActiveA] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [showEmpty, setShowEmpty] = useState(false);
   const [failed, setFailed] = useState<Set<string>>(new Set());
   const [copied, setCopied] = useState<string | null>(null);
   const [linkMenu, setLinkMenu] = useState<{ url: string; top: number; right: number } | null>(null);
+  const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     if (!linkMenu) return;
@@ -85,13 +103,8 @@ export default function SourcesPanel({
   const didInitFilter = useRef(false);
   const playableRef = useRef<Parsed[]>([]);
 
-  // reset + open SSE whenever the target changes
-  useEffect(() => {
-    setOrder([]); setRuns({}); setLinks([]); setSubs([]); setDone(false);
-    setActiveQ(new Set()); setActiveA(new Set()); setCollapsed({}); setFailed(new Set());
-    autostarted.current = false; didInitFilter.current = false;
-
-    const es = new EventSource(sourcesStreamUrl({ type, id, season, episode }));
+  // Wire the SSE event handlers (shared by the initial scan and the refresh re-scans).
+  function attachListeners(es: EventSource) {
     es.addEventListener("provider", (e) => {
       const r = JSON.parse((e as MessageEvent).data) as ProviderRun;
       setOrder((o) => (o.includes(r.id) ? o : [...o, r.id]));
@@ -107,15 +120,61 @@ export default function SourcesPanel({
       setSubs((s) => (s.some((x) => x.url === sub.url) ? s : [...s, sub]));
     });
     es.addEventListener("done", () => { setDone(true); es.close(); });
-    es.onerror = () => { setDone(true); es.close(); };
+    es.onerror = () => {
+      // EventSource auto-reconnects on a transient blip (readyState === CONNECTING);
+      // only end the scan when it's genuinely closed, so a momentary network hiccup
+      // doesn't abandon every still-pending provider and freeze the list at "scanning".
+      if (es.readyState === EventSource.CLOSED) setDone(true);
+    };
+    esRef.current = es;
+  }
+
+  // tear down any active refresh-scan stream on unmount
+  useEffect(() => () => { esRef.current?.close(); }, []);
+
+  // reset + open SSE whenever the target changes
+  useEffect(() => {
+    setOrder([]); setRuns({}); setLinks([]); setSubs([]); setDone(false);
+    setActiveQ(new Set()); setActiveA(new Set()); setCollapsed({}); setFailed(new Set());
+    autostarted.current = false; didInitFilter.current = false;
+    const es = new EventSource(sourcesStreamUrl({ type, id, season, episode }));
+    attachListeners(es);
     return () => es.close();
-  }, [type, id, season, episode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [type, id, season, episode, liveSettings.torrentMode]);
+
+  // Refresh ONLY the providers that didn't return a source — keep the working ones.
+  function refreshFailed() {
+    const ids = order.filter((pid) => runs[pid]?.state !== "found");
+    if (!ids.length) return;
+    esRef.current?.close();
+    setLinks((l) => l.filter((x) => !ids.includes(x.providerId)));   // drop their stale (empty) results
+    setRuns((m) => { const n = { ...m }; ids.forEach((pid) => { if (n[pid]) n[pid] = { ...n[pid], state: "running" } as ProviderRun; }); return n; });
+    setDone(false);
+    attachListeners(new EventSource(sourcesStreamUrl({ type, id, season, episode, fresh: true, providers: ids })));
+  }
+
+  // Re-scan EVERY provider from scratch (skip cache) — the 5s-hover "Refresh all".
+  function refreshAll() {
+    esRef.current?.close();
+    setOrder([]); setRuns({}); setLinks([]); setSubs([]); setDone(false);
+    setActiveQ(new Set()); setActiveA(new Set()); setCollapsed({}); setFailed(new Set());
+    autostarted.current = false; didInitFilter.current = false;
+    attachListeners(new EventSource(sourcesStreamUrl({ type, id, season, episode, fresh: true })));
+  }
 
   // default quality filter from settings
   useEffect(() => {
     if (didInitFilter.current || !links.length) return;
-    if (settings.quality && settings.quality !== "auto") setActiveQ(new Set([bucketOf(Number(settings.quality))]));
+    if (settings.quality && settings.quality !== "auto") {
+      const bucket = bucketOf(Number(settings.quality));
+      // Only pre-apply the default-quality filter when a source ACTUALLY matches it.
+      // Otherwise a title that isn't available in that quality would show 0 sources
+      // and never autoplay — the user had to notice and clear the filter by hand.
+      if (allParsed.some((s) => s.bucket === bucket)) setActiveQ(new Set([bucket]));
+    }
     didInitFilter.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [links, settings.quality]);
 
   const prefLangs = settings.audioLanguages || [];
@@ -143,20 +202,26 @@ export default function SourcesPanel({
   // are scanned in (no re-sorting by status/quality), so the list doesn't shuffle
   // as results stream in — you can watch each provider get checked in sequence.
   const providers = useMemo(() => {
-    return order.map((pid) => {
+    // Apply this kind's provider prefs: drop hidden ones, and sort pinned providers
+    // to the top in the user's saved order (the rest keep registration/arrival order).
+    const rank = (pid: string) => { const i = pref.order.indexOf(pid); return i >= 0 ? i : pref.order.length + order.indexOf(pid); };
+    const visible = order.filter((pid) => !pref.hidden.includes(pid)).sort((a, b) => rank(a) - rank(b));
+    return visible.map((pid) => {
       const run = runs[pid];
       const items = (byProvider.get(pid) || []).filter(pass);
       const best = items.reduce((m, s) => Math.max(m, s.q), 0);
       return { pid, run, items, best, state: run?.state || "pending" };
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order, runs, byProvider, activeQ, activeA, prefLangs.join(",")]);
+  }, [order, runs, byProvider, activeQ, activeA, prefLangs.join(","), pref.order.join(","), pref.hidden.join(",")]);
 
   const onlineCount = providers.filter((p) => p.state === "found").length;
   const totalSources = allParsed.filter(pass).length;
 
-  // keep an up-to-date ordered list of in-browser-playable sources (m3u8/mp4),
-  // with VLC/external-only sources pushed to the end of the auto-play order
+  // keep an up-to-date ordered list of in-browser-playable sources (m3u8/mp4).
+  // `providers` is already in the effective order (user pref → registration order,
+  // anime providers first by default), so we just preserve that and push VLC/
+  // external-only sources to the very end of the auto-play order.
   playableRef.current = providers.flatMap((p) => p.items)
     .filter((s) => s.type === "m3u8" || s.type === "mp4")
     .sort((a, b) => Number(a.external) - Number(b.external));
@@ -166,13 +231,37 @@ export default function SourcesPanel({
       const rank = (lang: string) => { const i = prefLangs.findIndex((l) => lang?.toLowerCase().includes(l.toLowerCase())); return i < 0 ? 99 : i; };
       return rank(a.lang) - rank(b.lang);
     });
+    // Remember this provider for the kind so the next episode starts from it (sticky).
+    if (kind && p.providerId && liveSettings.stickyProvider[kind] !== p.providerId) {
+      updateSettings({ stickyProvider: { ...liveSettings.stickyProvider, [kind]: p.providerId } });
+    }
     onPlay({ title: p.name || p.variant, url: p.url, type: p.type as PlayerSource["type"], provider: runs[p.providerId]?.name || p.providerId, subtitles: ordered }, ordered);
   }
 
-  // auto-play the first playable source once (respects the Autoplay setting)
+  // auto-play the first playable source once (respects the Autoplay setting).
+  // For anime we hold the autoplay for the primary providers: play the first
+  // primary source as soon as it resolves (AniZone is ~1-2s), and only fall back
+  // to a generic source once every primary provider has finished/failed — so a
+  // fast movie provider can't grab the player ahead of the anime sources.
   useEffect(() => {
     if (autostarted.current || !settings.autoplay) return;
-    const first = playableRef.current.find((s) => !failed.has(s.url));
+    const notFailed = (s: Parsed) => !failed.has(s.url);
+    // 1) Sticky: resume from the provider used last for this kind. If it has a source
+    //    now, play it; if it's still resolving, wait for it before falling back.
+    if (sticky && !pref.hidden.includes(sticky)) {
+      const st = playableRef.current.find((s) => s.providerId === sticky && notFailed(s));
+      if (st) { autostarted.current = true; play(st); return; }
+      if (order.includes(sticky) && !isTerminal(runs[sticky]?.state)) return;
+    }
+    // 2) Anime: wait for the primary anime providers before falling back to a generic one.
+    if (isAnime) {
+      const primary = playableRef.current.find((s) => PRIMARY_ANIME.has(s.providerId) && notFailed(s));
+      if (primary) { autostarted.current = true; play(primary); return; }
+      const primaryIds = order.filter((pid) => PRIMARY_ANIME.has(pid) && !pref.hidden.includes(pid));
+      const stillPending = primaryIds.some((pid) => !isTerminal(runs[pid]?.state));
+      if (primaryIds.length && stillPending) return;
+    }
+    const first = playableRef.current.find(notFailed);
     if (first) { autostarted.current = true; play(first); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providers]);
@@ -193,7 +282,7 @@ export default function SourcesPanel({
       return next;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [failedUrl]);
+  }, [failedUrl, failSeq]);
 
   const toggle = (set: Set<string>, val: string, setter: (s: Set<string>) => void) => {
     const n = new Set(set); n.has(val) ? n.delete(val) : n.add(val); setter(n);
@@ -206,6 +295,21 @@ export default function SourcesPanel({
         <span className={`badge ${done ? "" : "badge-warning"}`}>
           {done ? `${onlineCount} online · ${totalSources} sources` : <><span className="spin" style={{ width: 12, height: 12, marginRight: 6, verticalAlign: -1 }} /> scanning {providers.length}…</>}
         </span>
+        <button
+          className={`btn btn-icon btn-ghost btn-sm ${liveSettings.torrentMode ? "active" : ""}`}
+          title={liveSettings.torrentMode ? "Torrent mode ON (this device) — click to use the normal providers" : "Torrent mode OFF — click to resolve via torrents (anime, movies & TV). This device only."}
+          aria-label="Toggle torrent mode"
+          aria-pressed={!!liveSettings.torrentMode}
+          onClick={() => updateSettings({ torrentMode: !liveSettings.torrentMode })}
+        ><Zap size={15} /></button>
+        <button
+          className="btn btn-icon btn-ghost btn-sm"
+          title="Hard refresh — re-scan every provider from scratch (skips the cache)"
+          aria-label="Refresh all sources"
+          onClick={refreshAll}
+          disabled={!done}
+        ><RotateCcw size={15} /></button>
+        <button className="btn btn-icon btn-ghost btn-sm" title="Edit providers for this kind" aria-label="Edit providers" onClick={() => setEditorOpen(true)}><SlidersHorizontal size={15} /></button>
       </div>
 
       {(bucketsPresent.length > 1 || audiosPresent.length > 0) && (
@@ -277,8 +381,6 @@ export default function SourcesPanel({
           );
         })}
 
-        {/* Only working providers are listed above. While others are still being
-            checked, show a quiet progress line; failed / no-source ones are hidden. */}
         {(() => {
           const scanning = providers.filter((p) => !p.items.length && (p.state === "running" || p.state === "pending"));
           if (!scanning.length) return null;
@@ -286,6 +388,43 @@ export default function SourcesPanel({
             <div className="pstat scanning">
               <span className="spin" style={{ width: 12, height: 12, marginRight: 8, verticalAlign: -1 }} />
               Checking {scanning.length} more provider{scanning.length === 1 ? "" : "s"}…
+            </div>
+          );
+        })()}
+
+        {/* Failed / timed-out providers — shown with a reason so you can see WHY a
+            provider produced nothing (e.g. "timed out after 45s") instead of it
+            silently disappearing. Empty (no-source-for-this-title) ones collapse to a count. */}
+        {(() => {
+          const failedList = providers.filter((p) => !p.items.length && p.state === "failed");
+          const emptyList = providers.filter((p) => !p.items.length && p.state === "empty");
+          if (!failedList.length && !emptyList.length) return null;
+          return (
+            <div className="pstat-group">
+              <button className="btn btn-sm btn-ghost" style={{ alignSelf: "flex-start" }} onClick={refreshFailed} disabled={!done} title="Re-scan only the providers that found nothing">
+                <RotateCcw size={13} /> Retry {failedList.length + emptyList.length} unavailable
+              </button>
+              {failedList.map(({ pid, run }) => (
+                <div className="pstat unavail" key={pid} title={run?.note || "failed"}>
+                  <StatusDot state="failed" />
+                  <span className="pname-sm">{run?.name || pid}</span>
+                  <span className="subtle unavail-note">{run?.note || "failed"}</span>
+                </div>
+              ))}
+              {emptyList.length > 0 && (
+                <button className="pstat unavail-toggle" onClick={() => setShowEmpty((v) => !v)}>
+                  <StatusDot state="empty" />
+                  {emptyList.length} provider{emptyList.length === 1 ? "" : "s"} had no source for this title
+                  <ChevronRight size={13} className="chev" style={{ transform: showEmpty ? "rotate(90deg)" : undefined }} />
+                </button>
+              )}
+              {showEmpty && emptyList.map(({ pid, run }) => (
+                <div className="pstat unavail dim" key={pid}>
+                  <StatusDot state="empty" />
+                  <span className="pname-sm">{run?.name || pid}</span>
+                  <span className="subtle unavail-note">no sources</span>
+                </div>
+              ))}
             </div>
           );
         })()}
@@ -299,6 +438,8 @@ export default function SourcesPanel({
           <button className="menu-item" onClick={() => { copyText(originalUrl(linkMenu.url)); setCopied(linkMenu.url); setTimeout(() => setCopied((c) => (c === linkMenu.url ? null : c)), 1500); setLinkMenu(null); }}>Copy link</button>
         </div>
       )}
+
+      {editorOpen && <ProviderPrefsEditor kind={kind} onClose={() => setEditorOpen(false)} />}
     </div>
   );
 }

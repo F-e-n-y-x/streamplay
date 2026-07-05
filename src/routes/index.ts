@@ -110,16 +110,18 @@ router.get('/streams', async (req, res) => {
     // through FlareSolverr) can't hang the whole request.
     const PROVIDER_TIMEOUT_MS = Number(process.env.PROVIDER_TIMEOUT_MS) || 45000;
     const empty: ExtractorResult = { streams: [], subtitles: [] };
-    const withTimeout = (p: typeof providers[number]) =>
-        Promise.race<ExtractorResult>([
-            p.invoke(linkData),
-            new Promise<ExtractorResult>(resolve =>
-                setTimeout(() => resolve(empty), PROVIDER_TIMEOUT_MS)
-            ),
-        ]).catch(err => {
-            console.error(`Provider ${p.name} failed:`, err?.message || err);
-            return empty;
-        });
+    const withTimeout = (p: typeof providers[number]) => {
+        const invocation = p.invoke(linkData);
+        // Pre-attach a catch so a provider that rejects AFTER the timeout already won
+        // the race doesn't surface as an unhandledRejection (which crashes the process
+        // under hardened Node / PM2). The race below still returns `empty` on timeout.
+        invocation.catch(() => { /* handled by the race, or ignored if it lands late */ });
+        let timer: NodeJS.Timeout;
+        const timeout = new Promise<ExtractorResult>(resolve => { timer = setTimeout(() => resolve(empty), PROVIDER_TIMEOUT_MS); });
+        return Promise.race<ExtractorResult>([invocation, timeout])
+            .catch(err => { console.error(`Provider ${p.name} failed:`, err?.message || err); return empty; })
+            .finally(() => clearTimeout(timer));
+    };
 
     // Run all extractors concurrently
     const providerResults = await Promise.all(providers.map(withTimeout));

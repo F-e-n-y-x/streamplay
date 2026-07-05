@@ -3,6 +3,8 @@ import * as cheerio from 'cheerio';
 import { flareSolverrGet, isFlareSolverrConfigured } from './flaresolverr';
 import { USER_AGENT } from './encdec';
 import { dohAxios } from './dns';
+import { warpAxios } from './warp';
+import { currentSignal } from './reqctx';
 
 /**
  * Thin HTTP layer mirroring the Kotlin plugin's `app` / `safeGet` helpers so the
@@ -79,16 +81,30 @@ export interface GetOptions {
     /** Force routing through FlareSolverr. */
     cloudflare?: boolean;
     params?: Record<string, any>;
+    /**
+     * Max HTTP redirects axios may auto-follow. Defaults to axios' own (5).
+     * Set to 0 to STOP at a 3xx so `responseHeaders['location']` (or a custom
+     * header like `hx-redirect`) can be read — required by the header-based host
+     * resolvers (BuzzServer, GDFlix "Instant DL").
+     */
+    maxRedirects?: number;
+    /** Max time (ms) a FlareSolverr solve may take in safeGet. Lower = fail faster
+     *  on IP-banned hosts (e.g. Kwik) so a doomed solve doesn't hog the pool. */
+    flareTimeout?: number;
 }
 
 const doRequest = async (config: AxiosRequestConfig): Promise<SpResponse> => {
+    // Route through the WARP SOCKS proxy when WARP is active for this request,
+    // otherwise use the DoH agents. (WARP does its own DNS at the proxy.)
     const res = await axios({
         ...config,
-        ...dohAxios(),
+        ...(warpAxios() ?? dohAxios()),
+        // Cancel this request if the originating SSE client disconnected.
+        signal: currentSignal() as any,
         // accept all statuses so we can inspect Cloudflare bodies instead of throwing
         validateStatus: () => true,
-        // don't auto-follow redirects when the caller wants the location header
-        transformResponse: r => r, // keep raw text
+        // keep raw text so JSON/HTML bodies aren't auto-parsed
+        transformResponse: r => r,
     });
     const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data);
     const respHeaders: Record<string, string> = {};
@@ -113,11 +129,11 @@ const withClearance = (url: string, headers: Record<string, string>): Record<str
 export const app = {
     get: async (url: string, opts: GetOptions = {}): Promise<SpResponse> => {
         const headers = withClearance(url, { ...DEFAULT_HEADERS, ...(opts.referer ? { Referer: opts.referer } : {}), ...opts.headers });
-        return doRequest({ method: 'get', url, headers, timeout: opts.timeout ?? 15000, params: opts.params });
+        return doRequest({ method: 'get', url, headers, timeout: opts.timeout ?? 15000, params: opts.params, maxRedirects: opts.maxRedirects });
     },
     post: async (url: string, body?: any, opts: GetOptions = {}): Promise<SpResponse> => {
         const headers = withClearance(url, { ...DEFAULT_HEADERS, ...(opts.referer ? { Referer: opts.referer } : {}), ...opts.headers });
-        return doRequest({ method: 'post', url, headers, data: body, timeout: opts.timeout ?? 15000 });
+        return doRequest({ method: 'post', url, headers, data: body, timeout: opts.timeout ?? 15000, maxRedirects: opts.maxRedirects });
     },
 };
 
@@ -130,13 +146,18 @@ export const safeGet = async (url: string, opts: GetOptions = {}): Promise<SpRes
     // Fast path: a normal request (auto-attaching any clearance we already hold).
     // If it isn't a challenge page, we're done — this also covers the case where
     // a previous FlareSolverr solve already primed the cookie jar for this host.
-    try {
-        const res = await app.get(url, opts);
-        if (!looksLikeCloudflare(res.status, res.text)) return res;
-    } catch { /* fall through to FlareSolverr */ }
+    // When the caller passes `{ cloudflare: true }` we SKIP the fast path and solve
+    // straight away: some hosts return a 200 interstitial the heuristic can't spot,
+    // and the caller already knows the host is gated.
+    if (!opts.cloudflare) {
+        try {
+            const res = await app.get(url, opts);
+            if (!looksLikeCloudflare(res.status, res.text)) return res;
+        } catch { /* fall through to FlareSolverr */ }
+    }
 
     if (isFlareSolverrConfigured()) {
-        const solved = await flareSolverrGet(url);
+        const solved = await flareSolverrGet(url, opts.flareTimeout);
         if (solved) {
             // Persist clearance so follow-up app.get/post calls to this host succeed.
             setClearance(url, solved.cookieHeader, solved.userAgent);

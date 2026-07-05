@@ -19,20 +19,22 @@ export const TwoEmbedProvider: Provider = {
 
             const res = await axios.get(url, {
                 headers: {
-                    'Referer': url
-                }
+                    'Referer': url,
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+                },
+                timeout: 15000,
             });
 
             const $ = cheerio.load(res.data);
             const iframeSrc = $('iframe#iframesrc').attr('data-src');
 
             if (iframeSrc) {
-                // Return iframe source so frontend can embed it
-                // We mark type as 'iframe' - we should update types.ts to support 'iframe'
+                // Return the iframe source so the frontend can embed it. ('iframe'
+                // is a first-class Stream type — see types.ts.)
                 result.streams.push({
                     server: '2Embed (Iframe)',
                     link: iframeSrc,
-                    type: 'iframe' as any,
+                    type: 'iframe',
                 });
             }
         } catch (error) {

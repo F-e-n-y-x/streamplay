@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { api } from "../lib/api";
-import type { Card } from "../lib/types";
+import { useBrowse } from "../lib/queries";
 import { getSettings, setSettings, useSettings } from "../lib/settings";
 import PosterCard from "../components/PosterCard";
 import CategoryPicker, { ANIME_CATEGORIES, GENERIC_CATEGORIES } from "../components/CategoryPicker";
@@ -8,12 +7,24 @@ import { ChevronDown, ChevronLeft, ChevronRight, Film, Globe, Sparkles, Tv } fro
 
 type Section = "anime" | "movies" | "series" | "asian";
 
-const CFG: Record<Section, { title: string; icon: typeof Film; track?: boolean; typeToggle?: boolean; region?: boolean }> = {
+const CFG: Record<Section, { title: string; icon: typeof Film; track?: boolean; typeToggle?: boolean; region?: boolean; industry?: boolean }> = {
   anime: { title: "Anime", icon: Sparkles, track: true, typeToggle: true },
-  movies: { title: "Movies", icon: Film },
-  series: { title: "Series", icon: Tv },
+  movies: { title: "Movies", icon: Film, industry: true },
+  series: { title: "Series", icon: Tv, industry: true },
   asian: { title: "Asian Drama", icon: Globe, typeToggle: true, region: true },
 };
+
+// Film industries → TMDB original-language code. Lets Movies/Series be filtered by
+// Bollywood/Tollywood/etc. (an axis TMDB genres don't cover).
+const INDUSTRIES = [
+  { key: "all", label: "All" },
+  { key: "en", label: "Hollywood" },
+  { key: "hi", label: "Bollywood" },
+  { key: "te", label: "Tollywood" },
+  { key: "ta", label: "Kollywood" },
+  { key: "ml", label: "Mollywood" },
+  { key: "kn", label: "Sandalwood" },
+];
 
 const RANGES = [
   { key: "day", label: "Today" },
@@ -31,8 +42,12 @@ const REGIONS = [
 
 type Cat = "popular" | "trending" | "newest" | "toprated" | "random";
 
+// Anime categories that are inherently 18+/suggestive — hidden from the picker and
+// stripped from the query when the Show 18+ setting is off.
+const ADULT_ANIME_CATS = new Set(["ecchi", "harem", "shoujoai", "shounenai"]);
+
 /** Number of columns the auto-fill grid currently shows (min 160px col + 16px gap). */
-function useColumns(ref: React.RefObject<HTMLElement>) {
+function useColumns(ref: React.RefObject<HTMLElement | null>) {
   const [cols, setCols] = useState(6);
   useLayoutEffect(() => {
     const el = ref.current;
@@ -58,29 +73,29 @@ export default function Browse({ section }: { section: Section }) {
   const [range, setRange] = useState("week");
   const [type, setType] = useState<"all" | "tv" | "movie">("all");
   const [region, setRegion] = useState("all");
+  const [industry, setIndustry] = useState("all");
   const [audio, setAudio] = useState<"all" | "sub" | "dub">("all");
   const [genres, setGenres] = useState<string[]>([]);
-  const [items, setItems] = useState<Card[] | null>(null);
   const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
   const [nonce, setNonce] = useState(0);
   const [rangeOpen, setRangeOpen] = useState(false);
-  const { adult, lang } = useSettings();
+  const { adult } = useSettings();
 
   const gridRef = useRef<HTMLDivElement>(null);
   const cols = useColumns(gridRef);
 
-  // reset state when the section changes
-  useEffect(() => { setCat("popular"); setType("all"); setRegion("all"); setAudio("all"); setGenres([]); setPage(1); }, [section]);
+  // Data via TanStack Query — cancels the in-flight request on any filter change,
+  // caches results, and keys on lang/adult (inside the hook). `nonce` re-rolls Random.
+  const browseQ = useBrowse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, ol: cfg.industry ? industry : undefined, audio: cfg.track ? audio : undefined, genres, page, nonce });
+  const items = browseQ.isError ? [] : browseQ.data?.items ?? null;
+  const totalPages = browseQ.data?.totalPages ?? 1;
 
-  useEffect(() => {
-    let alive = true;
-    setItems(null);
-    api.browse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, audio: cfg.track ? audio : undefined, genres, page })
-      .then((r) => { if (!alive) return; setItems(r.items); setTotalPages(r.totalPages); })
-      .catch(() => alive && setItems([]));
-    return () => { alive = false; };
-  }, [section, cat, type, region, range, audio, genres, page, nonce, adult, lang, cfg.typeToggle, cfg.region, cfg.track]);
+  // reset state when the section changes
+  useEffect(() => { setCat("popular"); setType("all"); setRegion("all"); setIndustry("all"); setAudio("all"); setGenres([]); setPage(1); }, [section]);
+
+  // When 18+ is off, drop any explicitly-adult anime category the user had selected
+  // (and they're hidden from the picker below) so ecchi/harem aren't requested.
+  useEffect(() => { if (!adult) setGenres((g) => g.filter((k) => !ADULT_ANIME_CATS.has(k))); }, [adult]);
 
   // Sub/Dub: filter the catalog AND persist as the playback track preference
   function pickAudio(a: "sub" | "dub") {
@@ -97,8 +112,10 @@ export default function Browse({ section }: { section: Section }) {
   }
 
   const showRange = cat === "trending" || cat === "toprated";
-  // trim to whole rows for uniformity
-  const shown = items ? items.slice(0, Math.max(cols, Math.floor(items.length / cols) * cols)) : null;
+  // Render every result. (Previously trimmed to whole rows for a tidy grid, but on
+  // the last page that permanently hid the trailing 1..cols-1 items with no way to
+  // reach them.) A short final row is fine; nothing gets dropped.
+  const shown = items;
 
   return (
     <div className="container">
@@ -138,8 +155,15 @@ export default function Browse({ section }: { section: Section }) {
         </div>
       </div>
 
-      {(cfg.typeToggle || cfg.region || cfg.track) && (
+      {(cfg.typeToggle || cfg.region || cfg.industry || cfg.track) && (
         <div className="anime-toolbar">
+          {cfg.industry && (
+            <div className="segmented">
+              {INDUSTRIES.map((i) => (
+                <button key={i.key} className={`seg-opt ${industry === i.key ? "active" : ""}`} onClick={() => { setIndustry(i.key); setPage(1); }}>{i.label}</button>
+              ))}
+            </div>
+          )}
           {cfg.typeToggle && (
             <div className="segmented">
               <button className={`seg-opt ${type === "all" ? "active" : ""}`} onClick={() => { setType("all"); setPage(1); }}>All</button>
@@ -159,7 +183,7 @@ export default function Browse({ section }: { section: Section }) {
       )}
 
       <div style={{ marginBottom: "var(--space-5)" }}>
-        <CategoryPicker selected={genres} onChange={(g) => { setGenres(g); setPage(1); }} categories={section === "anime" ? ANIME_CATEGORIES : GENERIC_CATEGORIES} />
+        <CategoryPicker selected={genres} onChange={(g) => { setGenres(g); setPage(1); }} categories={section === "anime" ? (adult ? ANIME_CATEGORIES : ANIME_CATEGORIES.filter((c) => !ADULT_ANIME_CATS.has(c.key))) : GENERIC_CATEGORIES} />
       </div>
 
       <div className="grid" ref={gridRef}>

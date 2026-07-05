@@ -1,15 +1,22 @@
 import axios from 'axios';
+import { dohAxios } from './utils/dns';
+import { currentSignal } from './utils/reqctx';
 import { SearchResult, MetaData, Episode, Season } from './types';
 
 const TMDB_API_URL = 'https://api.themoviedb.org/3';
 const API_KEY = process.env.TMDB_API_KEY || 'dummy_key'; // Ideally this should be a valid API key
 
+// Resolve TMDB over DoH too (DOH_ENABLED) so metadata survives a poisoning ISP —
+// otherwise every browse/title/search request dies at DNS before a provider runs.
 const axiosInstance = axios.create({
     baseURL: TMDB_API_URL,
+    ...dohAxios(),
     params: {
         api_key: API_KEY
     }
 });
+// Honour the per-request cancellation signal (abandoned SSE tab) on every call.
+axiosInstance.interceptors.request.use((cfg) => { if (!cfg.signal) cfg.signal = currentSignal() as any; return cfg; });
 
 /** Is a real TMDB key configured (vs. the dummy fallback)? */
 export const tmdbIsLive = (): boolean => !!API_KEY && API_KEY !== 'dummy_key';
@@ -63,8 +70,10 @@ export const getTMDBInfo = async (id: number, type: 'movie' | 'tv'): Promise<Met
         const data = response.data;
         const genres = data.genres?.map((g: any) => g.name) || [];
         const isAnime = genres.includes('Animation') && (data.original_language === 'ja' || data.original_language === 'zh');
+        // Cartoon = animation that isn't anime (Western/other) — e.g. Ben 10.
+        const isCartoon = genres.includes('Animation') && !isAnime;
         const isAsian = !isAnime && (data.original_language === 'ko' || data.original_language === 'zh');
-        const isBollywood = data.production_countries?.some((c: any) => c.name === 'India') || false;
+        const isBollywood = data.production_countries?.some((c: any) => c.iso_3166_1 === 'IN' || c.name === 'India') || false;
 
         let seasons: Season[] = [];
         let episodes: Episode[] = [];
@@ -112,6 +121,7 @@ export const getTMDBInfo = async (id: number, type: 'movie' | 'tv'): Promise<Met
             rating: data.vote_average,
             genres,
             isAnime,
+            isCartoon,
             isAsian,
             isBollywood,
             seasons,

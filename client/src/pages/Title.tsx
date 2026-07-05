@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api } from "../lib/api";
-import type { Card, Episode, TitleDetail } from "../lib/types";
+import { useTitle, useSeason } from "../lib/queries";
+import type { Card } from "../lib/types";
 import { inWatchlist, toggleWatchlist } from "../lib/watchlist";
+import { useStore } from "../lib/store";
 import PosterCard from "../components/PosterCard";
 import Player, { type PlayerSource } from "../components/Player";
-import { Bookmark, Check, Clock, Layers, Play, Plus, Star } from "../components/icons";
+import { Check, Clock, Layers, Play, Plus, Star } from "../components/icons";
 
 export default function Title() {
   const { type, id } = useParams<{ type: "movie" | "tv"; id: string }>();
@@ -13,38 +14,24 @@ export default function Title() {
   const tid = Number(id);
   const ttype = (type as "movie" | "tv") ?? "movie";
 
-  const [data, setData] = useState<TitleDetail | null | undefined>(undefined);
   const [season, setSeason] = useState<number | null>(null);
-  const [episodes, setEpisodes] = useState<Episode[] | null>(null);
-  const [saved, setSaved] = useState(false);
   const [player, setPlayer] = useState<PlayerSource | null>(null);
+  // Subscribe to the favourites store so the button reflects changes made on the
+  // Watchlist page or pushed in from another synced device — not a load-time snapshot.
+  useStore();
 
-  useEffect(() => {
-    let alive = true;
-    setData(undefined);
-    setEpisodes(null);
-    api.title(ttype, tid).then((d) => {
-      if (!alive) return;
-      setData(d);
-      setSaved(inWatchlist(d.type, d.id));
-      setSeason(d.seasons[0]?.seasonNumber ?? null);
-    }).catch(() => alive && setData(null));
-    return () => { alive = false; };
-  }, [ttype, tid]);
+  const { data, isPending, isError } = useTitle(ttype, tid);
+  // Default to the first season once the title loads (or when we switch titles).
+  useEffect(() => { setSeason(data?.seasons[0]?.seasonNumber ?? null); }, [data]);
+  const { data: seasonData } = useSeason(tid, season, ttype === "tv");
+  const episodes = ttype === "tv" ? seasonData?.episodes ?? null : null;
 
-  useEffect(() => {
-    if (ttype !== "tv" || season == null) return;
-    let alive = true;
-    setEpisodes(null);
-    api.season(tid, season).then((r) => alive && setEpisodes(r.episodes)).catch(() => alive && setEpisodes([]));
-    return () => { alive = false; };
-  }, [ttype, tid, season]);
-
-  if (data === undefined) return <div className="container"><div className="empty">Loading…</div></div>;
-  if (data === null) return <div className="container"><div className="empty">Couldn't load this title.</div></div>;
+  if (isPending) return <div className="container"><div className="empty">Loading…</div></div>;
+  if (isError || !data) return <div className="container"><div className="empty">Couldn't load this title.</div></div>;
 
   const cls = data.classification;
   const card: Card = { id: data.id, type: data.type, title: data.title, posterUrl: data.posterUrl, year: data.year, voteAverage: data.voteAverage, overview: data.overview };
+  const saved = inWatchlist(data.type, data.id);
 
   return (
     <div>
@@ -84,7 +71,7 @@ export default function Title() {
                   <Play size={16} /> Trailer
                 </button>
               )}
-              <button className="btn" onClick={() => setSaved(toggleWatchlist(card))}>
+              <button className="btn" onClick={() => toggleWatchlist(card)}>
                 {saved ? <><Check size={16} /> In Watchlist</> : <><Plus size={16} /> Watchlist</>}
               </button>
             </div>
@@ -131,7 +118,6 @@ export default function Title() {
                     <div className="et">{ep.episodeNumber}. {ep.name} {ep.voteAverage ? <span className="subtle" style={{ fontSize: "var(--text-xs)" }}>★ {ep.voteAverage.toFixed(1)}</span> : null}</div>
                     {ep.overview && <div className="eo">{ep.overview}</div>}
                   </div>
-                  <span className="btn btn-sm episode-play"><Play size={15} /> Play</span>
                 </div>
               ))
             )}

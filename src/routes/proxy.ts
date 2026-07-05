@@ -1,6 +1,28 @@
 import { Router } from 'express';
-import axios from 'axios';
-import { dohAxios } from '../utils/dns';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { proxyWarpAgent } from '../utils/warp';
+import { guardUrl, ssrfAgents } from '../utils/ssrf';
+
+/**
+ * Fetch an upstream URL for the proxy, retrying through WARP when the direct
+ * fetch fails. Some provider CDNs (e.g. AnimeWorld's zephyrflick, its subtitle
+ * host) are blocked/poisoned on the direct egress and only reachable via WARP —
+ * the providers already egress through WARP, so playback must be able to as well.
+ *
+ * The direct path uses the SSRF-guarded agents: their DNS lookup rejects any
+ * host that resolves to a private/loopback IP, so a redirect to (or a rebinding
+ * of) an internal address is refused at connect time — not just at guardUrl.
+ * The WARP fallback egresses through Cloudflare, which can't reach the LAN.
+ */
+async function fetchUpstream(url: string, config: AxiosRequestConfig): Promise<AxiosResponse> {
+    try {
+        return await axios.get(url, { ...config, ...ssrfAgents() });
+    } catch (e) {
+        const agent = proxyWarpAgent();
+        if (!agent) throw e;
+        return await axios.get(url, { ...config, httpAgent: agent, httpsAgent: agent });
+    }
+}
 
 /** ENOTFOUND/EAI_AGAIN => the upstream host didn't resolve; DoH usually fixes it. */
 const proxyErr = (e: any): string => {
@@ -75,9 +97,15 @@ const rewriteManifest = (body: string, baseUrl: string, hB64: string, forceAudio
         out = /AUTOSELECT=(YES|NO)/.test(out) ? out.replace(/AUTOSELECT=(YES|NO)/, `AUTOSELECT=${on ? 'YES' : 'NO'}`) : out.replace('#EXT-X-MEDIA:', `#EXT-X-MEDIA:AUTOSELECT=${on ? 'YES' : 'NO'},`);
         return out;
     };
+    // Set DEFAULT=YES on only the FIRST matching rendition and NO on all others —
+    // otherwise two tracks sharing a LANGUAGE (or the same NAME) would both become
+    // default, which is invalid HLS and leaves audio selection undefined.
+    let forcedOne = false;
     const applyForceAudio = (line: string): string => {
         if (!forceAudio || !/#EXT-X-MEDIA:/i.test(line) || !/TYPE=AUDIO/i.test(line)) return line;
-        return setDefault(line, audioMatches(line));
+        const match = audioMatches(line) && !forcedOne;
+        if (match) forcedOne = true;
+        return setDefault(line, match);
     };
 
     // URI="..." attributes (keys, media renditions, maps)
@@ -110,6 +138,8 @@ router.get('/', async (req, res) => {
 
     let url: string;
     try { url = unb64(rawUrl); } catch { return res.status(400).send('bad url'); }
+    const blocked = guardUrl(url);
+    if (blocked) return res.status(403).send(blocked);
 
     const headers: Record<string, string> = {
         'User-Agent': DEFAULT_UA,
@@ -121,7 +151,7 @@ router.get('/', async (req, res) => {
 
     try {
         if (isM3u8) {
-            const upstream = await axios.get(url, { headers, responseType: 'text', timeout: 20000, transformResponse: r => r, ...dohAxios() });
+            const upstream = await fetchUpstream(url, { headers, responseType: 'text', timeout: 20000, transformResponse: r => r });
             const rewritten = rewriteManifest(String(upstream.data), url, (req.query.h as string) || '', req.query.audio as string | undefined);
             res.set('Access-Control-Allow-Origin', '*');
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
@@ -130,7 +160,7 @@ router.get('/', async (req, res) => {
         }
 
         // binary passthrough (segments, keys, mp4) with Range support
-        const upstream = await axios.get(url, { headers, responseType: 'stream', timeout: 30000, validateStatus: () => true, ...dohAxios() });
+        const upstream = await fetchUpstream(url, { headers, responseType: 'stream', timeout: 30000, validateStatus: () => true });
         res.status(upstream.status);
         res.set('Access-Control-Allow-Origin', '*');
         for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
@@ -138,6 +168,10 @@ router.get('/', async (req, res) => {
             if (v) res.set(k, v as string);
         }
         if (!upstream.headers['accept-ranges']) res.set('Accept-Ranges', 'bytes');
+        // Destroy the upstream socket if the client disconnects mid-stream, so an
+        // abandoned seek/tab doesn't leak an open connection to the provider CDN.
+        req.on('close', () => { try { upstream.data.destroy(); } catch { /* */ } });
+        upstream.data.on('error', () => { try { res.destroy(); } catch { /* */ } });
         upstream.data.pipe(res);
     } catch (e: any) {
         res.status(502).send(proxyErr(e));
@@ -181,14 +215,16 @@ router.get('/sub', async (req, res) => {
     if (!rawUrl) return res.status(400).send('missing url');
     let url: string;
     try { url = unb64(rawUrl); } catch { return res.status(400).send('bad url'); }
+    const blocked = guardUrl(url);
+    if (blocked) return res.status(403).send(blocked);
 
     try {
         let origin = '';
         try { origin = new URL(url).origin; } catch { /* */ }
-        const upstream = await axios.get(url, {
+        const upstream = await fetchUpstream(url, {
             // Referer = the sub's own origin avoids most CDN hotlink 403s.
             headers: { 'User-Agent': DEFAULT_UA, ...(origin ? { Referer: origin + '/' } : {}), ...decodeHeaders(req.query.h as string) },
-            responseType: 'text', timeout: 15000, transformResponse: r => r, ...dohAxios(),
+            responseType: 'text', timeout: 15000, transformResponse: r => r,
         });
         let body = String(upstream.data);
 

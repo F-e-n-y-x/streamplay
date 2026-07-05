@@ -75,7 +75,10 @@ export const KissKhProvider: Provider = {
                 kkey1 = subKeyRes.data.key;
             } catch(e) {}
 
-            if (!kkey || !kkey1) return result;
+            // `kkey` decrypts the VIDEO; `kkey1` only decrypts SUBTITLES. Gate the
+            // whole provider on kkey ONLY — otherwise a transient failure of the
+            // alts2 (subtitle) call throws away perfectly good video streams.
+            if (!kkey) return result;
 
             // Fetch video sources
             try {
@@ -99,8 +102,9 @@ export const KissKhProvider: Provider = {
                 }
             } catch (e) { console.error("Error fetching KissKH video sources", e); }
 
-            // Fetch subtitles
+            // Fetch subtitles (only if we actually got the subtitle key).
             try {
+                if (!kkey1) throw new Error('no subtitle key');
                 const subRes = await axios.get(`${KISSKH_API}/api/Sub/${epsId}?kkey=${kkey1}`);
                 if (Array.isArray(subRes.data)) {
                     for (const sub of subRes.data) {

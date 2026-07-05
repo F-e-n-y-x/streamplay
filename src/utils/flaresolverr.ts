@@ -1,21 +1,105 @@
 import axios from 'axios';
+import { warpFlareSolverrEndpoint } from './warp';
+import { currentSignal } from './reqctx';
 
 /**
- * Client for a FlareSolverr instance (https://github.com/FlareSolverr/FlareSolverr).
+ * Client for FlareSolverr (https://github.com/FlareSolverr/FlareSolverr).
  *
  * FlareSolverr runs a real headless browser and solves Cloudflare / DDoS-Guard
  * challenges, returning the final HTML plus the `cf_clearance` cookies and the
  * user-agent that must be reused for follow-up requests.
  *
- * The endpoint is configured via FLARESOLVERR_URL in `.env` so it can be moved
- * without touching code.
+ * POOL: a single FlareSolverr is ONE browser, so it becomes the bottleneck when
+ * many providers need it at once (Cloudflare solves are slow, and it 500s /
+ * serializes under load — the cause of anime sources timing out). `FLARESOLVERR_URL`
+ * therefore accepts a comma/space-separated LIST of instances; we round-robin
+ * across them so concurrent solves fan out over several browsers. A single URL
+ * still works exactly as before.
+ *   FLARESOLVERR_URL=http://fs1:8191/,http://fs2:8191/,http://fs3:8191/
  */
 
-const RAW_URL = process.env.FLARESOLVERR_URL?.trim();
-// Normalise to the /v1 endpoint FlareSolverr exposes.
-const ENDPOINT = RAW_URL ? `${RAW_URL.replace(/\/+$/, '')}/v1` : null;
+const ENDPOINTS = (process.env.FLARESOLVERR_URL || '')
+    .split(/[\s,]+/)
+    .map((u) => u.trim())
+    .filter(Boolean)
+    .map((u) => `${u.replace(/\/+$/, '')}/v1`);
 
-export const isFlareSolverrConfigured = (): boolean => !!ENDPOINT;
+// ── Per-instance dispatch queue ──────────────────────────────────────────────
+// A FlareSolverr instance is a SINGLE browser: hit one with concurrent solves and
+// they serialize internally and, under load, 500 / time out (a real cause of anime
+// sources stalling). So we run at most ONE solve per instance at a time and QUEUE
+// the rest, dispatching each waiting solve to the LEAST-LOADED instance. Net effect:
+// with N instances, at most N solves run at once (one per browser); the rest wait
+// their turn instead of bombarding a busy browser.
+const load = new Map<string, number>();          // endpoint -> queued + in-flight count
+const tail = new Map<string, Promise<void>>();    // endpoint -> FIFO serialization chain
+
+const leastLoaded = (endpoints: string[]): string =>
+    endpoints.reduce((best, e) => ((load.get(e) || 0) < (load.get(best) || 0) ? e : best), endpoints[0]);
+
+/**
+ * The endpoint to solve on. When WARP is active and a WARP-behind FlareSolverr is
+ * configured, use THAT (its browser egresses through a clean IP — this is what
+ * unblocks Kwik, and it must stay pinned so cf_clearance matches the follow-ups).
+ * Otherwise pick the least-loaded instance of the normal pool.
+ */
+const pickEndpoint = (): string | null => {
+    const warp = warpFlareSolverrEndpoint();
+    if (warp) return warp;
+    return ENDPOINTS.length ? leastLoaded(ENDPOINTS) : null;
+};
+
+/** Run `fn` on `endpoint`, at most one job per endpoint at a time (FIFO queue). */
+async function runOn<T>(endpoint: string, fn: () => Promise<T>): Promise<T> {
+    load.set(endpoint, (load.get(endpoint) || 0) + 1);
+    const prev = tail.get(endpoint) || Promise.resolve();
+    let release!: () => void;
+    const mine = new Promise<void>((r) => { release = r; });
+    tail.set(endpoint, prev.then(() => mine));
+    await prev.catch(() => { /* a prior job's failure must not wedge the queue */ });
+    try {
+        return await fn();
+    } finally {
+        release();
+        load.set(endpoint, Math.max(0, (load.get(endpoint) || 1) - 1));
+    }
+}
+
+/** How many solves are queued/running per instance (diagnostics). */
+export const flareSolverrLoad = (): Record<string, number> => Object.fromEntries(load);
+
+export const isFlareSolverrConfigured = (): boolean =>
+    ENDPOINTS.length > 0 || !!warpFlareSolverrEndpoint();
+
+/** The configured FlareSolverr /v1 endpoints (for diagnostics). */
+export const flareSolverrEndpoints = (): string[] => [...ENDPOINTS];
+
+/**
+ * Diagnostics probe for ONE FlareSolverr endpoint: liveness (sessions.list), the
+ * version it reports, and — via a solve of an IP-echo — the actual egress IP its
+ * browser uses (so you can confirm it's going out through WARP, not direct).
+ */
+export const probeFlareSolverr = async (endpoint: string): Promise<{ up: boolean; latencyMs: number; version?: string; ip?: string; error?: string }> => {
+    const start = Date.now();
+    try {
+        const list = await axios.post(endpoint, { cmd: 'sessions.list' }, { timeout: 8000 });
+        const version = list.data?.version;
+        let ip: string | undefined;
+        try {
+            const solved = await axios.post(endpoint, { cmd: 'request.get', url: 'https://api.ipify.org?format=json', maxTimeout: 25000 }, { timeout: 40000 });
+            const body: string = solved.data?.solution?.response || '';
+            ip = (body.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/) || [])[1];
+        } catch { /* ip probe optional */ }
+        return { up: list.data?.status === 'ok', latencyMs: Date.now() - start, version, ip };
+    } catch (e: any) {
+        return { up: false, latencyMs: Date.now() - start, error: String(e?.code || e?.message || e).slice(0, 60) };
+    }
+};
+
+if (ENDPOINTS.length > 1) {
+    // eslint-disable-next-line no-console
+    console.log(`[FlareSolverr] load-balancing across ${ENDPOINTS.length} instances`);
+}
 
 export interface FlareSolverrSolution {
     url: string;
@@ -35,70 +119,57 @@ const cookiesToHeader = (cookies: Array<{ name: string; value: string }>): strin
  * Returns null if FlareSolverr is not configured or the request fails.
  */
 /**
- * Persistent-session variant. Some sites (AnimePahe's DDoS-Guard XHR API, AniZone,
- * AllAnime) only stay unblocked when the *same* FlareSolverr browser session is
- * reused across requests, so its challenge cookies persist. We keep one session
- * alive and recreate it on error. Returns the solved HTML (or null).
+ * Fetch the solved HTML for a URL. SESSIONLESS by design.
+ *
+ * We used to reuse one persistent FlareSolverr session across every anime call to
+ * keep challenge cookies warm — but a FlareSolverr session is a single browser, so
+ * when several providers (AniZone + AnimePahe + AnimeWorld) hit that one session
+ * concurrently the requests serialized and mostly failed (this was the real cause
+ * of anime sources appearing only after 1-2 min, or not at all). Every request.get
+ * solves the challenge fresh anyway, so we simply issue an independent, sessionless
+ * solve here — exactly what safeGet/the Indian scrapers do, and they resolve
+ * concurrently without stepping on each other. One retry on a transient failure.
  */
-let sessionId: string | null = null;
-let sessionCreating: Promise<string | null> | null = null;   // in-flight create, shared to avoid races
-
-const createSession = async (): Promise<string | null> => {
-    if (!ENDPOINT) return null;
-    if (sessionId) return sessionId;
-    // Coalesce concurrent callers onto one sessions.create so we don't spawn (and
-    // leak) multiple FlareSolverr browser sessions under load.
-    if (sessionCreating) return sessionCreating;
-    sessionCreating = (async () => {
-        try {
-            const r = await axios.post(ENDPOINT!, { cmd: 'sessions.create' }, { timeout: 30000 });
-            sessionId = r.data?.session || null;
-            return sessionId;
-        } catch { return null; }
-        finally { sessionCreating = null; }
-    })();
-    return sessionCreating;
-};
-
 export const flareSolverrGetHtml = async (url: string, maxTimeout = 60000): Promise<string | null> => {
-    if (!ENDPOINT) return null;
-    const req = async (sid: string | null) => {
-        const payload: any = { cmd: 'request.get', url, maxTimeout };
-        if (sid) payload.session = sid;
-        const r = await axios.post(ENDPOINT!, payload, { headers: { 'Content-Type': 'application/json' }, timeout: maxTimeout + 15000 });
-        return r.data;
-    };
-    try {
-        let sid = await createSession();
-        let data: any;
+    if (!isFlareSolverrConfigured()) return null;
+    // Each attempt queues on its instance (one solve per browser) and, when not
+    // WARP-pinned, is dispatched to the least-loaded instance so we spread instead of
+    // bombarding one browser.
+    const attempt = async (endpoint: string): Promise<any> => {
         try {
-            data = await req(sid);
-        } catch {
-            sessionId = null; sid = await createSession(); data = await req(sid);   // recover crashed session
-        }
-        if (data?.status !== 'ok' || (data.solution && data.solution.status >= 500)) {
-            sessionId = null; sid = await createSession(); data = await req(sid);
-        }
-        return data?.status === 'ok' ? (data.solution?.response ?? null) : null;
-    } catch (e: any) {
-        console.error('[FlareSolverr] session request failed:', e?.message || e);
-        sessionId = null;
-        return null;
+            return await runOn(endpoint, async () => {
+                const r = await axios.post(
+                    endpoint, { cmd: 'request.get', url, maxTimeout },
+                    { headers: { 'Content-Type': 'application/json' }, timeout: maxTimeout + 15000, signal: currentSignal() as any },
+                );
+                return r.data;
+            });
+        } catch (e: any) { console.error('[FlareSolverr] request failed:', e?.message || e); return null; }
+    };
+    const ep1 = pickEndpoint();
+    if (!ep1) return null;
+    let data = await attempt(ep1);
+    if (!data || data.status !== 'ok' || (data.solution && data.solution.status >= 500)) {
+        // One retry — re-picks the least-loaded instance (a different one if free),
+        // except under WARP where the endpoint stays pinned for IP consistency.
+        data = await attempt(pickEndpoint() || ep1);
     }
+    return data?.status === 'ok' ? (data.solution?.response ?? null) : null;
 };
 
 export const flareSolverrGet = async (
     url: string,
     maxTimeout = 60000
 ): Promise<FlareSolverrSolution | null> => {
-    if (!ENDPOINT) return null;
+    const endpoint = pickEndpoint();
+    if (!endpoint) return null;
 
     try {
-        const res = await axios.post(
-            ENDPOINT,
+        const res = await runOn(endpoint, () => axios.post(
+            endpoint,
             { cmd: 'request.get', url, maxTimeout },
-            { headers: { 'Content-Type': 'application/json' }, timeout: maxTimeout + 15000 }
-        );
+            { headers: { 'Content-Type': 'application/json' }, timeout: maxTimeout + 15000, signal: currentSignal() as any }
+        ));
 
         const sol = res.data?.solution;
         if (res.data?.status !== 'ok' || !sol) return null;

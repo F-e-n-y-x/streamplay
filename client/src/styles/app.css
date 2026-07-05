@@ -1,7 +1,17 @@
 /* App styles — built on tokens.css. Token-only values; neutral-dominant; one accent. */
 
 * { box-sizing: border-box; }
-html, body, #root { height: 100%; }
+/* height on <html> only; #root uses MIN-height so it grows with the page. When #root
+   was a fixed 100% (one screen) tall, position:sticky elements could only stick for
+   that first screen and then scrolled away — which is why the header/section bar
+   weren't staying pinned. Growing #root lets sticky work for the whole page. */
+html { height: 100%; }
+body, #root { min-height: 100%; }
+/* Never allow the PAGE to scroll sideways. Use `clip` (not `hidden`): `hidden` turns
+   <body> into a scroll container, which both breaks the window scroll and prevents
+   position:sticky from pinning the top bars. `clip` hides the overflow WITHOUT
+   creating a scroller, so the window scrolls normally and sticky works. */
+html, body { overflow-x: clip; max-width: 100%; }
 body {
   margin: 0;
   background: var(--background);
@@ -16,6 +26,15 @@ a { color: inherit; text-decoration: none; }
 ::selection { background: var(--accent-soft); }
 
 img { display: block; max-width: 100%; }
+
+/* iOS safe-area insets, exposed as variables so they're easy to reuse (and to
+   simulate in tests). 0 on desktop/Android; non-zero inside an iOS standalone PWA. */
+:root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+}
 
 /* Scrollbars */
 * { scrollbar-width: thin; scrollbar-color: var(--gray-7) transparent; }
@@ -69,9 +88,15 @@ select.input { appearance: none; cursor: pointer; }
 
 /* ---------- Header ---------- */
 .header {
-  position: sticky; top: 0; z-index: 50; height: var(--header-height);
+  position: sticky; top: 0; z-index: 50;
+  /* iOS standalone PWA: the status bar overlays the page (viewport-fit=cover). Keep the
+     content row a fixed --header-height and add the top inset as EXTRA space above it
+     (content-box height + padding-top), so the logo/search row is centred BELOW the
+     clock/battery, never under it. --safe-* are 0 on desktop/Android. */
+  box-sizing: content-box;
+  height: var(--header-height);
+  padding: var(--safe-top) calc(var(--space-6) + var(--safe-right)) 0 calc(var(--space-6) + var(--safe-left));
   display: flex; align-items: center; gap: var(--space-5);
-  padding: 0 var(--space-6);
   background: color-mix(in srgb, var(--background) 88%, transparent);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid var(--border);
@@ -90,10 +115,14 @@ select.input { appearance: none; cursor: pointer; }
 .nav-links { overflow-x: auto; scrollbar-width: none; }
 .nav-links::-webkit-scrollbar { display: none; }
 .search-toggle { display: none; }
-.search-overlay { position: sticky; top: var(--header-height); z-index: 49; background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: var(--shadow-md); padding: var(--space-3) var(--space-4); }
+.search-overlay { position: sticky; top: calc(var(--header-height) + var(--safe-top)); z-index: 49; background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: var(--shadow-md); padding: var(--space-3) var(--space-4); }
 .search-overlay-form { display: flex; align-items: center; gap: var(--space-2); max-width: var(--container-max); margin: 0 auto; }
 .search-overlay-form > svg { color: var(--subtle-foreground); flex: none; }
 .search-overlay-form .input { flex: 1; }
+
+/* Secondary section bar (mobile/tablet only — hidden on desktop). Sticky under the
+   top bar, horizontally scrollable so every section stays reachable one-handed. */
+.nav-mobile { display: none; }
 
 /* ---------- Layout ---------- */
 .container { max-width: var(--container-max); margin: 0 auto; padding: var(--space-6); }
@@ -127,6 +156,10 @@ select.input { appearance: none; cursor: pointer; }
 .row { position: relative; }
 .row-track { display: grid; grid-auto-flow: column; grid-auto-columns: 168px; gap: var(--space-4); overflow-x: auto; scroll-behavior: smooth; padding-bottom: var(--space-2); scrollbar-width: none; }
 .row-track::-webkit-scrollbar { display: none; }
+/* click-and-drag to scroll (desktop; touch scrolls natively) */
+@media (hover: hover) and (pointer: fine) { .row-track { cursor: grab; } }
+.row-track.dragging { cursor: grabbing; scroll-behavior: auto; user-select: none; scroll-snap-type: none; }
+.row-track.dragging img { pointer-events: none; }
 .row-nav { position: absolute; top: 32%; z-index: 5; width: 36px; height: 36px; display: grid; place-items: center; border-radius: var(--radius-full); border: 1px solid var(--border); background: var(--surface); color: var(--foreground); box-shadow: var(--shadow-sm); opacity: 0; transition: opacity var(--duration-2) var(--ease-out); cursor: pointer; }
 .row:hover .row-nav { opacity: 1; }
 .row-nav.left { left: calc(-1 * var(--space-3)); }
@@ -162,7 +195,7 @@ select.input { appearance: none; cursor: pointer; }
 .hero-dots { position: absolute; bottom: var(--space-4); right: var(--space-6); z-index: 4; display: flex; gap: var(--space-2); }
 .hero-dot { width: 8px; height: 8px; padding: 0; border: none; border-radius: var(--radius-full); background: rgba(255,255,255,0.35); cursor: pointer; transition: background var(--duration-1), width var(--duration-1); }
 .hero-dot.active { width: 22px; background: var(--accent); }
-@media (max-width: 700px) {
+@media (max-width: 768px) {
   .hero-slider { height: 380px; }
   .hero-slide .content { padding: var(--space-6); }
   .hero-slide h1 { font-size: var(--text-2xl); }
@@ -177,7 +210,7 @@ select.input { appearance: none; cursor: pointer; }
 .plot { color: var(--muted-foreground); max-width: 68ch; margin-bottom: var(--space-5); }
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 
-@media (max-width: 760px) {
+@media (max-width: 768px) {
   .detail-top { grid-template-columns: 1fr; }
   .detail-poster { max-width: 220px; }
 }
@@ -200,7 +233,6 @@ select.input { appearance: none; cursor: pointer; }
 .episode:hover { border-color: var(--border-strong); }
 .episode-clickable { cursor: pointer; transition: border-color var(--duration-1) var(--ease-out), background var(--duration-1) var(--ease-out); }
 .episode-clickable:hover { border-color: var(--accent); background: var(--surface-hover); }
-.episode-play { pointer-events: none; }
 .episode .still { width: 160px; aspect-ratio: 16/9; object-fit: cover; border-radius: var(--radius-md); flex: none; background: var(--surface-2); }
 .episode .ei { flex: 1; min-width: 0; }
 .episode .ei .et { font-weight: var(--weight-medium); }
@@ -244,7 +276,7 @@ select.input { appearance: none; cursor: pointer; }
 /* Custom video player */
 .vp { position: relative; width: 100%; aspect-ratio: 16/9; background: black; border-radius: var(--radius-xl); overflow: hidden; border: 1px solid var(--border); }
 .vp.fs { border-radius: 0; border: none; aspect-ratio: auto; height: 100vh; }
-.vp video { width: 100%; height: 100%; display: block; background: black; }
+.vp video { width: 100%; height: 100%; display: block; background: black; object-fit: contain; }
 .vp .center { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .vp .center button { pointer-events: auto; width: 64px; height: 64px; border-radius: var(--radius-full); border: none; background: color-mix(in srgb, black 45%, transparent); color: white; display: grid; place-items: center; cursor: pointer; transition: transform var(--duration-1) var(--ease-out), background var(--duration-1); }
 .vp .center button:hover { background: color-mix(in srgb, black 30%, transparent); transform: scale(1.06); }
@@ -264,10 +296,11 @@ select.input { appearance: none; cursor: pointer; }
 .vp .ctrlrow { display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-2); color: white; }
 .vp .ctrlrow button { background: transparent; border: none; color: white; display: grid; place-items: center; cursor: pointer; padding: 4px; border-radius: var(--radius-sm); }
 .vp .ctrlrow button:hover { background: rgba(255,255,255,0.15); }
-.vp .ctrlrow .time { font-size: var(--text-xs); font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.85); }
+.vp .ctrlrow .time { font-size: var(--text-xs); font-variant-numeric: tabular-nums; color: rgba(255,255,255,0.85); white-space: nowrap; }
 .vp .ctrlrow .grow { flex: 1; }
 .vp .ctrlrow .vol { width: 84px; accent-color: var(--accent); cursor: pointer; }
 .vp .ctrlrow button.active { background: var(--accent); color: var(--accent-foreground); }
+.vp .ctrlrow .speed-btn { min-width: 36px; font-size: var(--text-sm); font-weight: var(--weight-semibold); font-variant-numeric: tabular-nums; }
 
 /* Player options sheet (audio / quality / subtitles) — popover on desktop, bottom sheet on mobile */
 .vp .vp-scrim { position: absolute; inset: 0; z-index: 6; background: transparent; }
@@ -289,13 +322,22 @@ select.input { appearance: none; cursor: pointer; }
 .vp .vp-opt.active svg { color: var(--accent); }
 .vp a.vp-opt { text-decoration: none; }
 .vp .vp-hint { font-size: var(--text-xs); color: rgba(255,255,255,0.5); padding: 6px 14px 8px; line-height: 1.4; }
+/* +/- stepper rows in the player sheet (speed, voice boost) */
+.vp .vp-stepper { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); padding: 10px 14px; color: #fff; font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.vp .vp-stepper-ctl { display: inline-flex; align-items: center; gap: 2px; background: rgba(255,255,255,0.06); border-radius: var(--radius-full); padding: 2px; }
+.vp .vp-stepper-ctl button { width: 34px; height: 34px; border-radius: var(--radius-full); border: none; background: rgba(255,255,255,0.08); color: #fff; font-size: 18px; line-height: 1; cursor: pointer; display: grid; place-items: center; }
+.vp .vp-stepper-ctl button:hover:not(:disabled) { background: rgba(255,255,255,0.2); }
+.vp .vp-stepper-ctl button:disabled { opacity: 0.35; cursor: default; }
+.vp .vp-stepper-val { min-width: 56px; text-align: center; font-variant-numeric: tabular-nums; }
 
-@media (max-width: 640px) {
-  /* Full-screen bottom sheet — fixed to the viewport, NOT confined to the small
-     embedded video box. High z-index so it sits above the page + fullscreen. */
+@media (max-width: 900px) {
+  /* Bottom sheet fixed to the VIEWPORT — the embedded player is small at these widths and
+     has overflow:hidden, so a sheet positioned inside it gets clipped. position:fixed
+     escapes the player box (and, in fullscreen, anchors to the fullscreen element). */
   .vp .vp-scrim { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 3000; }
   .vp .vp-sheet {
     position: fixed; left: 0; right: 0; bottom: 0; top: auto; width: auto;
+    max-width: none;                 /* override the desktop `calc(100% - 24px)` — that was the right-side gap */
     max-height: 78vh; z-index: 3001;
     border-radius: 22px 22px 0 0; border: none; border-top: 1px solid rgba(255,255,255,0.12);
     padding-bottom: max(8px, env(safe-area-inset-bottom));
@@ -317,14 +359,33 @@ select.input { appearance: none; cursor: pointer; }
 .vp .vp-error { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: var(--space-6); color: rgba(255,255,255,0.9); }
 .vp .badge-pill { position: absolute; top: var(--space-3); left: var(--space-3); }
 
+/* Live torrent overlay (peers, ↓/↑ speed, progress) — top-right, auto-hides when done */
+.torrent-stats {
+  position: absolute; top: var(--space-3); right: var(--space-3); z-index: 6;
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 5px var(--space-3); font-size: var(--text-xs); font-weight: 600;
+  font-variant-numeric: tabular-nums; color: #fff;
+  background: rgba(0, 0, 0, .58); backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, .14); border-radius: var(--radius-full);
+  opacity: 0; transition: opacity var(--duration-2) var(--ease-out);
+  pointer-events: none;
+}
+.vp.show .torrent-stats, .vp.paused .torrent-stats { opacity: 1; }
+.torrent-stats span { display: inline-flex; align-items: center; gap: 4px; }
+.torrent-stats .ts-dl { color: #7dd3fc; }
+.torrent-stats .ts-up { color: #86efac; }
+.torrent-stats .ts-prog { padding-left: var(--space-2); border-left: 1px solid rgba(255,255,255,.2); }
+.torrent-stats .ts-prog.ok { color: #86efac; }
+.torrent-stats.done { opacity: 0; }
+.vp.show .torrent-stats.done, .vp.paused .torrent-stats.done { opacity: .6; }
+
 /* ---------- Modal ---------- */
 .modal-overlay { position: fixed; inset: 0; background: var(--overlay); z-index: 150; display: grid; place-items: center; padding: var(--space-6); }
 .modal { width: min(560px, 100%); max-height: 88vh; overflow-y: auto; overflow-x: hidden; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); }
 .modal-head { display: flex; align-items: center; padding: var(--space-5); border-bottom: 1px solid var(--border); }
 .modal-head h3 { flex: 1; margin: 0; font-size: var(--text-lg); font-weight: var(--weight-semibold); }
-.modal-body { padding: var(--space-5); }
-.modal-foot { display: flex; justify-content: flex-end; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); }
 .modal-body { padding: var(--space-6); }
+.modal-foot { display: flex; justify-content: flex-end; gap: var(--space-3); padding: var(--space-4) var(--space-5); border-top: 1px solid var(--border); }
 .field { margin-bottom: var(--space-6); }
 .field:last-child { margin-bottom: 0; }
 .field > label { display: block; font-weight: var(--weight-semibold); margin-bottom: var(--space-3); }
@@ -335,8 +396,10 @@ select.input { appearance: none; cursor: pointer; }
 .field-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); }
 
 /* ---------- Table (providers) ---------- */
-.table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
-table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
+/* overflow-x:auto (not hidden) so the 7-column table SCROLLS on phones/tablets instead
+   of clipping the right columns (Priority/Success) off-screen. min-width keeps columns readable. */
+.table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: auto; }
+table.tbl { width: 100%; min-width: 660px; border-collapse: collapse; font-size: var(--text-sm); }
 .tbl th, .tbl td { text-align: left; padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
 .tbl th { background: var(--surface-2); color: var(--muted-foreground); font-weight: var(--weight-medium); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: 0.04em; position: sticky; top: 0; }
 .tbl th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
@@ -368,8 +431,11 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .dropdown-menu { left: 0; right: 0; min-width: 100%; }
 
 /* ---------- Segmented control ---------- */
-.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md); }
-.seg-opt { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); height: 30px; padding: 0 var(--space-3); border: none; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-sm); font-weight: var(--weight-medium); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out); }
+/* max-width:100% + overflow-x scroll so a control with many options (e.g. 7 playback
+   speeds) scrolls inside its box instead of clipping past the card edge. */
+.segmented { display: flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-md); max-width: 100%; width: fit-content; overflow-x: auto; scrollbar-width: none; }
+.segmented::-webkit-scrollbar { display: none; }
+.seg-opt { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); height: 30px; padding: 0 var(--space-3); border: none; background: transparent; color: var(--muted-foreground); font: inherit; font-size: var(--text-sm); font-weight: var(--weight-medium); border-radius: var(--radius-sm); cursor: pointer; white-space: nowrap; flex: 0 0 auto; transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out); }
 .seg-opt:hover { color: var(--foreground); }
 .seg-opt.active { background: var(--surface); color: var(--foreground); box-shadow: var(--shadow-xs); }
 .seg-opt[disabled] { opacity: 0.4; cursor: not-allowed; }
@@ -468,12 +534,111 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .watch-page { padding-top: var(--space-5); }
 .watch-page .back-link { display: inline-flex; align-items: center; gap: var(--space-1); color: var(--muted-foreground); font-size: var(--text-sm); margin-bottom: var(--space-4); }
 .watch-page .back-link:hover { color: var(--foreground); }
-.watch-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: var(--space-6); align-items: start; }
-@media (max-width: 1100px) { .watch-grid { grid-template-columns: 1fr; } .watch-rail { position: static; } }
+/* Desktop: player + info stack in the left column, sources rail on the right. */
+.watch-grid { display: grid; grid-template-columns: minmax(0, 1fr) 400px; grid-template-areas: "main rail" "info rail"; gap: var(--space-6); align-items: start; }
+/* min-width:0 on every grid child so long content (a source name, a wide chip row)
+   can't force a track wider than the viewport → no page-level horizontal scroll. */
+.watch-main { grid-area: main; min-width: 0; }
+.watch-rail { grid-area: rail; min-width: 0; }
+.watch-info { grid-area: info; min-width: 0; }
+/* Tablet/mobile: single column, and put SOURCES right under the player (before the
+   title/description/episodes) so choosing a source doesn't mean scrolling past them. */
+@media (max-width: 1100px) {
+  .watch-grid { grid-template-columns: 1fr; grid-template-areas: "main" "rail" "info"; }
+  .watch-rail { position: static; }
+}
 
-.watch-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; box-shadow: var(--shadow-lg); }
+.watch-stage-slot { position: relative; width: 100%; }
+.watch-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; background: #000; border: 1px solid var(--border); border-radius: var(--radius-xl); overflow: hidden; }
+/* Floating mini-player — detaches into the bottom-right corner while you scroll. The
+   sibling .watch-stage-ph holds the original 16:9 space so the page doesn't jump. It's a
+   PREVIEW: tap the window to play/pause, tap the restore button to jump back — the full
+   transport bar, the M3U8/MP4 type badge, and the torrent overlay are hidden to keep it clean. */
+.watch-stage.mini { position: fixed; inset: auto var(--space-4) var(--space-4) auto; z-index: 2000; width: min(72vw, 380px); box-shadow: var(--shadow-lg); border: 1px solid var(--border-strong); border-radius: var(--radius-lg); cursor: move; touch-action: none; }
+.watch-stage.mini .vp .controls,
+.watch-stage.mini .vp .badge-pill,
+.watch-stage.mini .vp .torrent-stats,
+.watch-stage.mini .vp .unmute-pill { display: none; }
+/* keep only a compact center play/pause affordance */
+.watch-stage.mini .vp .center button { width: 48px; height: 48px; }
+.watch-stage-ph { width: 100%; aspect-ratio: 16 / 9; }
+.mini-restore { position: absolute; top: 6px; left: 6px; z-index: 8; width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-full); background: rgba(0,0,0,.6); color: #fff; border: none; cursor: pointer; }
+.mini-restore:hover { background: rgba(0,0,0,.8); }
+/* close (dismiss) the floating mini-player — top-right, mirrors the restore button */
+.mini-close { position: absolute; top: 6px; right: 6px; z-index: 8; width: 30px; height: 30px; display: grid; place-items: center; border-radius: var(--radius-full); background: rgba(0,0,0,.6); color: #fff; border: none; cursor: pointer; }
+.mini-close:hover { background: rgba(0,0,0,.85); }
 .watch-stage > .vp, .watch-stage > iframe { position: absolute; inset: 0; width: 100%; height: 100%; }
 .vp.embedded { aspect-ratio: auto; height: 100%; border: none; border-radius: 0; }
+
+/* ── Player control bar (episode nav + playback toggles + AniSkip) ── */
+.player-bar { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; margin-top: var(--space-3); }
+.pbar-grow { flex: 1 1 auto; }
+.pbar-btn { display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); font-size: var(--text-sm); line-height: 1; color: var(--muted-foreground); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+.pbar-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--foreground); }
+.pbar-btn.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.pbar-btn:disabled { opacity: .4; cursor: default; }
+@media (max-width: 560px) {
+  /* icon-only buttons: equal square tap targets, evenly spread across the row */
+  .pbar-btn { padding: var(--space-2); min-width: 40px; justify-content: center; }
+  .pbar-btn span { display: none; }
+  .player-bar { gap: var(--space-1); }
+  /* Theater + Lights are desktop-only affordances — hide them on mobile. */
+  .pbar-desktop { display: none; }
+  /* Compact transport row so the time never wraps/clips. Mute is dropped (the device
+     volume rocker handles it) to make room. */
+  .vp .ctrlrow { gap: 2px; }
+  .vp .ctrlrow button { padding: 6px; }
+  .vp .ctrlrow .mute-btn { display: none; }
+  .vp .ctrlrow .time { font-size: 10px; }
+  .vp .controls { padding: var(--space-3) var(--space-2) var(--space-2); }
+}
+
+/* AniSkip skip button (floats above the player controls during OP/ED) */
+.skip-btn { position: absolute; right: var(--space-4); bottom: 84px; z-index: 6; display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); font-size: var(--text-sm); font-weight: 600; color: var(--accent-foreground); background: var(--accent); border: none; border-radius: var(--radius-full); cursor: pointer; box-shadow: var(--shadow-lg); animation: skipIn .2s ease; }
+.skip-btn:hover { background: var(--accent-strong); }
+@keyframes skipIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* AniSkip OP/ED markers on the seek bar (sit above the buffered fill, below knob) */
+.vp .track .skip-seg { position: absolute; top: 0; bottom: 0; height: 100%; border-radius: 2px; pointer-events: none; z-index: 1; opacity: .85; }
+.vp .track .skip-seg.op { background: repeating-linear-gradient(45deg, var(--warning), var(--warning) 4px, color-mix(in srgb, var(--warning) 65%, transparent) 4px, color-mix(in srgb, var(--warning) 65%, transparent) 8px); }
+.vp .track .skip-seg.ed { background: repeating-linear-gradient(45deg, var(--accent), var(--accent) 4px, color-mix(in srgb, var(--accent) 65%, transparent) 4px, color-mix(in srgb, var(--accent) 65%, transparent) 8px); }
+
+/* Semi-transparent "Opening/Ending skipped" toast */
+.skip-toast { position: absolute; left: 50%; top: var(--space-6); transform: translateX(-50%); z-index: 6; display: inline-flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); font-size: var(--text-sm); font-weight: 500; color: #fff; background: rgba(0, 0, 0, .55); backdrop-filter: blur(6px); border: 1px solid rgba(255, 255, 255, .14); border-radius: var(--radius-full); animation: skipIn .2s ease; }
+
+/* Theater mode — widen the stage; sources under the player, then details. */
+.watch-grid.theater { grid-template-columns: 1fr; grid-template-areas: "main" "rail" "info"; }
+.watch-grid.theater .watch-rail { position: static; }
+
+/* Lights off — dim the page behind the stage */
+.lights-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.72); z-index: 40; animation: skipIn .2s ease; }
+.watch-grid.lit .watch-main { position: relative; z-index: 41; }
+
+/* Unavailable providers (failed / timed-out / no-source) with reason */
+.pstat-group { display: flex; flex-direction: column; gap: 2px; margin-top: var(--space-2); padding-top: var(--space-2); border-top: 1px solid var(--border); }
+.pstat.unavail { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); font-size: var(--text-sm); }
+.pstat.unavail.dim { opacity: .6; }
+.pstat .pname-sm { color: var(--muted-foreground); }
+.pstat .unavail-note { margin-left: auto; font-size: var(--text-xs); }
+.pstat.unavail-toggle { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: var(--space-1) var(--space-2); font-size: var(--text-sm); color: var(--muted-foreground); background: none; border: none; cursor: pointer; text-align: left; }
+.pstat.unavail-toggle:hover { color: var(--foreground); }
+.pstat.unavail-toggle .chev { margin-left: auto; transition: transform .15s; }
+
+/* Connections panel (FlareSolverr + WARP diagnostics) */
+.conn-panel { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: var(--space-4); margin-bottom: var(--space-4); background: var(--surface); }
+.conn-list { display: flex; flex-direction: column; gap: var(--space-1); }
+.conn-row { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2); border-radius: var(--radius-md); }
+.conn-row:hover { background: var(--surface-hover); }
+.conn-host { min-width: 130px; font-size: var(--text-sm); }
+
+/* Per-kind provider editor (reorder + hide) */
+.prov-editor { display: flex; flex-direction: column; gap: var(--space-1); }
+.prov-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
+.prov-row.off { opacity: .5; }
+.prov-idx { width: 20px; text-align: center; font-size: var(--text-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+.prov-name { flex: 1; min-width: 0; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.prov-kind { font-size: var(--text-xs); }
+.prov-move { display: flex; gap: 2px; }
 .stage-idle { position: absolute; inset: 0; display: grid; place-items: center; }
 .stage-idle > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.22; }
 .stage-idle::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 25%, rgba(0,0,0,0.55)); }
@@ -501,8 +666,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 
 .watch-rail { position: sticky; top: calc(var(--header-height) + var(--space-4)); }
 .sources-rail { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: var(--space-4); max-height: calc(100vh - var(--header-height) - var(--space-8)); overflow-y: auto; }
-.rail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
+.rail-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-3); flex-wrap: wrap; }
 .rail-head h3 { font-size: var(--text-md); }
+.rail-head .badge { white-space: nowrap; }   /* status stays one line, never wraps inside the pill */
 .rail-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .rail-subs { margin-top: var(--space-4); }
 .src-group.muted-group { opacity: 0.7; }
@@ -526,7 +692,7 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .anime-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); flex-wrap: wrap; margin-bottom: var(--space-3); }
 .anime-head .page-title { margin: 0; }
 .anime-tabs { display: flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
-.atab { background: none; border: none; color: var(--muted-foreground); font: inherit; font-weight: var(--weight-medium); font-size: var(--text-base); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); cursor: pointer; transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out); }
+.atab { background: none; border: none; color: var(--muted-foreground); font: inherit; font-weight: var(--weight-medium); font-size: var(--text-base); padding: var(--space-2) var(--space-3); border-radius: var(--radius-md); cursor: pointer; white-space: nowrap; flex: 0 0 auto; transition: background var(--duration-1) var(--ease-out), color var(--duration-1) var(--ease-out); }
 .atab:hover { color: var(--foreground); background: var(--surface-hover); }
 .atab.active { color: var(--accent-strong); }
 .atab-sep { width: 1px; height: 20px; background: var(--border); margin: 0 var(--space-1); }
@@ -552,36 +718,77 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
    RESPONSIVE — tablet & mobile
    ========================================================================== */
 @media (max-width: 1024px) {
-  .header { gap: var(--space-3); padding: 0 var(--space-4); }
+  /* keep the top safe-area inset (iOS PWA) — only the horizontal padding tightens here */
+  .header { gap: var(--space-3); padding: var(--safe-top) calc(var(--space-4) + var(--safe-right)) 0 calc(var(--space-4) + var(--safe-left)); }
   .header-search { width: 220px; }
   .container { padding: var(--space-5) var(--space-4); }
 }
 
-/* Tablet: nav becomes icon-only and scrollable; drop the Live pill */
+/* Tablet: nav keeps its labels but scrolls horizontally (items don't shrink/clip) */
 @media (max-width: 900px) {
   .header .grow { display: none; }
-  .nav-links { flex: 1 1 auto; min-width: 0; gap: 2px; }
-  .nav-link .nav-text { display: none; }
-  .nav-link { padding: 0 var(--space-2); }
+  .nav-links { flex: 1 1 auto; min-width: 0; gap: 2px; -webkit-overflow-scrolling: touch; }
+  .nav-link { flex: 0 0 auto; padding: 0 var(--space-2); }
   .live-pill { display: none; }
 }
 
 /* Mobile: inline search → button + dropdown overlay */
 @media (max-width: 768px) {
   .header-search { display: none; }
-  .search-toggle { display: inline-flex; }
+  .search-toggle { display: inline-flex; margin-left: auto; }  /* push actions to the right edge */
+  /* primary nav collapses into the secondary section bar under the header */
+  .nav-links { display: none; }
+  .nav-mobile {
+    display: flex; gap: var(--space-1);
+    position: sticky; top: calc(var(--header-height) + var(--safe-top)); z-index: 40;
+    padding: var(--space-2) var(--space-3);
+    background: color-mix(in srgb, var(--background) 92%, transparent);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+    transition: transform var(--duration-2) var(--ease-out), opacity var(--duration-2) var(--ease-out);
+    will-change: transform;
+  }
+  .nav-mobile::-webkit-scrollbar { display: none; }
+  /* Hidden while scrolling down: slides up behind the always-pinned top bar. Scrolling
+     up (or returning to the top) flips this off and it drops straight back into place. */
+  .nav-mobile.minimized { transform: translateY(-100%); opacity: 0; pointer-events: none; }
+  .nav-mobile-link {
+    display: inline-flex; align-items: center; gap: var(--space-2); flex: 0 0 auto;
+    height: 34px; padding: 0 var(--space-3); border-radius: var(--radius-full);
+    font-size: var(--text-sm); font-weight: var(--weight-medium);
+    color: var(--muted-foreground); background: var(--surface-2);
+    white-space: nowrap;
+  }
+  .nav-mobile-link.active { background: var(--accent); color: var(--accent-foreground); }
   /* browse controls stack and scroll */
   .anime-head { flex-direction: column; align-items: stretch; gap: var(--space-3); }
   .anime-tabs { width: 100%; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; padding-bottom: var(--space-1); }
   .anime-tabs::-webkit-scrollbar { display: none; }
-  .atab { padding: var(--space-2); }
+  .atab { padding: var(--space-2); min-height: 40px; }
   /* watch rail: full width below the player */
   .watch-rail { position: static; }
   .sources-rail { max-height: none; }
+
+  /* ── Touch targets: bump interactive controls to ~40px on touch ── */
+  .nav-mobile-link { height: 40px; }
+  .btn-icon { width: 40px; height: 40px; }
+  .btn-icon.btn-sm { width: 40px; height: 40px; }      /* modal close, provider move, history remove */
+  .seg-opt { height: 40px; }
+  .rchip .x { width: 26px; height: 26px; }
+
+  /* ── Overflow: scroll/wrap instead of clipping across the whole tablet range ── */
+  .segmented { overflow-x: auto; scrollbar-width: none; }
+  .segmented::-webkit-scrollbar { display: none; }
+  .conn-row { flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
+  .conn-host { min-width: 0; }
+  .conn-row .badge { white-space: nowrap; }
 }
 
 @media (max-width: 600px) {
   .container { padding: var(--space-4) var(--space-3); }
+  /* (primary .nav-links is display:none below 768 — the .nav-mobile section bar
+     replaces it there, so no phone-width .nav-link rules are needed.) */
   .grid { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: var(--space-3); }
   .detail-top { grid-template-columns: 1fr; }
   .detail-poster { max-width: 180px; }
@@ -596,6 +803,9 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
   .segmented::-webkit-scrollbar { display: none; }
   .drawer { width: 100vw; }
   .player-overlay { padding: var(--space-2); }
+  /* providers page: let connection rows wrap so latency/version don't clip off-screen */
+  .conn-row { flex-wrap: wrap; gap: var(--space-1) var(--space-2); }
+  .conn-host { min-width: 0; }
 }
 
 @media (max-width: 440px) {
@@ -622,8 +832,16 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 .hist-info .t { font-weight: var(--weight-medium); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hist-info .sub { font-size: var(--text-xs); color: var(--subtle-foreground); margin-top: 2px; }
 
+/* Settings page (full page, replaces the old modal). Masonry via CSS columns so the
+   short cards (Appearance/Sync) pack together instead of leaving a tall gap next to
+   the long Playback card. `break-inside: avoid` keeps each card whole. */
+.settings-page { max-width: 1000px; }
+.settings-grid { columns: 440px; column-gap: var(--space-5); }
+.settings-card { break-inside: avoid; margin: 0 0 var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); padding: var(--space-5) var(--space-5) var(--space-2); }
+.settings-card .field:last-child { margin-bottom: var(--space-3); }
+
 .sync-row { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
-.sync-code { font-family: var(--font-mono); font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--border); padding: 4px var(--space-2); border-radius: var(--radius-sm); user-select: all; }
+.sync-code { font-family: var(--font-mono); font-size: var(--text-sm); background: var(--surface-2); border: 1px solid var(--border); padding: 4px var(--space-2); border-radius: var(--radius-sm); user-select: all; min-width: 0; overflow-wrap: anywhere; }
 .settings-h { font-size: var(--text-xs); font-weight: var(--weight-semibold); text-transform: uppercase; letter-spacing: 0.06em; color: var(--subtle-foreground); margin: 0 0 var(--space-4); padding-top: var(--space-6); border-top: 1px solid var(--border); }
 .modal-body > .settings-h:first-child { border-top: none; padding-top: 0; }
 .roster { display: flex; flex-direction: column; gap: var(--space-2); }

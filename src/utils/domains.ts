@@ -38,12 +38,17 @@ const KEY_MAP: Record<string, string> = {
 export type DomainKey = keyof typeof KEY_MAP;
 
 let cached: Record<string, string> | null = null;
+let cachedAt = 0;
+// Refresh the domain map periodically so a mid-run rotation is picked up without
+// a restart. Falls back to the stale cache if a refresh fetch fails.
+const DOMAINS_TTL = 30 * 60 * 1000; // 30 min
 
 export const getDomains = async (forceRefresh = false): Promise<Record<string, string> | null> => {
-    if (cached && !forceRefresh) return cached;
+    if (cached && !forceRefresh && Date.now() - cachedAt < DOMAINS_TTL) return cached;
     try {
         const res = await app.get(DOMAINS_URL, { timeout: 15000 });
-        cached = res.json<Record<string, string>>();
+        const fresh = res.json<Record<string, string>>();
+        if (fresh && Object.keys(fresh).length) { cached = fresh; cachedAt = Date.now(); }
     } catch (e: any) {
         console.error('[getDomains] failed:', e?.message || e);
     }

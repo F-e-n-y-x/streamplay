@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type TouchEvent as RTouchEvent } from "react";
 import Hls from "hls.js";
-import { getSettings } from "../lib/settings";
+import { getSettings, useSettings, updateSettings } from "../lib/settings";
 import { copyText } from "../lib/clipboard";
-import { Check, Copy, ExternalLink, Maximize, Pause, Play, RotateCcw, Settings, Subtitles, Volume2, VolumeX, X } from "./icons";
+import type { SkipTimes } from "../lib/api";
+import { Check, ChevronDown, ChevronUp, Copy, ExternalLink, Forward10, Maximize, MonitorPlay, Pause, Play, Rewind10, RotateCcw, Settings, Subtitles, Users, Volume2, VolumeX, X, Zap } from "./icons";
 
 /** ISO/short language code → display name for the audio menu. */
 const LANG_NAMES: Record<string, string> = {
@@ -14,6 +15,21 @@ const LANG_NAMES: Record<string, string> = {
   mr: "Marathi", pa: "Punjabi", ur: "Urdu", th: "Thai", id: "Indonesian", vi: "Vietnamese", und: "Original",
 };
 const langName = (code: string) => LANG_NAMES[(code || "").toLowerCase()] || (code ? code.toUpperCase() : "Original");
+
+// Reverse map (display name → BCP-47 code) so a subtitle <track> is labelled with
+// the correct srcLang instead of a hardcoded "en" (matters for native track pickers
+// and accessibility). Falls back to the raw code, or "und" (undetermined).
+const NAME2CODE: Record<string, string> = {
+  japanese: "ja", english: "en", hindi: "hi", tamil: "ta", telugu: "te", malayalam: "ml",
+  kannada: "kn", korean: "ko", chinese: "zh", french: "fr", spanish: "es", german: "de",
+  italian: "it", portuguese: "pt", russian: "ru", arabic: "ar", bengali: "bn", marathi: "mr",
+  punjabi: "pa", urdu: "ur", thai: "th", indonesian: "id", vietnamese: "vi",
+};
+const subLangCode = (label: string): string => {
+  const l = (label || "").toLowerCase().trim();
+  if (/^[a-z]{2,3}(-[a-z]{2,4})?$/i.test(l)) return l;        // already a code (en, ja, pt-BR…)
+  return NAME2CODE[l] || "und";
+};
 
 export interface PlayerSource {
   title: string;
@@ -74,6 +90,57 @@ export function EmbedFrame({ source }: { source: PlayerSource }) {
   );
 }
 
+const fmtBytes = (n: number): string => {
+  if (!n || n < 1024) return `${n | 0} B`;
+  const u = ["KB", "MB", "GB", "TB"]; let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return `${n.toFixed(n < 10 ? 1 : 0)} ${u[i]}`;
+};
+
+interface TStatus { active: boolean; name?: string; progress?: number; downloaded?: number; length?: number; downloadSpeed?: number; uploadSpeed?: number; numPeers?: number; ready?: boolean }
+
+/**
+ * Live torrent overlay (peers, ↓/↑ speed, progress) — only renders for a
+ * /api/torrent stream. Polls /api/torrent/status while the torrent is downloading
+ * and auto-hides once the file is complete so it doesn't clutter playback.
+ */
+function TorrentStats({ url }: { url: string }) {
+  const [st, setSt] = useState<TStatus | null>(null);
+  const magnet = (url.match(/[?&]magnet=([^&]+)/) || [])[1];
+  const isTorrent = url.includes("/api/torrent/") && !!magnet;
+
+  useEffect(() => {
+    if (!isTorrent) return;
+    let alive = true;
+    let timer: number | undefined;
+    const tick = async () => {
+      try {
+        const r = await fetch(`/api/torrent/status?magnet=${magnet}`);
+        const d: TStatus = await r.json();
+        if (!alive) return;
+        setSt(d);
+        // Poll faster while downloading, back off once complete.
+        const done = d.active && (d.progress ?? 0) >= 0.999;
+        timer = window.setTimeout(tick, done ? 15000 : 2000);
+      } catch { if (alive) timer = window.setTimeout(tick, 4000); }
+    };
+    tick();
+    return () => { alive = false; window.clearTimeout(timer); };
+  }, [isTorrent, magnet]);
+
+  if (!isTorrent || !st || !st.active) return null;
+  const pct = Math.round((st.progress ?? 0) * 100);
+  const complete = pct >= 100;
+  return (
+    <div className={`torrent-stats ${complete ? "done" : ""}`} title={st.name}>
+      <span className="ts-peers"><Users size={12} /> {st.numPeers ?? 0}</span>
+      {!complete && <span className="ts-dl"><ChevronDown size={12} /> {fmtBytes(st.downloadSpeed ?? 0)}/s</span>}
+      <span className="ts-up"><ChevronUp size={12} /> {fmtBytes(st.uploadSpeed ?? 0)}/s</span>
+      <span className={`ts-prog ${complete ? "ok" : ""}`}>{complete ? "Ready" : `${pct}%`}</span>
+    </div>
+  );
+}
+
 function fmt(t: number): string {
   if (!isFinite(t) || t < 0) t = 0;
   const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = Math.floor(t % 60);
@@ -86,7 +153,7 @@ function fmt(t: number): string {
  * Watch page). Handles the autoplay-with-sound block by falling back to muted
  * autoplay and offering a one-click unmute — never surfaces that as an "error".
  */
-export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: { source: PlayerSource; embedded?: boolean; onFail?: () => void; resumeAt?: number; onProgress?: (position: number, duration: number) => void }) {
+export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, skips, autoSkip, onEndedNext }: { source: PlayerSource; embedded?: boolean; onFail?: () => void; resumeAt?: number; onProgress?: (position: number, duration: number) => void; skips?: SkipTimes | null; autoSkip?: boolean; onEndedNext?: () => void }) {
   const wrap = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const hls = useRef<Hls | null>(null);
@@ -113,6 +180,24 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   const [autoMuted, setAutoMuted] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetTab, setSheetTab] = useState("");
+  // Swipe-down-to-dismiss for the options bottom sheet (mobile).
+  const [sheetDragY, setSheetDragY] = useState(0);
+  const sheetTouchY = useRef<number | null>(null);
+  const sheetBodyRef = useRef<HTMLDivElement>(null);
+  const openSheet = () => { setSheetDragY(0); setSheetOpen(true); };
+  const onSheetTouchStart = (e: RTouchEvent) => { sheetTouchY.current = e.touches[0].clientY; };
+  const onSheetTouchMove = (e: RTouchEvent) => {
+    if (sheetTouchY.current == null) return;
+    const dy = e.touches[0].clientY - sheetTouchY.current;
+    // Drag-to-close only when pulling DOWN and the list is scrolled to the top — so the
+    // options list still scrolls normally, but a downward drag from the handle/top closes.
+    if (dy > 0 && (sheetBodyRef.current?.scrollTop ?? 0) <= 0) setSheetDragY(dy);
+  };
+  const onSheetTouchEnd = () => {
+    if (sheetDragY > 90) setSheetOpen(false);  // dragged far enough → close
+    setSheetDragY(0);
+    sheetTouchY.current = null;
+  };
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [levels, setLevels] = useState<{ index: number; height: number; bitrate: number }[]>([]);
   const [curLevel, setCurLevel] = useState(-1); // -1 = Auto
@@ -122,23 +207,101 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   const [manifestAudios, setManifestAudios] = useState<{ name: string; lang: string }[]>([]);
   const [curMAudio, setCurMAudio] = useState("");
   const pendingSeek = useRef<number | null>(null);
+  // AniSkip: which OP/ED interval (if any) the playhead is currently inside, and a
+  // per-episode record of intervals already auto-skipped (so we skip each once).
+  const [activeSkip, setActiveSkip] = useState<{ label: string; end: number } | null>(null);
+  const [skipToast, setSkipToast] = useState<string | null>(null);
+  const skipToastTimer = useRef<number | undefined>(undefined);
+  const autoSkipped = useRef<Set<string>>(new Set());
+  const flashSkip = useCallback((msg: string) => {
+    setSkipToast(msg);
+    window.clearTimeout(skipToastTimer.current);
+    skipToastTimer.current = window.setTimeout(() => setSkipToast(null), 2500);
+  }, []);
+  useEffect(() => { autoSkipped.current = new Set(); setActiveSkip(null); setSkipToast(null); }, [source]);
+
+  const S = useSettings();   // live: subtitle appearance + voice boost (device-local)
+  // Subtitle appearance (applied to native ::cue + shaka-rendered cues).
+  const SUB_SIZE_PCT: Record<string, number> = { sm: 80, md: 100, lg: 135, xl: 175 };
+  const subCss = `.vp video::cue{color:${S.subtitleColor};background:rgba(0,0,0,${S.subtitleBgOpacity});font-size:${SUB_SIZE_PCT[S.subtitleSize] ?? 100}%}`
+    + `.vp .shaka-text-container span,.vp .shaka-text-container div{color:${S.subtitleColor}!important;background:rgba(0,0,0,${S.subtitleBgOpacity})!important}`;
+
+  // ── Playback speed: PER-VIDEO (not a synced setting — it depends on what you're
+  //    watching). Resets to 1× on each new source; adjusted with the +/- stepper. ──
+  const [rate, setRate] = useState(1);
+  useEffect(() => { setRate(1); }, [source]);
+  useEffect(() => { if (video.current) video.current.playbackRate = rate; }, [rate]);
+  const bumpRate = (d: number) => setRate((r) => Math.min(2, Math.max(0.25, Math.round((r + d) * 100) / 100)));
+
+  const togglePip = async () => {
+    const el = video.current; if (!el) return;
+    try { if (document.pictureInPictureElement) await document.exitPictureInPicture(); else await el.requestPictureInPicture(); } catch { /* unsupported / blocked */ }
+  };
+
+  // ── Voice / dialogue boost (Web Audio) — high-pass to trim rumble, a peaking boost
+  //    around the 2.6 kHz speech band, and gentle compression to lift quiet dialogue
+  //    under loud effects. Built lazily on a user gesture (createMediaElementSource can
+  //    tap an element only once; the AudioContext persists and is reused per source). ──
+  const va = useRef<{ ctx: AudioContext; el: HTMLVideoElement; hp: BiquadFilterNode; peak: BiquadFilterNode; comp: DynamicsCompressorNode } | null>(null);
+  const applyBoost = useCallback((level: number) => {
+    const a = va.current; if (!a) return;
+    const gains = [0, 4, 7, 10];                 // dB lift at the speech band per level
+    a.peak.gain.value = gains[level] ?? 0;
+    a.hp.frequency.value = level > 0 ? 95 : 20;  // cut sub-bass rumble only when boosting
+    a.comp.threshold.value = -18; a.comp.knee.value = 20; a.comp.attack.value = 0.003; a.comp.release.value = 0.25;
+    a.comp.ratio.value = level > 0 ? 2 + level : 1;
+    if (a.ctx.state === "suspended") a.ctx.resume().catch(() => { /* needs a gesture */ });
+  }, []);
+  const ensureVoiceGraph = useCallback(() => {
+    const el = video.current; if (!el) return false;
+    try {
+      if (va.current && va.current.el === el) return true;     // already tapped this element
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = va.current?.ctx ?? new Ctx();                // reuse the context across sources
+      const src = ctx.createMediaElementSource(el);
+      const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 20;
+      const peak = ctx.createBiquadFilter(); peak.type = "peaking"; peak.frequency.value = 2600; peak.Q.value = 1.1; peak.gain.value = 0;
+      const comp = ctx.createDynamicsCompressor(); comp.ratio.value = 1;
+      src.connect(hp); hp.connect(peak); peak.connect(comp); comp.connect(ctx.destination);
+      va.current = { ctx, el, hp, peak, comp };
+      return true;
+    } catch { return false; }
+  }, []);
+  // Apply the saved boost when playback starts (a gesture, so the context can resume).
+  const onPlayWireBoost = useCallback(() => { if ((S.voiceBoost || 0) > 0 && ensureVoiceGraph()) applyBoost(S.voiceBoost); }, [S.voiceBoost, ensureVoiceGraph, applyBoost]);
+  const setBoost = (level: number) => { updateSettings({ voiceBoost: level }); if (level > 0) { if (ensureVoiceGraph()) applyBoost(level); } else applyBoost(0); };
+  useEffect(() => () => { try { va.current?.ctx.close(); } catch { /* */ } }, []);
 
   const tracks = source.subtitles ?? [];
   const prefLangs = (getSettings() as unknown as { audioLanguages?: string[] }).audioLanguages ?? [];
   const animeTrack = (getSettings() as unknown as { anime?: "sub" | "dub" }).anime ?? "sub";
   const wantAutoplay = (getSettings() as unknown as { autoplay?: boolean }).autoplay ?? true;
 
+  // ── Subtitle memory ── Remember the last subtitle language you chose (or "off") and
+  // re-apply it on every video: if that language is in the menu it's auto-enabled; if
+  // you turned subs off, they stay off. The preference is device-local (see settings).
+  const prefTrackIndex = useCallback(() => {
+    const p = (S.subtitlePref || "").toLowerCase();
+    if (!p || p === "off") return -1;
+    const exact = tracks.findIndex((t) => (t.lang || "").toLowerCase() === p);
+    return exact >= 0 ? exact : tracks.findIndex((t) => (t.lang || "").toLowerCase().includes(p));
+  }, [S.subtitlePref, tracks]);
+  // choose a track AND remember it for future videos
+  const chooseCc = useCallback((index: number) => {
+    setCcIndex(index);
+    updateSettings({ subtitlePref: index < 0 ? "off" : (tracks[index]?.lang || "off") });
+  }, [tracks]);
+  const toggleCc = () => chooseCc(ccIndex < 0 ? (prefTrackIndex() >= 0 ? prefTrackIndex() : 0) : -1);
+  // apply the remembered preference whenever a new video's tracks arrive
+  useEffect(() => { if (tracks.length) setCcIndex(prefTrackIndex()); /* eslint-disable-next-line */ }, [source, tracks.length]);
+
   // start (or autoplay) the current video, with muted fallback for blocked autoplay
   const start = useCallback(() => {
     const el = video.current;
     if (!el) return;
-    el.play().catch(() => {
-      // autoplay-with-sound blocked → retry muted (always allowed), offer unmute
-      el.muted = true;
-      setMuted(true);
-      setAutoMuted(true);
-      el.play().catch(() => { /* leave paused; user can press play */ });
-    });
+    // Never auto-mute. If the browser blocks autoplay-with-sound, just leave it paused —
+    // the user presses play (a gesture) and gets sound. (Muting-to-autoplay was removed.)
+    el.play().catch(() => { /* autoplay blocked — leave paused */ });
   }, []);
 
   // Attach the source. Engine priority for HLS: Shaka (broad codecs + reliable
@@ -146,7 +309,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   useEffect(() => {
     const el = video.current;
     if (!el) return;
-    setError(null); setLoading(true); autostarted.current = false;
+    setError(null); setLoading(true); autostarted.current = false; resumed.current = false;
     setLevels([]); setAudioTracks([]); setCurLevel(-1); setCurAudio(-1);
     setManifestAudios([]); setCurMAudio("");
 
@@ -184,6 +347,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
       if (cancelled) return;
       if (!Hls.isSupported()) { startNative(); return; }
       engineRef.current = "hls";
+      let hlsFellBack = false;
       const inst = new Hls({ enableWorker: true, lowLatencyMode: false, maxBufferLength: 60, maxMaxBufferLength: 600, backBufferLength: 60, fragLoadingMaxRetry: 6, manifestLoadingMaxRetry: 4, levelLoadingMaxRetry: 4 });
       hls.current = inst;
       const syncAudio = () => {
@@ -219,11 +383,18 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
       inst.on(Hls.Events.AUDIO_TRACKS_UPDATED, syncAudio);
       inst.on(Hls.Events.AUDIO_TRACK_SWITCHED, (_e, d) => setCurAudio(d.id));
       inst.on(Hls.Events.LEVEL_SWITCHED, (_e, d) => setCurLevel(inst.autoLevelEnabled ? -1 : d.level));
-      inst.on(Hls.Events.ERROR, (_e, data) => { if (data.fatal) { setError("This source failed to load."); onFail?.(); } });
+      inst.on(Hls.Events.ERROR, (_e, data) => {
+        if (!data.fatal) return;
+        // Try to self-recover the common fatal errors before giving up.
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) { try { inst.startLoad(); return; } catch { /* */ } }
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) { try { inst.recoverMediaError(); return; } catch { /* */ } }
+        // Otherwise hand the same source to Shaka (broader codec/DRM coverage).
+        if (!hlsFellBack && !cancelled) { hlsFellBack = true; try { inst.destroy(); } catch { /* */ } hls.current = null; startShaka(); }
+      });
       cleanup = () => { inst.destroy(); hls.current = null; };
     };
 
-    // ── Shaka (primary) — exposes audio languages + qualities reliably ──
+    // ── Shaka (fallback) — broad codec/DRM coverage + rich subtitle parsing ──
     const startShaka = async () => {
       try {
         // @ts-expect-error — shaka's compiled build ships non-ES-module typings
@@ -240,13 +411,29 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
         player.configure({ streaming: { bufferingGoal: 60, rebufferingGoal: 2, retryParameters: { maxAttempts: 5, baseDelay: 500, backoffFactor: 2 } } });
         let fellBack = false;
         player.addEventListener("error", (ev: any) => {
-          if (ev?.detail?.severity === 2 && !fellBack && !cancelled) { fellBack = true; try { player.destroy(); } catch { /* */ } shakaRef.current = null; startHls(); }
+          if (ev?.detail?.severity === 2 && !fellBack && !cancelled) { fellBack = true; try { player.destroy(); } catch { /* */ } shakaRef.current = null; startNative(); }
         });
         await player.load(source.url, (resumeAt && resumeAt > 5) ? resumeAt : undefined);
         if (cancelled) { try { player.destroy(); } catch { /* */ } return; }
         resumed.current = true;
         const variants: any[] = player.getVariantTracks?.() || [];
-        const audios = (player.getAudioLanguages?.() || []).map((c: string) => ({ name: langName(c), lang: c }));
+        // Build the audio list from the master's EXT-X-MEDIA NAMEs — they're always
+        // present and distinct even when the renditions share or omit LANGUAGE (the
+        // Indian-dub masters do), which is what lets every dub show up AND switch.
+        // Fall back to Shaka's language list if the parse yields nothing.
+        let audios: { name: string; lang: string }[] = [];
+        try {
+          const txt = await (await fetch(source.url)).text();
+          audios = ([...txt.matchAll(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*/gi)].map((mm) => {
+            const nm = /NAME="([^"]+)"/.exec(mm[0])?.[1];
+            const lg = /LANGUAGE="([^"]+)"/.exec(mm[0])?.[1] || "";
+            return nm ? { name: nm, lang: lg } : null;
+          }).filter(Boolean)) as { name: string; lang: string }[];
+        } catch { /* */ }
+        if (audios.length < 2) {
+          const sl = (player.getAudioLanguages?.() || []).map((c: string) => ({ name: langName(c), lang: c }));
+          if (sl.length > audios.length) audios = sl;
+        }
         setManifestAudios(audios);
         const active = variants.find((v) => v.active);
         let chosen = active ? langName(active.language) : (audios[0]?.name || "");
@@ -259,11 +446,15 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
         cleanup = () => { try { player.destroy(); } catch { /* */ } shakaRef.current = null; };
         if (wantAutoplay && !autostarted.current) { autostarted.current = true; start(); }
       } catch {
-        if (!cancelled) startHls();
+        if (!cancelled) startNative();
       }
     };
 
-    if (source.type === "m3u8") startShaka();
+    // hls.js is the PRIMARY HLS engine: it enumerates alternate-audio renditions by
+    // index/NAME (so dubs that lack a distinct LANGUAGE still show up and switch
+    // seamlessly via hls.audioTrack), and has the best HLS coverage + error recovery.
+    // Shaka is the fallback (broad codec/DRM + rich subtitles); native for mp4/iOS.
+    if (source.type === "m3u8") startHls();
     else startNative();
 
     return () => { cancelled = true; cleanup(); };
@@ -286,11 +477,22 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   const togglePlay = useCallback(() => {
     const el = video.current;
     if (!el) return;
-    if (el.paused) el.play().catch(() => { el.muted = true; setMuted(true); el.play().catch(() => {}); });
+    // A click IS a user gesture, so sound is allowed — never force-mute here. (A rejected
+    // play() is usually just an interrupted load/AbortError; muting on it was the bug that
+    // made the video mute itself on click.)
+    if (el.paused) el.play().catch(() => { /* interrupted — leave audio as-is */ });
     else el.pause();
   }, []);
 
   const unmute = () => { const el = video.current; if (el) { el.muted = false; setMuted(false); } setAutoMuted(false); };
+
+  const seekBy = useCallback((delta: number) => {
+    const el = video.current;
+    if (!el) return;
+    const dur = el.duration || duration;
+    el.currentTime = Math.max(0, Math.min(dur || el.currentTime + delta, el.currentTime + delta));
+    setCurrent(el.currentTime);
+  }, [duration]);
 
   const nudgeControls = useCallback(() => {
     setShowControls(true);
@@ -316,14 +518,25 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   }, [togglePlay, nudgeControls, tracks.length]);
 
   useEffect(() => {
-    const onFs = () => setFullscreen(!!document.fullscreenElement);
+    const onFs = () => setFullscreen(!!(document.fullscreenElement || (document as any).webkitFullscreenElement));
     document.addEventListener("fullscreenchange", onFs);
-    return () => document.removeEventListener("fullscreenchange", onFs);
+    document.addEventListener("webkitfullscreenchange", onFs);
+    return () => { document.removeEventListener("fullscreenchange", onFs); document.removeEventListener("webkitfullscreenchange", onFs); };
   }, []);
 
   function toggleFullscreen() {
-    if (document.fullscreenElement) document.exitFullscreen();
-    else wrap.current?.requestFullscreen?.();
+    const el = wrap.current as any;
+    const vid = video.current as any;
+    const doc = document as any;
+    if (document.fullscreenElement || doc.webkitFullscreenElement) {
+      (document.exitFullscreen || doc.webkitExitFullscreen)?.call(document);
+      return;
+    }
+    // Standard fullscreen on the wrapper; fall back to webkit, and finally to the VIDEO's
+    // native fullscreen (iOS Safari only supports fullscreen on the <video> element).
+    if (el?.requestFullscreen) el.requestFullscreen().catch(() => vid?.webkitEnterFullscreen?.());
+    else if (el?.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if (vid?.webkitEnterFullscreen) vid.webkitEnterFullscreen();
   }
   function pickQuality(index: number) {
     if (engineRef.current === "shaka" && shakaRef.current) {
@@ -348,10 +561,21 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   // proxy's &audio= (which re-defaults that track), resuming at the same position.
   function pickManifestAudio(name: string) {
     if (name === curMAudio) return;
-    // Shaka switches audio in place, no reload.
     if (engineRef.current === "shaka" && shakaRef.current) {
       const a = manifestAudios.find((x) => x.name === name);
-      if (a) { try { shakaRef.current.selectAudioLanguage(a.lang); } catch { /* */ } setCurMAudio(name); }
+      if (!a) return;
+      // In-place switch works only when the track has a distinct, non-empty
+      // LANGUAGE. Otherwise (Indian-dub renditions that share/omit LANGUAGE) reload
+      // the master through the proxy's &audio= re-default, resuming the position.
+      const langs = manifestAudios.map((x) => x.lang);
+      const canSelectByLang = !!a.lang && langs.filter((l) => l === a.lang).length === 1;
+      if (canSelectByLang) { try { shakaRef.current.selectAudioLanguage(a.lang); } catch { /* */ } setCurMAudio(name); return; }
+      const el = video.current;
+      const base = source.url.replace(/([?&])audio=[^&]*/i, "$1").replace(/[?&]$/, "");
+      const sep = base.includes("?") ? "&" : "?";
+      const pos = el?.currentTime || 0;
+      setCurMAudio(name);
+      shakaRef.current.load(`${base}${sep}audio=${encodeURIComponent(name)}`, pos > 5 ? pos : undefined).then(() => start()).catch(() => { /* */ });
       return;
     }
     // hls.js: reload the master with our &audio= re-default, resuming position.
@@ -386,12 +610,12 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
   // Absolute URL of the (proxied) stream — plays in VLC with headers already injected.
   const streamAbs = source.url.startsWith("/") ? `${location.origin}${source.url}` : source.url;
   const copyStream = () => { copyText(streamAbs).then((ok) => { if (ok) { setCopiedUrl(true); setTimeout(() => setCopiedUrl(false), 1500); } }); };
-  // Audio is ALWAYS a tab. Quality/Subtitles show when present. VLC always.
+  // Audio is ALWAYS a tab. Quality/Subtitles show when present.
   const sheetTabs = [
+    { id: "playback", label: "Playback" },
     { id: "audio", label: "Audio" },
     ...(levels.length > 1 ? [{ id: "quality", label: "Quality" }] : []),
     ...(tracks.length > 0 ? [{ id: "subs", label: "Subtitles" }] : []),
-    { id: "vlc", label: "VLC" },
   ];
   const activeTab = sheetTabs.some((t) => t.id === sheetTab) ? sheetTab : sheetTabs[0].id;
 
@@ -409,7 +633,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
         crossOrigin="anonymous"
         onClick={togglePlay}
         onDoubleClick={toggleFullscreen}
-        onPlay={() => { setPlaying(true); setEnded(false); nudgeControls(); }}
+        onPlay={() => { setPlaying(true); setEnded(false); nudgeControls(); onPlayWireBoost(); }}
         onPause={() => { setPlaying(false); setShowControls(true); const el = video.current; if (onProgress && el && el.duration > 0) onProgress(el.currentTime, el.duration); }}
         onWaiting={() => setLoading(true)}
         onPlaying={() => setLoading(false)}
@@ -420,18 +644,33 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
           resumed.current = true;
         }}
         onTimeUpdate={(e) => {
-          const el = e.currentTarget; setCurrent(el.currentTime);
+          const el = e.currentTarget; const t = el.currentTime; setCurrent(t);
           try { if (el.buffered.length) setBuffered(el.buffered.end(el.buffered.length - 1)); } catch { /* noop */ }
-          if (onProgress && el.duration > 0 && Date.now() - lastSaved.current > 8000) { lastSaved.current = Date.now(); onProgress(el.currentTime, el.duration); }
+          if (onProgress && el.duration > 0 && Date.now() - lastSaved.current > 8000) { lastSaved.current = Date.now(); onProgress(t, el.duration); }
+          // AniSkip: detect OP/ED window; show the Skip button and (if enabled) auto-skip once.
+          if (skips) {
+            const inIv = (iv: { start: number; end: number } | null) => iv && t >= iv.start && t < iv.end - 0.3;
+            const hit = inIv(skips.opening) ? { key: "op", label: "Skip Opening", end: skips.opening!.end }
+              : inIv(skips.ending) ? { key: "ed", label: "Skip Ending", end: skips.ending!.end } : null;
+            if (hit) {
+              if (autoSkip && !autoSkipped.current.has(hit.key)) { autoSkipped.current.add(hit.key); el.currentTime = hit.end; setActiveSkip(null); flashSkip(hit.key === "op" ? "Opening skipped" : "Ending skipped"); }
+              else if (!autoSkip) setActiveSkip({ label: hit.label, end: hit.end });
+            } else if (activeSkip) setActiveSkip(null);
+          }
         }}
         onVolumeChange={(e) => { setVolume(e.currentTarget.volume); setMuted(e.currentTarget.muted); }}
-        onEnded={() => { setPlaying(false); setEnded(true); setShowControls(true); }}
+        onEnded={() => { setPlaying(false); setEnded(true); setShowControls(true); if (onProgress && video.current?.duration) onProgress(video.current.duration, video.current.duration); onEndedNext?.(); }}
         onError={() => { setError("This source could not be played in the browser."); onFail?.(); }}
       >
-        {tracks.map((t, i) => (<track key={i} kind="subtitles" label={t.lang || `Track ${i + 1}`} srcLang="en" src={t.url} />))}
+        {tracks.map((t, i) => (<track key={i} kind="subtitles" label={t.lang || `Track ${i + 1}`} srcLang={subLangCode(t.lang)} src={t.url} />))}
       </video>
+      {/* user subtitle appearance (Settings → Appearance) applied to native + shaka cues */}
+      <style>{subCss}</style>
 
       <span className="badge badge-pill">{source.type.toUpperCase()}</span>
+
+      <TorrentStats url={source.url} />
+
 
       {autoMuted && playing && (
         <button className="unmute-pill" onClick={unmute}><VolumeX size={14} /> Muted — click to unmute</button>
@@ -454,10 +693,28 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
         </div>
       )}
 
+      {activeSkip && (
+        <button
+          className="skip-btn"
+          onClick={(e) => { e.stopPropagation(); if (video.current) video.current.currentTime = activeSkip.end; flashSkip(activeSkip.label.replace(/^Skip /, "") + " skipped"); setActiveSkip(null); }}
+        >
+          <Zap size={15} /> {activeSkip.label}
+        </button>
+      )}
+
+      {skipToast && <div className="skip-toast"><Zap size={13} /> {skipToast}</div>}
+
       <div className="controls" onClick={(e) => e.stopPropagation()}>
         <div className="seek">
           <div className="track">
             <div className="buffered" style={{ width: `${bufPct}%` }} />
+            {/* AniSkip OP/ED markers — coloured so you can see where the opening/ending are */}
+            {skips?.opening && duration > 0 && (
+              <div className="skip-seg op" title="Opening" style={{ left: `${(skips.opening.start / duration) * 100}%`, width: `${((skips.opening.end - skips.opening.start) / duration) * 100}%` }} />
+            )}
+            {skips?.ending && duration > 0 && (
+              <div className="skip-seg ed" title="Ending" style={{ left: `${(skips.ending.start / duration) * 100}%`, width: `${((skips.ending.end - skips.ending.start) / duration) * 100}%` }} />
+            )}
             <div className="played" style={{ width: `${pct}%` }} />
             <div className="knob" style={{ left: `${pct}%` }} />
           </div>
@@ -474,15 +731,20 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
           />
         </div>
         <div className="ctrlrow">
+          <button aria-label="Back 10 seconds" title="Back 10s (←)" onClick={() => seekBy(-10)}><Rewind10 size={20} /></button>
           <button aria-label={playing ? "Pause" : "Play"} onClick={togglePlay}>{playing ? <Pause size={20} /> : <Play size={20} />}</button>
-          <button aria-label={muted ? "Unmute" : "Mute"} onClick={() => { if (video.current) video.current.muted = !video.current.muted; setAutoMuted(false); }}>{muted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}</button>
+          <button aria-label="Forward 10 seconds" title="Forward 10s (→)" onClick={() => seekBy(10)}><Forward10 size={20} /></button>
+          <button className="mute-btn" aria-label={muted ? "Unmute" : "Mute"} onClick={() => { if (video.current) video.current.muted = !video.current.muted; setAutoMuted(false); }}>{muted || volume === 0 ? <VolumeX size={20} /> : <Volume2 size={20} />}</button>
           <input className="vol" type="range" min={0} max={1} step={0.05} value={muted ? 0 : volume} onChange={(e) => { if (video.current) { video.current.volume = Number(e.target.value); video.current.muted = false; } }} aria-label="Volume" />
           <span className="time">{fmt(current)} / {fmt(duration)}</span>
           <span className="grow" />
           {tracks.length > 0 && (
-            <button className={ccOn ? "active" : ""} aria-label="Toggle subtitles" aria-pressed={ccOn} onClick={() => setCcIndex((i) => (i < 0 ? 0 : -1))}><Subtitles size={20} /></button>
+            <button className={ccOn ? "active" : ""} aria-label="Toggle subtitles" aria-pressed={ccOn} onClick={() => toggleCc()}><Subtitles size={20} /></button>
           )}
-          <button aria-label="Audio, quality & subtitles" onClick={() => setSheetOpen(true)}><Settings size={20} /></button>
+          {document.pictureInPictureEnabled && (
+            <button className="pip-btn pbar-desktop" aria-label="Picture in picture" title="Picture-in-picture" onClick={togglePip}><MonitorPlay size={20} /></button>
+          )}
+          <button aria-label="Speed, audio, quality & subtitles" onClick={openSheet}><Settings size={20} /></button>
           <button aria-label="Fullscreen" onClick={toggleFullscreen}><Maximize size={20} /></button>
         </div>
       </div>
@@ -490,7 +752,16 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
       {sheetOpen && (
         <>
           <div className="vp-scrim" onClick={() => setSheetOpen(false)} />
-          <div className="vp-sheet" role="dialog" aria-label="Player options" onClick={(e) => e.stopPropagation()}>
+          <div
+            className="vp-sheet"
+            role="dialog"
+            aria-label="Player options"
+            onClick={(e) => e.stopPropagation()}
+            onTouchStart={onSheetTouchStart}
+            onTouchMove={onSheetTouchMove}
+            onTouchEnd={onSheetTouchEnd}
+            style={sheetDragY ? { transform: `translateY(${sheetDragY}px)`, transition: "none" } : undefined}
+          >
             <div className="vp-sheet-head">
               <div className="vp-tabs">
                 {sheetTabs.map((t) => (
@@ -499,7 +770,28 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
               </div>
               <button className="vp-sheet-x" aria-label="Close" onClick={() => setSheetOpen(false)}><X size={18} /></button>
             </div>
-            <div className="vp-sheet-body">
+            <div className="vp-sheet-body" ref={sheetBodyRef}>
+              {activeTab === "playback" && (
+                <div className="vp-sec">
+                  <div className="vp-stepper">
+                    <span>Speed</span>
+                    <div className="vp-stepper-ctl">
+                      <button aria-label="Slower" onClick={() => bumpRate(-0.25)} disabled={rate <= 0.25}>−</button>
+                      <span className="vp-stepper-val">{rate}×</span>
+                      <button aria-label="Faster" onClick={() => bumpRate(0.25)} disabled={rate >= 2}>+</button>
+                    </div>
+                  </div>
+                  <div className="vp-stepper">
+                    <span>Voice boost</span>
+                    <div className="vp-stepper-ctl">
+                      <button aria-label="Less" onClick={() => setBoost(Math.max(0, (S.voiceBoost || 0) - 1))} disabled={(S.voiceBoost || 0) <= 0}>−</button>
+                      <span className="vp-stepper-val">{["Off", "Low", "Med", "High"][S.voiceBoost || 0]}</span>
+                      <button aria-label="More" onClick={() => setBoost(Math.min(3, (S.voiceBoost || 0) + 1))} disabled={(S.voiceBoost || 0) >= 3}>+</button>
+                    </div>
+                  </div>
+                  <div className="vp-hint">Enhances dialogue clarity — lifts the speech frequencies and evens out loud/quiet scenes.</div>
+                </div>
+              )}
               {activeTab === "audio" && (
                 <div className="vp-sec">
                   {audioTracks.length > 1 ? (
@@ -517,7 +809,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
                   ) : (
                     <>
                       <button className="vp-opt active"><span>{manifestAudios[0]?.name || audioTracks[0]?.label || "Default"}</span><Check size={16} /></button>
-                      <div className="vp-hint">This stream has one selectable track. If VLC shows more audio, they're embedded (muxed) and can't be switched in a browser — open it in VLC (VLC tab) to access them all.</div>
+                      <div className="vp-hint">This stream has one selectable track. Any other audio is embedded (muxed) in the file and can't be switched in a browser — try a different source or the Dub/Sub toggle.</div>
                     </>
                   )}
                 </div>
@@ -534,19 +826,12 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress }: 
               )}
               {activeTab === "subs" && (
                 <div className="vp-sec">
-                  <button className={`vp-opt ${ccIndex < 0 ? "active" : ""}`} onClick={() => setCcIndex(-1)}><span>Off</span>{ccIndex < 0 && <Check size={16} />}</button>
+                  <button className={`vp-opt ${ccIndex < 0 ? "active" : ""}`} onClick={() => chooseCc(-1)}><span>Off</span>{ccIndex < 0 && <Check size={16} />}</button>
                   {tracks.map((t, i) => (
-                    <button key={i} className={`vp-opt ${ccIndex === i ? "active" : ""}`} onClick={() => setCcIndex(i)}>
+                    <button key={i} className={`vp-opt ${ccIndex === i ? "active" : ""}`} onClick={() => chooseCc(i)}>
                       <span>{t.lang || `Track ${i + 1}`}</span>{ccIndex === i && <Check size={16} />}
                     </button>
                   ))}
-                </div>
-              )}
-              {activeTab === "vlc" && (
-                <div className="vp-sec">
-                  <a className="vp-opt" href={`vlc://${streamAbs}`}><span>Open in VLC</span><ExternalLink size={16} /></a>
-                  <button className="vp-opt" onClick={copyStream}><span>{copiedUrl ? "Copied!" : "Copy stream link"}</span>{copiedUrl ? <Check size={16} /> : <Copy size={16} />}</button>
-                  <div className="vp-hint">VLC handles every audio track &amp; subtitle format natively — useful if a track won't switch here.</div>
                 </div>
               )}
             </div>

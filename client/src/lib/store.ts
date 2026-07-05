@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Card } from "./types";
+import { getSettings, applyRemoteSettings, onSettingsChange, type ClientSettings } from "./settings";
 
 /**
  * Unified local store for watch history + favourites, with optional real-time
@@ -78,6 +79,26 @@ function loadCode(): string | null { try { return localStorage.getItem(CODE_KEY)
 export function getSyncState() { return syncState; }
 export function getSyncCode() { return code; }
 
+// ── settings sync (LWW by updatedAt) ────────────────────────────────────────────
+// We mirror the client settings object into the sync room too, so preferences
+// (audio, quality, provider order/hide, sticky provider, WARP mode, …) follow you
+// across devices — not just history/favourites.
+let settingsSyncedAt = 0;
+function pushSettings() {
+  if (!code) return;
+  const s = getSettings();
+  fetch(`/api/sync/${encodeURIComponent(code)}/settings`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(s) }).catch(() => {});
+}
+function applyRemoteSettingsIfNewer(remote?: ClientSettings | null) {
+  if (!remote || typeof remote.updatedAt !== "number") return;
+  if (remote.updatedAt > getSettings().updatedAt) { settingsSyncedAt = remote.updatedAt; applyRemoteSettings(remote); }
+}
+// Push local settings changes to the room (skip the echo from applying a remote one).
+onSettingsChange(() => {
+  const s = getSettings();
+  if (code && s.updatedAt > settingsSyncedAt) { settingsSyncedAt = s.updatedAt; pushSettings(); }
+});
+
 // ── history ───────────────────────────────────────────────────────────────────
 const histKey = (type: string, id: number, season?: number, episode?: number) =>
   type === "tv" && season != null ? `tv-${id}-${season}-${episode}` : `${type}-${id}`;
@@ -142,12 +163,13 @@ async function linkDevice(c: string): Promise<void> {
   try {
     const res = await fetch(`/api/sync/${encodeURIComponent(code)}/bulk`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: data.history, favs: data.favs }),
+      body: JSON.stringify({ history: data.history, favs: data.favs, settings: getSettings() }),
     });
     const merged = await res.json();
     if (merged.history) data.history = merged.history;
     if (merged.favs) data.favs = merged.favs;
     save(); emit();
+    applyRemoteSettingsIfNewer(merged.settings);
   } catch { syncState = "error"; emit(); }
   connectStream();
 }
@@ -182,17 +204,22 @@ function connectStream() {
   es.addEventListener("snapshot", (e) => mergeRemote(JSON.parse((e as MessageEvent).data)));
   es.addEventListener("history", (e) => mergeOne("history", JSON.parse((e as MessageEvent).data)));
   es.addEventListener("fav", (e) => mergeOne("fav", JSON.parse((e as MessageEvent).data)));
+  es.addEventListener("settings", (e) => applyRemoteSettingsIfNewer(JSON.parse((e as MessageEvent).data)));
   es.addEventListener("roster", (e) => { roster = JSON.parse((e as MessageEvent).data); emit(); });
   es.addEventListener("remove", (e) => {
-    const { kind, key } = JSON.parse((e as MessageEvent).data);
-    if (kind === "fav") delete data.favs[key]; else delete data.history[key];
+    const { kind, key, at } = JSON.parse((e as MessageEvent).data);
+    const map = kind === "fav" ? data.favs : data.history;
+    // LWW: don't drop a locally-newer entry to a stale remote delete.
+    if (map[key] && at != null && map[key].updatedAt > at) return;
+    delete map[key];
     save(); emit();
   });
 }
-function mergeRemote(s: { history?: Record<string, HistoryEntry>; favs?: Record<string, FavEntry> }) {
+function mergeRemote(s: { history?: Record<string, HistoryEntry>; favs?: Record<string, FavEntry>; settings?: ClientSettings | null }) {
   for (const e of Object.values(s.history || {})) { const c = data.history[e.key]; if (!c || e.updatedAt >= c.updatedAt) data.history[e.key] = e; }
   for (const e of Object.values(s.favs || {})) { const c = data.favs[e.key]; if (!c || e.updatedAt >= c.updatedAt) data.favs[e.key] = e; }
   save(); emit();
+  applyRemoteSettingsIfNewer(s.settings);
 }
 function mergeOne(kind: "history" | "fav", e: HistoryEntry | FavEntry) {
   const map: Record<string, any> = kind === "fav" ? data.favs : data.history;
@@ -205,7 +232,8 @@ function pushEntry(event: "history" | "fav", payload: any) {
 }
 function pushRemove(kind: "history" | "fav", key: string) {
   if (!code) return;
-  fetch(`/api/sync/${encodeURIComponent(code)}/remove`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, key }) }).catch(() => {});
+  // Send the delete time so the server/peers apply it LWW (a delete can't clobber a newer update).
+  fetch(`/api/sync/${encodeURIComponent(code)}/remove`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, key, at: Date.now() }) }).catch(() => {});
 }
 
 export function randomCode(): string {
@@ -221,12 +249,13 @@ async function resumeSync() {
   try {
     const res = await fetch(`/api/sync/${encodeURIComponent(code)}/bulk`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: data.history, favs: data.favs }),
+      body: JSON.stringify({ history: data.history, favs: data.favs, settings: getSettings() }),
     });
     const merged = await res.json();
     if (merged.history) data.history = merged.history;
     if (merged.favs) data.favs = merged.favs;
     save(); emit();
+    applyRemoteSettingsIfNewer(merged.settings);
   } catch { /* offline — the stream will retry and snapshot-merge */ }
   connectStream();
 }

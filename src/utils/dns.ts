@@ -52,27 +52,43 @@ const dohClient = axios.create({ timeout: 8000, httpsAgent: bootstrapAgent, head
 
 interface CacheEntry { ips: { address: string; family: number }[]; expires: number }
 const cache = new Map<string, CacheEntry>();
+const inflight = new Map<string, Promise<{ address: string; family: number }[]>>();
 const now = () => Date.now();
 
 async function resolveDoH(hostname: string): Promise<{ address: string; family: number }[]> {
     if (isIp(hostname)) return [{ address: hostname, family: hostname.includes(':') ? 6 : 4 }];
     const hit = cache.get(hostname);
     if (hit && hit.expires > now()) return hit.ips;
+    // In-flight dedup: concurrent first-time lookups of the same host share ONE DoH
+    // request instead of each firing their own (a stampede on a cold cache).
+    const pending = inflight.get(hostname);
+    if (pending) return pending;
 
-    const res = await dohClient.get(DOH_URL, { params: { name: hostname, type: 'A' } });
-    const answers: any[] = res.data?.Answer || [];
-    const aRecords = answers.filter((a) => a.type === 1 && a.data);
-    const ips = aRecords.map((a) => ({ address: String(a.data), family: 4 }));
-    if (ips.length) {
-        const ttl = Math.max(30, Math.min(300, ...aRecords.map((a) => Number(a.TTL) || 300)));
-        cache.set(hostname, { ips, expires: now() + ttl * 1000 });
-    }
-    return ips;
+    const task = (async () => {
+        try {
+            const res = await dohClient.get(DOH_URL, { params: { name: hostname, type: 'A' } });
+            const answers: any[] = res.data?.Answer || [];
+            const aRecords = answers.filter((a) => a.type === 1 && a.data);
+            const ips = aRecords.map((a) => ({ address: String(a.data), family: 4 }));
+            // Positives: honour TTL (30-300s). Negatives (DoH answered but no A record):
+            // cache empty briefly so a dead host doesn't re-hit DoH on every request —
+            // dohLookup treats [] as "fall back to the system resolver".
+            const ttl = ips.length ? Math.max(30, Math.min(300, ...aRecords.map((a) => Number(a.TTL) || 300))) : 30;
+            cache.set(hostname, { ips, expires: now() + ttl * 1000 });
+            return ips;
+        } finally {
+            inflight.delete(hostname);
+        }
+    })();
+    inflight.set(hostname, task);
+    return task;
 }
 
 // Node-compatible lookup that resolves via DoH and falls back to the system
 // resolver on any failure, so a DoH hiccup never makes things worse.
-const dohLookup: LookupFunction = ((hostname: string, options: any, cb: any) => {
+// Exported so the SSRF guard (utils/ssrf.ts) can reuse DoH resolution while
+// rejecting private/loopback targets at connection time.
+export const dohLookup: LookupFunction = ((hostname: string, options: any, cb: any) => {
     const wantAll = typeof options === 'object' && options?.all;
     const fallback = () => dns.lookup(hostname, options, cb);
     resolveDoH(hostname)
