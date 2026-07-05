@@ -107,12 +107,28 @@ const pruneTomb = (t: Record<string, number>): Record<string, number> => {
     return out;
 };
 
+// Cap entries per map per room so a room can't grow (and persist to disk) without
+// bound — either from abuse or a runaway client. Express already limits a single
+// request body to ~100kb; this bounds slow accumulation across many requests. A real
+// personal library is nowhere near this, and when full we evict the OLDEST entry to
+// make room for a newer one (never drop a newer entry for an older incoming one).
+const MAX_ENTRIES_PER_MAP = 10000;
+
 /** LWW upsert that also respects the tombstone (won't resurrect a more-recently-deleted key). */
 const upsert = (room: Room, kind: 'history' | 'fav', entry: Entry): boolean => {
     if (!entry || !entry.key) return false;
     const map = kind === 'fav' ? room.favs : room.history;
     if ((entry.updatedAt || 0) <= (room.tomb[tkey(kind, entry.key)] || 0)) return false; // deleted more recently
     const cur = map[entry.key];
+    if (!cur) {
+        const keys = Object.keys(map);
+        if (keys.length >= MAX_ENTRIES_PER_MAP) {
+            let oldestKey = keys[0], oldestAt = Infinity;
+            for (const k of keys) { const at = map[k].updatedAt || 0; if (at < oldestAt) { oldestAt = at; oldestKey = k; } }
+            if (oldestAt > (entry.updatedAt || 0)) return false;  // everything stored is newer — drop the incoming one
+            delete map[oldestKey];
+        }
+    }
     if (!cur || (entry.updatedAt || 0) >= (cur.updatedAt || 0)) { map[entry.key] = entry; return true; }
     return false;
 };
