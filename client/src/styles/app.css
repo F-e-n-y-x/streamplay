@@ -524,7 +524,9 @@ table.tbl { width: 100%; min-width: 660px; border-collapse: collapse; font-size:
 .empty { text-align: center; color: var(--muted-foreground); padding: var(--space-16) var(--space-6); }
 .skeleton { background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-hover) 37%, var(--surface-2) 63%); background-size: 400% 100%; animation: shimmer 1.4s ease infinite; border-radius: var(--radius-lg); }
 @keyframes shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
-.note { display: flex; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); color: var(--muted-foreground); font-size: var(--text-sm); margin-bottom: var(--space-5); }
+/* Block (not flex): notes are prose with inline <b>/<code>. As a flex row each text run
+   became a separate non-wrapping item that got crushed into narrow columns on mobile/tablet. */
+.note { display: block; line-height: var(--leading-snug); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); color: var(--muted-foreground); font-size: var(--text-sm); margin-bottom: var(--space-5); }
 .note b { color: var(--foreground); font-weight: var(--weight-medium); }
 .cls-grid { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
