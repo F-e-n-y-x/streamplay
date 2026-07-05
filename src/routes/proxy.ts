@@ -260,4 +260,5 @@ router.get('/sub', async (req, res) => {
 });
 
 export default router;
-export { b64 };
+// b64 is used by other routes; rewriteManifest/assToVtt are exported for unit tests.
+export { b64, rewriteManifest, assToVtt };

@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install server deps
+        run: npm ci
+      - name: Type-check server
+        run: npx tsc --noEmit
+      - name: Build client (type-check + bundle)
+        run: npm run build:client
+      - name: Unit tests
+        run: npm test
