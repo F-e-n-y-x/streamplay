@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Routes, Route, useLocation } from "react-router-dom";
+import { Routes, Route, useLocation, Link } from "react-router-dom";
 import Header from "./components/Header";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -15,6 +15,16 @@ const Watchlist = lazy(() => import("./pages/Watchlist"));
 const Settings = lazy(() => import("./pages/Settings"));
 
 const RouteFallback = () => <div className="container"><div className="empty">Loading…</div></div>;
+
+// Catch-all for unknown URLs — without this an unmatched path renders a blank body.
+const NotFound = () => (
+  <div className="container">
+    <div className="empty">
+      <div>This page doesn’t exist.</div>
+      <Link to="/" className="btn btn-primary btn-sm" style={{ marginTop: "var(--space-4)" }}>Back to home</Link>
+    </div>
+  </div>
+);
 
 export default function App() {
   const location = useLocation();
@@ -37,6 +47,7 @@ export default function App() {
           <Route path="/providers" element={<Providers />} />
           <Route path="/watchlist" element={<Watchlist />} />
           <Route path="/settings" element={<Settings />} />
+          <Route path="*" element={<NotFound />} />
         </Routes>
         </Suspense>
         </ErrorBoundary>
