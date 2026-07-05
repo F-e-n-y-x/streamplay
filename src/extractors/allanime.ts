@@ -132,9 +132,22 @@ async function getEpisodeSources(showId: string, mode: 'sub' | 'dub', episodeStr
     const url = `${API}?variables=${encodeURIComponent(JSON.stringify(variables))}&extensions=${encodeURIComponent(JSON.stringify(ext))}`;
     const hdrs = { ...HDRS, Origin: REFERER };
     let text = (await app.get(url, { headers: hdrs, timeout: 20000 })).text;
+    // AllAnime now gates episode sources behind an IP-reputation captcha: a flagged /
+    // datacenter egress gets {"errors":[{"message":"NEED_CAPTCHA"}]}. FlareSolverr can't
+    // clear an API-level captcha (it just refetches the same JSON), so don't burn a ~60s
+    // solve slot on it — that only starves the pool AnimePahe/AnimeWorld need. Bail fast;
+    // a cleaner egress (ALLANIME_WARP=true → WARP pool) is what actually clears it.
+    if (/NEED_CAPTCHA/.test(text)) {
+        if (process.env.ANIME_DEBUG) console.error('[AllAnime] NEED_CAPTCHA — episode sources are IP-gated; egress IP is flagged (try ALLANIME_WARP=true).');
+        return [];
+    }
     if (!/tobeparsed|sourceUrl/.test(text) && isFlareSolverrConfigured()) {
         await safeGet(API, { headers: HDRS, flareTimeout: 60000 }).catch(() => { /* */ });
         text = (await app.get(url, { headers: hdrs, timeout: 20000 })).text;
+        if (/NEED_CAPTCHA/.test(text)) {
+            if (process.env.ANIME_DEBUG) console.error('[AllAnime] NEED_CAPTCHA after FlareSolverr retry — egress still flagged.');
+            return [];
+        }
     }
     const tobe = (text.match(/"tobeparsed":"([^"]*)"/) || [])[1];
     if (tobe) {
@@ -206,6 +219,11 @@ async function resolveMode(showId: string, episodeString: string, mode: 'sub' | 
 export const AllAnimeProvider: Provider = {
     id: 'allanime',
     name: 'AllAnime',
+    // AllAnime gates episode sources behind an IP-reputation captcha (NEED_CAPTCHA) on
+    // flagged/datacenter egress IPs. From a clean residential IP it needs NO WARP; set
+    // ALLANIME_WARP=true to route it through the WARP pool when your direct IP is
+    // captcha-flagged (opt-in, so clean-IP deployments aren't forced onto WARP).
+    requiresWarp: process.env.ALLANIME_WARP === 'true',
     invoke: async (data: LinkData): Promise<ExtractorResult> => {
         const out: ExtractorResult = { streams: [], subtitles: [] };
         if (!data.isAnime || !data.title) return out;
