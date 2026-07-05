@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+Nothing yet — in development.
+
+## 1.2.0
+
+Feature release — reworked anime providers, per-kind provider control, cross-device
+settings sync, torrent mode, and a richer player — plus a full read/run audit pass
+(security hardening, fixes, and the project's first automated tests).
+
 ### Anime providers (AniZone / AnimeWorld / AnimePahe)
 - **AniZone is now fast + reliable.** It was routing every request through a
   FlareSolverr browser (30-90s, and often only appearing after a page reload).
@@ -176,6 +184,25 @@
   `sse-probe.js` harness that drives `/api/sources/stream` and prints a
   per-provider FOUND/empty/FAILED table — the ground-truth tool for telling a real
   code bug apart from a dead upstream or a catalog gap.
+
+### Audit hardening & fixes (read/run audit pass)
+- **404 page.** Unknown client routes rendered a blank body (no catch-all route);
+  added a NotFound route with a link home.
+- **Mobile notes fixed.** `.note` blocks with inline emphasis fragmented into cramped
+  narrow columns on phone/tablet (flex row); they now render as normal wrapped prose.
+- **Proxy SSRF hardening.** Every redirect hop is re-validated against the SSRF guard,
+  closing a gap where the WARP fallback path followed redirects unchecked.
+- **Sync disk bound.** Per-room history/favourites are capped (with oldest-eviction) so
+  a room can't grow to disk without bound.
+- **Live/Fallback pill.** The header health indicator now polls, so it can't go stale.
+- **API client.** `post()` surfaces a clean status error instead of throwing on a
+  non-JSON error body (keeps `{ ok, error }` bodies for the UI).
+- **Dead code.** Removed an unreachable auto-muted path from the player.
+- **First automated tests + CI.** Unit tests for the SSRF guard and the HLS/subtitle
+  rewriters on Node's built-in test runner (no new dependencies), plus a CI workflow
+  running type-check + client build + tests on push/PR.
+- **Docs.** Added `PROJECT_MAP.md`, `AUDIT_REPORT.md`, `IMPROVEMENTS.md`, and a README
+  "Security & exposing your instance" section.
 
 ## 1.1.0
 
