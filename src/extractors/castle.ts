@@ -111,6 +111,7 @@ export const CastleProvider: Provider = {
         const key = await securityKey();
         if (!key) return { streams, subtitles };
 
+        try {
         // 1) search → best title/year match
         const sr = await encGet(`${API}/film-api/v1.1.0/movie/searchByKeyword?channel=IndiaA&clientType=1&keyword=${encodeURIComponent(data.title)}&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=20`, key);
         const rows: any[] = sr?.rows || sr?.list || [];
@@ -200,6 +201,13 @@ export const CastleProvider: Provider = {
             }
         }
 
+        } catch (e: any) {
+            // encGet does not set validateStatus, so any non-2xx / timeout / reset
+            // rejects. Every sibling extractor degrades to a partial result rather
+            // than throwing out of invoke() (which also leaks a raw stack via the
+            // /debug endpoint) — match that contract.
+            console.error('Error in CastleTV extractor:', e?.message || e);
+        }
         return { streams, subtitles };
     },
 };

@@ -36,7 +36,11 @@ export const RiveStreamProvider: Provider = {
 
             const sourceApiUrl =
                 `${RIVESTREAM_API}/api/backendfetch?requestID=VideoProviderServices&secretKey=rive`;
-            const sourceList = await retry(3, async () => (await safeGet(sourceApiUrl, { headers })).json<{ data: string[] }>());
+            // NOTE: safeGet never throws on HTTP status and .json()/.text return null/''
+            // on a Cloudflare interstitial or empty body — so each retried block must
+            // THROW on a falsy result, else `retry` treats the empty response as success
+            // and never re-attempts (defeating the whole point of retry(3, …)).
+            const sourceList = await retry(3, async () => { const r = (await safeGet(sourceApiUrl, { headers })).json<{ data: string[] }>(); if (!r) throw new Error('empty'); return r; });
 
             const doc = await retry(3, async () => (await safeGet(RIVESTREAM_API, { headers, timeout: 20000 })).document);
             if (!doc) return result;
@@ -48,7 +52,7 @@ export const RiveStreamProvider: Provider = {
             });
             if (!appScript) return result;
 
-            const js = await retry(3, async () => (await safeGet(`${RIVESTREAM_API}${appScript}`, { headers })).text);
+            const js = await retry(3, async () => { const t = (await safeGet(`${RIVESTREAM_API}${appScript}`, { headers })).text; if (!t) throw new Error('empty'); return t; });
             if (!js) return result;
 
             // let c = ["...","..."] — pick the first array literal longer than 2 chars.
@@ -61,9 +65,12 @@ export const RiveStreamProvider: Provider = {
                 }
             }
 
-            const secretKey = await retry(3, async () =>
-                (await safeGet(`https://rivestream.supe2372.workers.dev/?input=${data.id}&cList=${keyList.join(',')}`, { headers })).text
-            );
+            const cList = keyList.map(encodeURIComponent).join(',');   // keys can contain &/#/space
+            const secretKey = (await retry(3, async () => {
+                const t = (await safeGet(`https://rivestream.supe2372.workers.dev/?input=${encodeURIComponent(String(data.id))}&cList=${cList}`, { headers })).text;
+                if (!t) throw new Error('empty');
+                return t;
+            }))?.trim();   // .text may carry a trailing newline that corrupts the streamUrl
             if (!secretKey) return result;
 
             const services = sourceList?.data ?? [];
@@ -74,7 +81,7 @@ export const RiveStreamProvider: Provider = {
                         ? `${RIVESTREAM_API}/api/backendfetch?requestID=movieVideoProvider&id=${data.id}&service=${source}&secretKey=${secretKey}`
                         : `${RIVESTREAM_API}/api/backendfetch?requestID=tvVideoProvider&id=${data.id}&season=${data.season}&episode=${data.episode}&service=${source}&secretKey=${secretKey}`;
 
-                    const responseString = await retry(3, async () => (await safeGet(streamUrl, { headers, timeout: 10000 })).text);
+                    const responseString = await retry(3, async () => { const t = (await safeGet(streamUrl, { headers, timeout: 10000 })).text; if (!t) throw new Error('empty'); return t; });
                     if (!responseString) return;
 
                     let json: any;

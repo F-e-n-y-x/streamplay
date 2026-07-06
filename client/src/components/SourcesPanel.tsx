@@ -139,7 +139,10 @@ export default function SourcesPanel({
     autostarted.current = false; didInitFilter.current = false;
     const es = new EventSource(sourcesStreamUrl({ type, id, season, episode }));
     attachListeners(es);
-    return () => es.close();
+    // Close whatever stream is currently active (esRef tracks the latest — a refresh
+    // scan may have replaced `es`), otherwise re-running this effect (e.g. on a
+    // torrent-mode toggle) would leak the in-flight refresh EventSource.
+    return () => esRef.current?.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [type, id, season, episode, liveSettings.torrentMode]);
 
@@ -270,17 +273,18 @@ export default function SourcesPanel({
   // source *after* it in list order (not back to the top / last working one)
   useEffect(() => {
     if (!failedUrl) return;
-    setFailed((prev) => {
-      const next = new Set(prev); next.add(failedUrl);
-      const list = playableRef.current;
-      const idx = list.findIndex((s) => s.url === failedUrl);
-      // Next non-failed source after the one that failed; wrap to earlier ones as a
-      // last resort. Self-terminates once every source has failed (each URL is added
-      // to `next` exactly once, and candidates must be absent from `next`).
-      const candidate = list.slice(idx + 1).find((s) => !next.has(s.url)) || list.find((s) => !next.has(s.url));
-      if (candidate) setTimeout(() => play(candidate), 0);
-      return next;
-    });
+    // Keep the state updater PURE — advancing the player is a side effect and must
+    // not live inside setState (React StrictMode double-invokes updaters in dev,
+    // which would advance two sources at once and double-write sticky-provider prefs).
+    const next = new Set(failed); next.add(failedUrl);
+    setFailed(next);
+    const list = playableRef.current;
+    const idx = list.findIndex((s) => s.url === failedUrl);
+    // Next non-failed source after the one that failed; wrap to earlier ones as a
+    // last resort. Self-terminates once every source has failed (each URL is added
+    // to `next` exactly once, and candidates must be absent from `next`).
+    const candidate = list.slice(idx + 1).find((s) => !next.has(s.url)) || list.find((s) => !next.has(s.url));
+    if (candidate) play(candidate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [failedUrl, failSeq]);
 
@@ -347,7 +351,7 @@ export default function SourcesPanel({
                   return (
                   <div
                     className={`srow ${s.url === currentUrl ? "playing" : ""} ${failed.has(s.url) ? "failed" : ""}`}
-                    key={i}
+                    key={s.url}
                     role="button"
                     tabIndex={0}
                     onClick={() => play(s)}

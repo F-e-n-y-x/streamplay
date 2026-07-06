@@ -31,7 +31,9 @@ export const AllMovielandProvider: Provider = {
             const playerResponse = await safeGet('https://allmovieland.link/player.js?v=60%20128');
             if (playerResponse.status !== 200) return result;
             const playerScript = playerResponse.text;
-            const domainMatch = /const AwsIndStreamDomain.*'(.*)';/.exec(playerScript);
+            // Non-greedy, char-class capture: the old `.*'(.*)';` backtracked to the LAST
+            // quote on a minified (single-line) player.js, capturing junk instead of the host.
+            const domainMatch = /const AwsIndStreamDomain\s*=\s*['"]([^'"]+)['"]/.exec(playerScript);
             const host = domainMatch?.[1];
             if (!host) return result;
 

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios from 'axios';
-import { addTorrent, pickVideoFile, remuxToMp4, remuxUrlToMp4, hasFfmpeg, touch, torrentStats, getStatus } from '../utils/torrent';
-import { guardUrl, ssrfAgents } from '../utils/ssrf';
+import { addTorrent, pickVideoFile, remuxToMp4, remuxReadableToMp4, hasFfmpeg, touch, torrentStats, getStatus } from '../utils/torrent';
+import { guardUrl, ssrfAgents, guardRedirect } from '../utils/ssrf';
 
 /**
  * Torrent streaming endpoints.
@@ -94,13 +94,23 @@ router.get('/http', async (req, res) => {
     const wantRemux = req.query.remux === '1' && !isMp4Like && (await hasFfmpeg());
 
     // Non-mp4 (mkv/…) → remux to fragmented MP4 (no seek on a live remux, but plays inline).
+    // SECURITY: fetch through the SSRF-guarded agents + per-hop redirect guard and pipe
+    // the stream into ffmpeg's stdin. Handing the URL to `ffmpeg -i <url>` instead would
+    // let ffmpeg's own DNS/redirects reach internal targets (DNS-rebinding), bypassing the
+    // guard the passthrough branch below relies on.
     if (wantRemux) {
-        res.status(200).set('Content-Type', 'video/mp4').set('Cache-Control', 'no-store');
-        const ff = remuxUrlToMp4(url);
-        ff.stdout.pipe(res);
-        const kill = () => { try { ff.kill('SIGKILL'); } catch { /* */ } };
-        req.on('close', kill);
-        ff.on('error', () => { if (!res.headersSent) res.status(502).end(); });
+        try {
+            const upstream = await axios.get(url, { responseType: 'stream', timeout: 30000, maxRedirects: 5, validateStatus: () => true, beforeRedirect: guardRedirect, ...ssrfAgents() });
+            if (upstream.status >= 400) { upstream.data.destroy?.(); return res.status(502).send('debrid fetch failed: ' + upstream.status); }
+            res.status(200).set('Content-Type', 'video/mp4').set('Cache-Control', 'no-store');
+            const ff = remuxReadableToMp4(upstream.data);
+            ff.stdout.pipe(res);
+            const kill = () => { try { ff.kill('SIGKILL'); } catch { /* */ } };
+            req.on('close', kill);
+            ff.on('error', () => { if (!res.headersSent) res.status(502).end(); });
+        } catch (e: any) {
+            if (!res.headersSent) res.status(502).send('debrid fetch failed: ' + (e?.message || e));
+        }
         return;
     }
 

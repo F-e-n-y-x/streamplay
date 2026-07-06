@@ -91,7 +91,10 @@ export const getTMDBInfo = async (id: number, type: 'movie' | 'tv'): Promise<Met
             // But let's fetch season 1 as default to populate episodes.
             try {
                 if (seasons.length > 0) {
-                    const firstSeason = seasons.find(s => s.seasonNumber === 1) || seasons[0];
+                    // Prefer season 1, else the first REAL season — never season 0
+                    // (Specials), which TMDB lists first and would otherwise populate
+                    // `episodes` with specials instead of the actual first season.
+                    const firstSeason = seasons.find(s => s.seasonNumber === 1) || seasons.find(s => s.seasonNumber >= 1) || seasons[0];
                     const seasonRes = await axiosInstance.get(`/tv/${id}/season/${firstSeason.seasonNumber}`);
                     episodes = seasonRes.data.episodes.map((e: any) => ({
                         seasonNumber: e.season_number,

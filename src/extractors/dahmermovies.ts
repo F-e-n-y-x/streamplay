@@ -27,6 +27,9 @@ export const DahmerMoviesProvider: Provider = {
             const episode = data.type === 'tv' ? data.episode : undefined;
             const title = data.title;
             const year = data.year;
+            if (!title) return result;
+            // A movie with no year would build ".../Title (undefined)/" → guaranteed 404.
+            if (season == null && !year) return result;
 
             const url = season == null
                 ? `${dahmerMoviesAPI}/movies/${title.replace(/:/g, '')} (${year})/`
