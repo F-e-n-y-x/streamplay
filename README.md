@@ -37,7 +37,9 @@ Image: `ghcr.io/f-e-n-y-x/streamplay` · tags `:latest` `:1.2.0` `:edge`.
 ## ✨ What you get
 
 - 🍿 **Browse** Movies, Series, Anime & Asian drama — with Latest / Trending / Airing / Top-Rated tabs, time ranges, and multi-select genres.
-- 🌸 **Anime done right** — powered by AniList: the full genre/tag list, per-season entries, and a **Latest Episodes** home view.
+- 🌸 **Anime done right** — powered by AniList: the full genre/tag list, per-season entries, a **Latest Episodes** home view, and a **Sub/Dub filter** (dub catalog via MyDubList) that also sets the default playback audio.
+- 🎙️ **Dubbed anime** — multiple English/Hindi dub sources (AnimeNoSub, AniNeko, AnimeWorld, CastleTV) so if one breaks you switch to another; the player auto-plays the source matching your Sub/Dub preference.
+- 📺 **Rich episode data** — anime episode titles/overviews merged from ani.zip **and** Jikan/MAL so episodes aren't left nameless.
 - ▶️ **Custom player** — quality + audio-track picker, subtitles, resume, skip intro/outro, floating mini-player.
 - 🔎 **Live sources** — results stream in per provider (SSE) with quality/audio filters and one-click "Open in VLC".
 - 🔁 **Multi-device sync** — watch history, resume progress & favourites synced across your devices in real time.
