@@ -4,6 +4,7 @@ import { app } from '../utils/http';
 import { seasonScore } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 import { getLanguage } from '../utils/common';
+import { loadExtractor } from '../utils/hostextractors';
 
 /**
  * AnimeNoSub (animenosub.to) — English SUB + DUB anime, DooPlay WordPress site,
@@ -80,46 +81,65 @@ export const AnimeNoSubProvider: Provider = {
 
             const want = norm(data.title);
             const wantSeason = (data.type === 'movie' || data.seasonResolved) ? undefined : (data.season ?? 1);
-            const pick = cards.map((c) => {
-                const t = norm(c.title);
-                let s = t === want ? 3 : (t.includes(want) || want.includes(t)) ? 1 : 0;
-                if (wantSeason) s += seasonScore(c.title, wantSeason, data.seasonYear);
-                return { c, s };
-            }).sort((x, y) => y.s - x.s)[0]?.c;
-            if (!pick) return { streams, subtitles };
-
-            // 2) anime page → the episode link matching the requested number
-            const animeHtml = (await app.get(pick.url, { referer: `${BASE}/`, headers: { 'User-Agent': UA }, timeout: 15000 })).text;
-            const $ = cheerio.load(animeHtml);
-            let epUrl = '';
-            $('a[href*="-episode-"]').each((_i, a) => {
-                const href = ($(a).attr('href') || '').split('#')[0];
-                const n = Number((href.match(/-episode-(\d+)/) || [])[1]);
-                if (n === episode && !epUrl) epUrl = href.startsWith('http') ? href : `${BASE}${href}`;
-            });
-            if (!epUrl) return { streams, subtitles };
-
-            // 3) episode page → megaplay iframe; resolve SUB and DUB (the /sub↔/dub swap)
-            const epHtml = (await app.get(epUrl, { referer: pick.url, headers: { 'User-Agent': UA }, timeout: 15000 })).text;
-            const iframe = (epHtml.match(/<iframe[^>]+src="([^"]*megaplay\.buzz[^"]*)"/i) || [])[1];
-            if (!iframe) return { streams, subtitles };
-            const subUrl = iframe.replace(/\/(sub|dub)\/?$/, '/sub');
-            const dubUrl = iframe.replace(/\/(sub|dub)\/?$/, '/dub');
-            const variants: { url: string; dub: boolean }[] = [{ url: subUrl, dub: false }];
-            if (dubUrl !== subUrl) variants.push({ url: dubUrl, dub: true });
-
-            await Promise.all(variants.map(async (v) => {
-                const { m3u8, subs } = await resolveMegaplay(v.url);
-                if (process.env.ANIME_DEBUG) console.error(`[AnimeNoSub] ${v.dub ? 'DUB' : 'SUB'} => ${m3u8 ? m3u8.slice(0, 55) : 'NULL'}`);
-                for (const sub of subs) if (!subtitles.find((x) => x.url === sub.url)) subtitles.push(sub);
-                if (m3u8 && !streams.find((s) => s.link === m3u8)) {
-                    streams.push({
-                        server: `AnimeNoSub ${v.dub ? 'DUB' : 'SUB'}`,
-                        link: m3u8, type: 'm3u8',
-                        headers: { Referer: 'https://megaplay.buzz/', Origin: 'https://megaplay.buzz' },
-                    });
+            const wantOrg = data.orgTitle ? norm(data.orgTitle) : '';
+            // animenosub lists a show's movies/arcs/dub-variants as SEPARATE entries, so
+            // score by the noise-stripped title, penalise film/arc/OVA entries for a normal
+            // episode request, then try the top candidates until one actually HAS the
+            // requested episode (a movie/arc/wrong-season entry won't, so it's skipped).
+            const stripNoise = (t: string) => t.replace(/\((?:dub|sub|subbed|dubbed|uncensored|tv|bd|hd)\)/gi, ' ').replace(/\b(?:bd|dubbed|subbed)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+            const extraRe = /\b(movie|film|arc|compilation|ova|special|recap|part\s*\d)\b/i;
+            const candidates = cards.map((c) => {
+                const t = norm(stripNoise(c.title));
+                let s = (t === want || (wantOrg && t === wantOrg)) ? 4
+                    : (t.includes(want) || want.includes(t) || (wantOrg && (t.includes(wantOrg) || wantOrg.includes(t)))) ? 1 : 0;
+                if (s > 0) {
+                    if (data.type !== 'movie' && extraRe.test(c.title)) s -= 2;
+                    if (wantSeason) s += seasonScore(c.title, wantSeason, data.seasonYear);
                 }
-            }));
+                return { c, s };
+            }).filter((x) => x.s > 0).sort((x, y) => y.s - x.s).map((x) => x.c);
+            if (!candidates.length) return { streams, subtitles };
+
+            for (const pick of candidates.slice(0, 5)) {
+                // 2) anime page → the episode link matching the requested number
+                const animeHtml = (await app.get(pick.url, { referer: `${BASE}/`, headers: { 'User-Agent': UA }, timeout: 15000 })).text;
+                const $ = cheerio.load(animeHtml);
+                let epUrl = '';
+                $('a[href*="-episode-"]').each((_i, a) => {
+                    const href = ($(a).attr('href') || '').split('#')[0];
+                    const n = Number((href.match(/-episode-(\d+)/) || [])[1]);
+                    if (n === episode && !epUrl) epUrl = href.startsWith('http') ? href : `${BASE}${href}`;
+                });
+                if (!epUrl) continue;   // this entry lacks the episode → try the next candidate
+
+                // 3) episode page → the player iframe (host varies per title)
+                const epHtml = (await app.get(epUrl, { referer: pick.url, headers: { 'User-Agent': UA }, timeout: 15000 })).text;
+                const iframe = (epHtml.match(/<iframe[^>]+(?:data-src|src)="([^"]+)"/i) || [])[1];
+                if (!iframe) continue;
+                const embed = iframe.startsWith('http') ? iframe : `https:${iframe.replace(/^\/\//, '')}`;
+
+                if (/megaplay\./i.test(embed)) {
+                    // megaplay → resolve SUB and DUB via the /sub↔/dub swap → direct m3u8.
+                    const subUrl = embed.replace(/\/(sub|dub)\/?$/, '/sub');
+                    const dubUrl = embed.replace(/\/(sub|dub)\/?$/, '/dub');
+                    const variants: { url: string; dub: boolean }[] = [{ url: subUrl, dub: false }];
+                    if (dubUrl !== subUrl) variants.push({ url: dubUrl, dub: true });
+                    await Promise.all(variants.map(async (v) => {
+                        const { m3u8, subs } = await resolveMegaplay(v.url);
+                        for (const sub of subs) if (!subtitles.find((x) => x.url === sub.url)) subtitles.push(sub);
+                        if (m3u8 && !streams.find((s) => s.link === m3u8)) {
+                            streams.push({ server: `AnimeNoSub ${v.dub ? 'DUB' : 'SUB'}`, link: m3u8, type: 'm3u8', headers: { Referer: 'https://megaplay.buzz/', Origin: 'https://megaplay.buzz' } });
+                        }
+                    }));
+                } else {
+                    // other hosts (StreamWish / Filelions / VidHide family) → shared extractor.
+                    const res = await loadExtractor(embed, `${BASE}/`);
+                    for (const sub of res.subtitles) if (!subtitles.find((x) => x.url === sub.url)) subtitles.push(sub);
+                    for (const st of res.streams) if (!streams.find((s) => s.link === st.link)) streams.push({ ...st, server: `AnimeNoSub · ${st.server}` });
+                }
+                if (process.env.ANIME_DEBUG) console.error(`[AnimeNoSub] ${pick.slug} ep${episode} host=${embed.slice(0, 40)} streams=${streams.length}`);
+                if (streams.length) break;   // got this episode — stop trying candidates
+            }
         } catch (e: any) {
             console.error('Error in AnimeNoSub extractor:', e?.message || e);
         }
