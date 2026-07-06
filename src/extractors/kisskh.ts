@@ -2,6 +2,10 @@ import axios from 'axios';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
 
 const KISSKH_API = 'https://kisskh.nl';
+// These calls use raw axios (not the shared `app` layer), so they'd otherwise have
+// NO timeout: a host that accepts the TCP connection then stalls would hang the
+// socket forever (the SSE resolver's 45s race returns, but the socket leaks). Cap it.
+const KISSKH_TIMEOUT = 12000;
 
 const createSlug = (title: string): string => {
     return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');
@@ -24,11 +28,11 @@ export const KissKhProvider: Provider = {
             const type = data.season == null ? "2" : "1";
 
             const searchRes = await axios.get(`${KISSKH_API}/api/DramaList/Search?q=${encodeURIComponent(title)}&type=${type}`, {
-                headers: { 'Referer': `${KISSKH_API}/` }
+                headers: { 'Referer': `${KISSKH_API}/` }, timeout: KISSKH_TIMEOUT
             });
 
             const searchResults = searchRes.data;
-            if (!searchResults || searchResults.length === 0) return result;
+            if (!Array.isArray(searchResults) || searchResults.length === 0) return result;
 
             let id: number | undefined;
             let contentTitle: string | undefined;
@@ -51,15 +55,17 @@ export const KissKhProvider: Provider = {
             if (!id || !contentTitle) return result;
 
             const detailRes = await axios.get(`${KISSKH_API}/api/DramaList/Drama/${id}?isq=false`, {
-                headers: { 'Referer': `${KISSKH_API}/Drama/${getKisskhTitle(contentTitle)}?id=${id}` }
+                headers: { 'Referer': `${KISSKH_API}/Drama/${getKisskhTitle(contentTitle)}?id=${id}` }, timeout: KISSKH_TIMEOUT
             });
 
             const resDetail = detailRes.data;
             const episodeNumber = data.episode || 1;
-            
-            const episode = data.season == null 
-                ? resDetail.episodes[0] 
-                : resDetail.episodes.find((e: any) => e.number === episodeNumber);
+
+            const episodes = resDetail?.episodes;
+            if (!Array.isArray(episodes)) return result;
+            const episode = data.season == null
+                ? episodes[0]
+                : episodes.find((e: any) => e.number === episodeNumber);
 
             if (!episode) return result;
             const epsId = episode.id;
@@ -67,11 +73,11 @@ export const KissKhProvider: Provider = {
             // Fetch keys
             let kkey, kkey1;
             try {
-                const videoKeyRes = await axios.get(`https://kisskh.nl/api/Setting/alts?id=${epsId}&version=2.8.10`);
+                const videoKeyRes = await axios.get(`https://kisskh.nl/api/Setting/alts?id=${epsId}&version=2.8.10`, { timeout: KISSKH_TIMEOUT });
                 kkey = videoKeyRes.data.key;
             } catch(e) {}
             try {
-                const subKeyRes = await axios.get(`https://kisskh.nl/api/Setting/alts2?id=${epsId}&version=2.8.10`);
+                const subKeyRes = await axios.get(`https://kisskh.nl/api/Setting/alts2?id=${epsId}&version=2.8.10`, { timeout: KISSKH_TIMEOUT });
                 kkey1 = subKeyRes.data.key;
             } catch(e) {}
 
@@ -83,7 +89,7 @@ export const KissKhProvider: Provider = {
             // Fetch video sources
             try {
                 const sourcesRes = await axios.get(`${KISSKH_API}/api/DramaList/Episode/${epsId}.png?err=false&ts=&time=&kkey=${kkey}`, {
-                    headers: { 'Referer': `${KISSKH_API}/Drama/${getKisskhTitle(contentTitle)}/Episode-${episodeNumber}?id=${id}&ep=${epsId}&page=0&pageSize=100` }
+                    headers: { 'Referer': `${KISSKH_API}/Drama/${getKisskhTitle(contentTitle)}/Episode-${episodeNumber}?id=${id}&ep=${epsId}&page=0&pageSize=100` }, timeout: KISSKH_TIMEOUT
                 });
                 
                 const sourceData = sourcesRes.data;
@@ -105,7 +111,7 @@ export const KissKhProvider: Provider = {
             // Fetch subtitles (only if we actually got the subtitle key).
             try {
                 if (!kkey1) throw new Error('no subtitle key');
-                const subRes = await axios.get(`${KISSKH_API}/api/Sub/${epsId}?kkey=${kkey1}`);
+                const subRes = await axios.get(`${KISSKH_API}/api/Sub/${epsId}?kkey=${kkey1}`, { timeout: KISSKH_TIMEOUT });
                 if (Array.isArray(subRes.data)) {
                     for (const sub of subRes.data) {
                         if (sub.src) {

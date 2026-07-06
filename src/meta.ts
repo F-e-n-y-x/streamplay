@@ -157,9 +157,18 @@ export async function planEpisodes(plan: SeasonPlan, seasonNumber: number): Prom
         return eps.map((e) => ({ ...e, seasonNumber }));
     }
     if (plan.source === 'tvdb' && plan.tvdbId) {
-        const all = await tvdbEpisodes(plan.tvdbId, plan.tvdbOrder);
-        return all.filter((e) => e.seasonNumber === seasonNumber)
-            .map((e) => ({ episodeNumber: e.episodeNumber, seasonNumber, name: e.name, overview: e.overview, stillUrl: e.still, airDate: e.aired }));
+        try {
+            const all = await tvdbEpisodes(plan.tvdbId, plan.tvdbOrder);
+            return all.filter((e) => e.seasonNumber === seasonNumber)
+                .map((e) => ({ episodeNumber: e.episodeNumber, seasonNumber, name: e.name, overview: e.overview, stillUrl: e.still, airDate: e.aired }));
+        } catch {
+            // A TVDB error (expired token, rate-limit) must NOT bubble to the caller:
+            // for a tvdb plan `seasonNumber` is a production-order index, not a TMDB
+            // season number, so the caller's outer catch would fall back to
+            // tmdbGet(/season/<index>) and serve the WRONG season. Return null so the
+            // caller's bare-numbered-list fallback runs instead.
+            return null;
+        }
     }
     return null;
 }

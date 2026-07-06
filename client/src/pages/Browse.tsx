@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useBrowse } from "../lib/queries";
-import { getSettings, setSettings, useSettings } from "../lib/settings";
+import { useSettings } from "../lib/settings";
 import PosterCard from "../components/PosterCard";
 import CategoryPicker, { ANIME_CATEGORIES, GENERIC_CATEGORIES } from "../components/CategoryPicker";
 import { ChevronDown, ChevronLeft, ChevronRight, Film, Globe, Sparkles, Tv } from "../components/icons";
@@ -40,7 +40,7 @@ const REGIONS = [
   { key: "ja", label: "Japanese" },
 ];
 
-type Cat = "popular" | "trending" | "newest" | "toprated" | "random";
+type Cat = "popular" | "trending" | "newest" | "toprated" | "random" | "airing" | "latest";
 
 // Anime categories that are inherently 18+/suggestive — hidden from the picker and
 // stripped from the query when the Show 18+ setting is off.
@@ -69,12 +69,13 @@ export default function Browse({ section }: { section: Section }) {
   const cfg = CFG[section];
   const Icon = cfg.icon;
 
-  const [cat, setCat] = useState<Cat>("popular");
+  // Anime defaults to "Latest" (recently-aired episodes, like anikoto's home); other
+  // sections default to Popular.
+  const [cat, setCat] = useState<Cat>(cfg.track ? "latest" : "popular");
   const [range, setRange] = useState("week");
   const [type, setType] = useState<"all" | "tv" | "movie">("all");
   const [region, setRegion] = useState("all");
   const [industry, setIndustry] = useState("all");
-  const [audio, setAudio] = useState<"all" | "sub" | "dub">("all");
   const [genres, setGenres] = useState<string[]>([]);
   const [page, setPage] = useState(1);
   const [nonce, setNonce] = useState(0);
@@ -86,23 +87,17 @@ export default function Browse({ section }: { section: Section }) {
 
   // Data via TanStack Query — cancels the in-flight request on any filter change,
   // caches results, and keys on lang/adult (inside the hook). `nonce` re-rolls Random.
-  const browseQ = useBrowse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, ol: cfg.industry ? industry : undefined, audio: cfg.track ? audio : undefined, genres, page, nonce });
+  const browseQ = useBrowse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, ol: cfg.industry ? industry : undefined, genres, page, nonce });
   const items = browseQ.isError ? [] : browseQ.data?.items ?? null;
   const totalPages = browseQ.data?.totalPages ?? 1;
 
   // reset state when the section changes
-  useEffect(() => { setCat("popular"); setType("all"); setRegion("all"); setIndustry("all"); setAudio("all"); setGenres([]); setPage(1); }, [section]);
+  useEffect(() => { setCat(cfg.track ? "latest" : "popular"); setType("all"); setRegion("all"); setIndustry("all"); setGenres([]); setPage(1); }, [section, cfg.track]);
 
   // When 18+ is off, drop any explicitly-adult anime category the user had selected
   // (and they're hidden from the picker below) so ecchi/harem aren't requested.
   useEffect(() => { if (!adult) setGenres((g) => g.filter((k) => !ADULT_ANIME_CATS.has(k))); }, [adult]);
 
-  // Sub/Dub: filter the catalog AND persist as the playback track preference
-  function pickAudio(a: "sub" | "dub") {
-    setAudio((prev) => (prev === a ? "all" : a));
-    setSettings({ ...(getSettings() as object), anime: a } as never);
-    setPage(1);
-  }
   function pickCat(c: Cat) {
     setCat(c); setPage(1);
     if (c === "random") setNonce((n) => n + 1);
@@ -122,12 +117,10 @@ export default function Browse({ section }: { section: Section }) {
       <div className="anime-head">
         <h1 className="page-title"><Icon size={22} style={{ verticalAlign: -4, marginRight: 8, color: "var(--accent)" }} />{cfg.title}</h1>
         <div className="anime-tabs">
-          <button className={`atab ${cat === "popular" && audio === "all" ? "active" : ""}`} onClick={() => { pickCat("popular"); setAudio("all"); }}>All</button>
-          {cfg.track && <>
-            <button className={`atab ${audio === "sub" ? "active" : ""}`} onClick={() => pickAudio("sub")}>Sub</button>
-            <button className={`atab ${audio === "dub" ? "active" : ""}`} onClick={() => pickAudio("dub")}>Dub</button>
-          </>}
+          {cfg.track && <button className={`atab ${cat === "latest" ? "active" : ""}`} onClick={() => pickCat("latest")}>Latest</button>}
+          <button className={`atab ${cat === "popular" ? "active" : ""}`} onClick={() => pickCat("popular")}>{cfg.track ? "Popular" : "All"}</button>
           <button className={`atab ${cat === "trending" ? "active" : ""}`} onClick={() => pickCat("trending")}>Trending</button>
+          {cfg.track && <button className={`atab ${cat === "airing" ? "active" : ""}`} onClick={() => pickCat("airing")}>Airing</button>}
           <button className={`atab ${cat === "newest" ? "active" : ""}`} onClick={() => pickCat("newest")}>Newest</button>
           <button className={`atab ${cat === "toprated" ? "active" : ""}`} onClick={() => pickCat("toprated")}>Top Rated</button>
           <button className={`atab ${cat === "random" ? "active" : ""}`} onClick={() => pickCat("random")}>Random</button>
@@ -147,8 +140,10 @@ export default function Browse({ section }: { section: Section }) {
               )}
             </div>
           )}
-
-          <span className="atab-sep" />
+        </div>
+        {/* Pagination lives OUTSIDE the scrollable tab row so the next-page button is
+            always visible on mobile (previously it scrolled off the right edge). */}
+        <div className="anime-pager">
           <button className="btn btn-icon btn-ghost btn-sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} aria-label="Previous page"><ChevronLeft size={16} /></button>
           <span className="mono subtle" style={{ fontSize: "var(--text-xs)", minWidth: 28, textAlign: "center" }}>{page}</span>
           <button className="btn btn-icon btn-ghost btn-sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} aria-label="Next page"><ChevronRight size={16} /></button>
@@ -178,7 +173,6 @@ export default function Browse({ section }: { section: Section }) {
               ))}
             </div>
           )}
-          {cfg.track && <span className="subtle" style={{ fontSize: "var(--text-sm)" }}>Sub / Dub filters the catalog and sets your playback track. Availability is estimated by popularity.</span>}
         </div>
       )}
 
@@ -192,11 +186,7 @@ export default function Browse({ section }: { section: Section }) {
           : shown.length === 0
             ? <div className="empty" style={{ gridColumn: "1 / -1" }}>Nothing found for this filter.</div>
             : shown.map((c) => (
-              <PosterCard
-                key={`${c.type}-${c.id}`}
-                card={c}
-                badge={cfg.track ? ((c.voteCount ?? 0) >= 500 ? "DUB" : "SUB") : undefined}
-              />
+              <PosterCard key={`${c.type}-${c.id}`} card={c} />
             ))}
       </div>
     </div>

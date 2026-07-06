@@ -48,7 +48,15 @@ export const CineMacityProvider: Provider = {
             const playerjsMatch = /new Playerjs\((.*?)\);/s.exec(decoded);
             if (!playerjsMatch) return result;
 
-            const configJson = JSON.parse(playerjsMatch[1]);
+            // Playerjs is initialised with a JS object literal (unquoted keys), which
+            // strict JSON.parse rejects — quote bare keys and retry before giving up
+            // (previously this threw on every standard page and the provider yielded nothing).
+            let configJson: any;
+            try { configJson = JSON.parse(playerjsMatch[1]); }
+            catch {
+                try { configJson = JSON.parse(playerjsMatch[1].replace(/([{,]\s*)([A-Za-z_$][\w$]*)\s*:/g, '$1"$2":')); }
+                catch { return result; }
+            }
             const fileData = configJson.file;
 
             if (fileData) {

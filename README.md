@@ -1,152 +1,131 @@
-# StreamPlay
+<div align="center">
 
-A self-hosted movie / TV / anime streaming aggregator. A **React + Vite** web app on top of a
-**Node / Express / TypeScript** backend that pulls metadata from **TMDB** and aggregates streaming
-links + subtitles from many providers concurrently (ported from the StreamPlay CloudStream plugin).
+# 🎬 StreamPlay
 
-> **Personal / educational use.** StreamPlay only indexes and proxies third-party sources — it hosts
-> no media itself. You are responsible for how you use it.
+**Your own ad-free Netflix for movies, TV & anime — self-hosted.**
 
----
+Pulls metadata from TMDB + AniList and streams from many sources, all in a clean web player.
+No media is hosted — StreamPlay only indexes and proxies third-party links.
 
-## Features
+<sub>Personal / educational use. You're responsible for how you use it.</sub>
 
-- **Browse** Anime, Movies, Series and Asian drama with sort tabs (All / Sub / Dub / Trending /
-  Newest / Top Rated / Random), a Reddit-style time-range, region/type toggles and **multi-select
-  categories** — including the full MAL/AniList-style anime genre list.
-- **Custom player** (hls.js) with custom controls, touch-friendly seeking, subtitles, and an
-  in-player **quality + audio-language selector** for multi-bitrate / multi-audio HLS streams.
-- **Sources panel** that groups results **by provider**, shows live status dots, and exposes each
-  provider's multiple **servers / audio tracks / qualities** with quality + audio filters. Streams
-  over **SSE** so sources appear as they resolve. "Open in VLC" / copy-link for any source.
-- **Watch history + resume progress** and **favourites**, with **real-time multi-device sync** —
-  including **transitive bridging** (link A↔B and B↔C and all three share one library, no shared code
-  required) and a live device roster.
-- **Playback proxy** that fixes CORS/hotlinking, rewrites HLS manifests (segments, keys, variant +
-  audio renditions) back through the proxy, supports range requests, and converts SubRip → WebVTT.
-- **Cloudflare bypass** via a FlareSolverr instance (with a bundled Puppeteer-stealth fallback).
+</div>
 
 ---
 
-## Quick start (Docker — recommended)
-
-The image and a FlareSolverr companion are wired together in [`docker-compose.yml`](docker-compose.yml).
+## ⚡ Get started in 3 steps
 
 ```bash
-# 1. Get the compose file + env template
+# 1 — grab the compose file + env template
 curl -O https://raw.githubusercontent.com/F-e-n-y-x/streamplay/main/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/F-e-n-y-x/streamplay/main/.env.example
 
-# 2. Edit .env and set TMDB_API_KEY (free key: https://www.themoviedb.org/settings/api)
+# 2 — open .env and paste a free TMDB key  →  themoviedb.org/settings/api
 
-# 3. Launch
+# 3 — launch
 docker compose up -d
 ```
 
-Open **http://localhost:3000**.
+Then open **http://localhost:3000** 🎉
 
-The published image lives at **`ghcr.io/f-e-n-y-x/streamplay`** and is tagged per release
-(`:1.2.0`, `:1.2`, `:1`, `:latest`) plus a rolling `:edge` from `main`.
+> **Portainer?** Paste [`docs/portainer-stack.yml`](docs/portainer-stack.yml) into *Stacks → Add stack*, add your `TMDB_API_KEY`, deploy. More: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
-### Portainer
-
-A ready-to-paste stack is in [`docs/portainer-stack.yml`](docs/portainer-stack.yml): in Portainer go
-**Stacks → Add stack**, paste it into the web editor, add a `TMDB_API_KEY` environment variable, and
-**Deploy**. Full deployment notes (including building from source) are in [`docs/DEPLOY.md`](docs/DEPLOY.md).
+Image: `ghcr.io/f-e-n-y-x/streamplay` · tags `:latest` `:1.2.0` `:edge`.
 
 ---
 
-## Quick start (local / development)
+## ✨ What you get
+
+- 🍿 **Browse** Movies, Series, Anime & Asian drama — with Latest / Trending / Airing / Top-Rated tabs, time ranges, and multi-select genres.
+- 🌸 **Anime done right** — powered by AniList: the full genre/tag list, per-season entries, and a **Latest Episodes** home view.
+- ▶️ **Custom player** — quality + audio-track picker, subtitles, resume, skip intro/outro, floating mini-player.
+- 🔎 **Live sources** — results stream in per provider (SSE) with quality/audio filters and one-click "Open in VLC".
+- 🔁 **Multi-device sync** — watch history, resume progress & favourites synced across your devices in real time.
+- 🛡️ **Smart proxy** — fixes CORS/hotlinking, rewrites HLS, converts subtitles, SSRF-guarded.
+- ☁️ **Cloudflare bypass** — via FlareSolverr, with optional WARP for a clean egress IP.
+
+---
+
+## ⚙️ Configure
+
+Only one variable is required. Full list + comments in [`.env.example`](.env.example).
+
+| Variable | Required | What it does |
+| --- | :---: | --- |
+| `TMDB_API_KEY` | ✅ | Free TMDB key — powers all metadata/browse/search. |
+| `FLARESOLVERR_URL` | – | FlareSolverr endpoint (`http://flaresolverr:8191/`) to unlock Cloudflare-gated providers. |
+| `DOH_ENABLED` | – | Set `true` if streams won't load / DNS 502s (common on a NAS or blocking ISP). |
+| `WARP_MODE` + `WARP_*` | – | Route blocked providers through Cloudflare WARP for a clean IP. |
+
+<details>
+<summary>🔐 <b>Exposing it to the internet? Read this.</b></summary>
+
+<br>
+
+StreamPlay is built for a **trusted network** (LAN, Tailscale/VPN, or behind an authenticating reverse proxy) and its API is intentionally **unauthenticated**:
+
+- **Sync rooms** are keyed only by a sync code — anyone who reaches the server and knows a code can read/write it.
+- **The playback proxy** streams arbitrary external URLs. It's **SSRF-guarded** (can't reach your LAN/metadata), but on a public box it's an open forward-proxy.
+- **CORS** is open (`*`).
+
+**Don't expose the port directly to the internet without an auth layer.** For a semi-public box, gate the sensitive endpoints with `ADMIN_TOKEN` (Torznab config) and `DEBUG_TOKEN` (provider diagnostics).
+
+</details>
+
+---
+
+<details>
+<summary>🛠️ Local development</summary>
+
+<br>
 
 ```bash
-npm install                 # server deps
-npm run build:client        # build the web client once (or after UI changes)
-cp .env.example .env         # then set TMDB_API_KEY
-npm run dev                 # server on http://localhost:3000
+npm install            # server deps
+npm run build:client   # build the web app once (or after UI changes)
+cp .env.example .env    # then set TMDB_API_KEY
+npm run dev            # server → http://localhost:3000
+npm run dev:client     # (optional) Vite hot-reload → http://localhost:5173
 ```
 
-For UI work with hot reload, run the Vite dev server (proxies `/api` to the backend):
+</details>
 
-```bash
-npm run dev:client          # Vite on http://localhost:5173
+<details>
+<summary>🧩 Project layout & adding providers</summary>
+
+<br>
+
+```text
+src/                Express server — routes/, extractors/ (providers), utils/
+client/             React + Vite web app (design tokens in src/styles/)
+docs/               Deployment notes, Portainer stack, provider research
+Dockerfile          Multi-stage build (client → runtime)
+docker-compose.yml  App + FlareSolverr (+ optional WARP)
 ```
 
----
+Add a provider: implement the `Provider` interface in `src/extractors/<name>.ts` and register it in `src/extractors/index.ts`. See [`docs/anime-providers-research.md`](docs/anime-providers-research.md) for the anime provider landscape.
 
-## Configuration
+</details>
 
-All settings are environment variables (see [`.env.example`](.env.example)):
+<details>
+<summary>🔌 API reference</summary>
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PORT` | `3000` | Port the server listens on. |
-| `TMDB_API_KEY` | — | **Required.** TMDB v3 API key for all metadata/browse/search. |
-| `FLARESOLVERR_URL` | — | FlareSolverr endpoint for Cloudflare bypass. In Compose: `http://flaresolverr:8191/`. Blank disables Cloudflare-gated providers. |
-| `WYZIE_KEY` | — | Optional key for WYZIE subtitles. Blank disables that provider. |
-| `PROVIDER_TIMEOUT_MS` | `45000` | Per-provider timeout before a source is dropped. |
-| `SYNC_DATA_FILE` | `./sync-data.json` | Where multi-device sync state is persisted (a Docker volume path in Compose). |
-| `DOH_ENABLED` | `false` | Resolve provider/CDN hosts over DNS-over-HTTPS. Turn on if `/api/proxy` returns DNS 502s or streams won't load (common on a NAS / a blocking ISP). |
-| `DOH_PROVIDER` | `google` | DoH resolver: `google`, `cloudflare`, or `quad9`. |
+<br>
 
----
-
-## Security & exposing your instance
-
-StreamPlay is built for **personal, self-hosted use on a trusted network** (your LAN, a
-Tailscale/VPN, or behind an authenticating reverse proxy). Its API is intentionally
-**unauthenticated** for that setting:
-
-- **Sync rooms** (`/api/sync/:code/*`) are keyed only by the sync code — anyone who can reach the
-  server *and* knows a code can read/write that room's history/favourites. The `/bulk` endpoint
-  stores whatever it's sent, with no per-room size cap (room *count* is capped).
-- **The playback proxy** (`/api/proxy?url=…`) will fetch and stream arbitrary external URLs. It is
-  **SSRF-guarded** — requests that resolve to private/loopback/link-local/metadata addresses are
-  refused, and every redirect hop is re-checked — so it cannot reach your LAN, but on a public
-  instance it is an open forward-proxy others could borrow.
-- **CORS** is open (`*`), so any origin can call the API.
-
-**Do not expose the port directly to the public internet without an auth layer** (a reverse proxy
-with Basic Auth / OAuth, or a private network). For a semi-public instance you can lock down the
-sensitive write/diagnostic endpoints with tokens:
-
-- `ADMIN_TOKEN` — required to change the runtime Torznab indexer config (`/api/config/torznab`).
-- `DEBUG_TOKEN` — required to use the single-provider diagnostic (`/api/debug/provider`).
-
-## API
-
-The web client is served at `/`; the JSON/SSE API lives under `/api`.
+Web client at `/`; JSON/SSE API under `/api`.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `GET /api/home` | Hero + carousels for the home page. |
-| `GET /api/browse?section=&cat=&type=&range=&genres=&page=` | Catalog browsing (anime/movies/series/asian). |
-| `GET /api/search?q=` | Search movies & TV. |
-| `GET /api/title/:type/:id` | Title detail (+ `/season/:n` for TV). |
-| `GET /api/sources/stream?type=&id=&season=&episode=` | **SSE** stream of resolved sources + subtitles. |
-| `GET /api/proxy?url=&h=&m3u8=1` | Stream proxy (HLS rewrite, range, srt→vtt at `/api/proxy/sub`). |
-| `GET /api/providers` · `GET /api/providers/health` | Provider list / health. |
-| `… /api/sync/:code/*` | Multi-device history + favourites sync, roster, and code **bridging**. |
+| `GET /api/home` | Home carousels. |
+| `GET /api/browse?section=&cat=&genres=&page=` | Catalog browsing. |
+| `GET /api/search?q=` | Search. |
+| `GET /api/title/:type/:id` | Title detail (+ `/season/:n`). |
+| `GET /api/sources/stream?type=&id=&season=&episode=` | **SSE** resolved sources + subtitles. |
+| `GET /api/proxy?url=&m3u8=1` | Stream proxy (HLS rewrite, range, `…/sub` for srt→vtt). |
+| `GET /api/providers` · `/api/providers/health` | Provider list / health. |
+| `… /api/sync/:code/*` | Multi-device sync + code bridging. |
 
-Legacy endpoints (`/api/info`, `/api/streams`, `/api/providers/status`) are kept for compatibility.
+</details>
 
 ---
 
-## Project layout
-
-```text
-src/                Express server (routes/, extractors/ providers, utils/)
-client/             React + Vite web app (token-based design system in src/styles/)
-public/             Legacy fallback UI
-docs/               Deployment notes + Portainer stack
-Dockerfile          Multi-stage build (client → runtime)
-docker-compose.yml  App + FlareSolverr
-```
-
-## Adding providers
-
-Create a file in `src/extractors/` implementing the `Provider` interface and register it in
-`src/extractors/index.ts`.
-
-## License
-
-For personal and educational use. See [LICENSE](LICENSE).
+<div align="center"><sub>For personal & educational use · <a href="LICENSE">LICENSE</a></sub></div>

@@ -355,6 +355,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
       };
       inst.attachMedia(el);
       fetch(source.url).then((r) => r.text()).then((txt) => {
+        if (cancelled) return;   // effect torn down mid-fetch — inst is destroyed, don't loadSource/setState
         const list = [...txt.matchAll(/#EXT-X-MEDIA:[^\n]*TYPE=AUDIO[^\n]*/gi)].map((mm) => {
           const line = mm[0];
           const name = /NAME="([^"]+)"/.exec(line)?.[1];
@@ -372,7 +373,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
         }
         setCurMAudio(chosen);
         inst.loadSource(loadUrl);
-      }).catch(() => inst.loadSource(source.url));
+      }).catch(() => { if (!cancelled) inst.loadSource(source.url); });
       inst.on(Hls.Events.MANIFEST_PARSED, () => {
         const lv = inst.levels.map((l, index) => ({ index, height: l.height || 0, bitrate: l.bitrate || 0 })).filter((l) => l.height > 0).sort((a, b) => b.height - a.height);
         setLevels(lv); syncAudio();
@@ -659,7 +660,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
         onEnded={() => { setPlaying(false); setEnded(true); setShowControls(true); if (onProgress && video.current?.duration) onProgress(video.current.duration, video.current.duration); onEndedNext?.(); }}
         onError={() => { setError("This source could not be played in the browser."); onFail?.(); }}
       >
-        {tracks.map((t, i) => (<track key={i} kind="subtitles" label={t.lang || `Track ${i + 1}`} srcLang={subLangCode(t.lang)} src={t.url} />))}
+        {tracks.map((t, i) => (<track key={t.url || i} kind="subtitles" label={t.lang || `Track ${i + 1}`} srcLang={subLangCode(t.lang)} src={t.url} />))}
       </video>
       {/* user subtitle appearance (Settings → Appearance) applied to native + shaka cues */}
       <style>{subCss}</style>
@@ -820,7 +821,7 @@ export function VideoPlayer({ source, embedded, onFail, resumeAt, onProgress, sk
                 <div className="vp-sec">
                   <button className={`vp-opt ${ccIndex < 0 ? "active" : ""}`} onClick={() => chooseCc(-1)}><span>Off</span>{ccIndex < 0 && <Check size={16} />}</button>
                   {tracks.map((t, i) => (
-                    <button key={i} className={`vp-opt ${ccIndex === i ? "active" : ""}`} onClick={() => chooseCc(i)}>
+                    <button key={t.url || i} className={`vp-opt ${ccIndex === i ? "active" : ""}`} onClick={() => chooseCc(i)}>
                       <span>{t.lang || `Track ${i + 1}`}</span>{ccIndex === i && <Check size={16} />}
                     </button>
                   ))}

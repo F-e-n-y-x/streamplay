@@ -10,6 +10,12 @@ export interface Card {
   voteAverage?: number;
   voteCount?: number;
   overview?: string;
+  // Anime browse cards come from AniList (id = AniList id) and resolve to a playable
+  // TMDB id on click. `resolveTitles` carries the JP/romaji/English name variants.
+  needsResolve?: boolean;
+  anilistId?: number;
+  resolveTitles?: string[];
+  resolveType?: "movie" | "tv";
 }
 
 export interface HomeRow {
@@ -30,6 +36,8 @@ export interface SeasonStub {
   seasonNumber: number;
   name: string;
   episodeCount: number;
+  /** AniList cour id (anime plans only) — lets a browsed season deep-link to itself. */
+  anilistId?: number;
 }
 
 export interface CastMember {

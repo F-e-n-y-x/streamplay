@@ -72,6 +72,12 @@ export const api = {
   browse: (section: string, opts: BrowseOpts = {}, signal?: AbortSignal) =>
     get<{ items: Card[]; page: number; totalPages: number }>(`/browse?${browseQuery(section, opts)}`, signal),
   title: (type: "movie" | "tv", id: number | string, signal?: AbortSignal) => get<TitleDetail>(`/title/${type}/${id}`, signal),
+  // Resolve a browsed AniList anime card → a playable TMDB {type,id} (+ echoed anilistId).
+  resolveAnime: (card: Card, signal?: AbortSignal) =>
+    get<{ type: "movie" | "tv"; id: number; anilistId?: number }>(
+      `/resolve/anime?al=${card.anilistId ?? ""}&titles=${encodeURIComponent(JSON.stringify(card.resolveTitles ?? [card.title]))}&year=${card.year ?? ""}&type=${card.resolveType ?? card.type}`,
+      signal,
+    ),
   season: (id: number | string, n: number, signal?: AbortSignal) =>
     get<{ seasonNumber: number; episodes: Episode[] }>(`/title/tv/${id}/season/${n}`, signal),
   providers: (signal?: AbortSignal) => get<ProviderInfo[]>("/providers", signal).then(arr),

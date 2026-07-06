@@ -37,7 +37,9 @@ app.use(express.static(uiRoot, {
     },
 }));
 // SPA fallback: any non-API route serves index.html so client-side routing works.
-app.get(/^\/(?!api\/).*/, (_req, res) => {
+// Anchor the exclusion on the mount boundary (`/api/` OR bare `/api`) so a future
+// endpoint like `/api` or `/api-docs` isn't silently shadowed by the SPA index.html.
+app.get(/^\/(?!api(\/|$)).*/, (_req, res) => {
     res.setHeader('Cache-Control', 'no-cache, must-revalidate');
     res.sendFile(path.join(uiRoot, 'index.html'));
 });

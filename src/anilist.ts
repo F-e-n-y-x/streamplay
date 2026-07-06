@@ -195,6 +195,231 @@ export async function animeFranchise(rootAnilistId: number, baseTitle?: string):
     return seasons;
 }
 
+// ── Genre/tag discovery (the Anime browse page) ───────────────────────────────
+// TMDB is a poor anime catalog: most "anime genres" have no TMDB genre and fall back
+// to sparse keyword tagging, and TMDB dates a multi-cour show by its FIRST season so
+// new/late cours never surface in Newest/Top-Rated. AniList is the canonical anime DB
+// (free, no key), models each cour as its OWN entry (correct per-cour date + score),
+// and carries proper multi-genres + tags. So the Anime page browses AniList directly.
+
+/** Map the app's anime category keys → an AniList genre or tag(s) (exact names). */
+const ANILIST_CATEGORY: Record<string, { genre?: string; tag?: string | string[] }> = {
+    action: { genre: 'Action' }, adventure: { genre: 'Adventure' }, cars: { tag: 'Cars' },
+    comedy: { genre: 'Comedy' }, dementia: { genre: 'Psychological' }, demons: { tag: 'Demons' },
+    drama: { genre: 'Drama' }, ecchi: { genre: 'Ecchi' }, fantasy: { genre: 'Fantasy' },
+    // AniList has no single "Harem" tag — it's split into gender-specific ones (OR them).
+    game: { tag: 'Video Games' }, harem: { tag: ['Female Harem', 'Male Harem', 'Mixed Gender Harem'] }, historical: { tag: 'Historical' },
+    horror: { genre: 'Horror' }, isekai: { tag: 'Isekai' }, josei: { tag: 'Josei' },
+    kids: { tag: 'Kids' }, magic: { tag: 'Magic' }, mahoushoujo: { genre: 'Mahou Shoujo' },
+    martialarts: { tag: 'Martial Arts' }, mecha: { genre: 'Mecha' }, military: { tag: 'Military' },
+    music: { genre: 'Music' }, mystery: { genre: 'Mystery' }, parody: { tag: 'Parody' },
+    police: { tag: 'Police' }, psychological: { genre: 'Psychological' }, romance: { genre: 'Romance' },
+    samurai: { tag: 'Samurai' }, school: { tag: 'School' }, scifi: { genre: 'Sci-Fi' },
+    seinen: { tag: 'Seinen' }, shoujo: { tag: 'Shoujo' }, shoujoai: { tag: 'Yuri' },
+    shounen: { tag: 'Shounen' }, shounenai: { tag: "Boys' Love" }, sliceoflife: { genre: 'Slice of Life' },
+    space: { tag: 'Space' }, sports: { genre: 'Sports' }, superpower: { tag: 'Super Power' },
+    supernatural: { genre: 'Supernatural' }, suspense: { genre: 'Thriller' }, thriller: { genre: 'Thriller' },
+    vampire: { tag: 'Vampire' },
+};
+
+const BROWSE_QUERY = `
+query ($page: Int, $perPage: Int, $genres: [String], $tags: [String], $format: [MediaFormat], $sort: [MediaSort], $startGte: FuzzyDateInt, $startLte: FuzzyDateInt, $popGte: Int, $status: MediaStatus, $isAdult: Boolean) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { lastPage }
+    media(type: ANIME, genre_in: $genres, tag_in: $tags, format_in: $format, sort: $sort, startDate_greater: $startGte, startDate_lesser: $startLte, popularity_greater: $popGte, status: $status, isAdult: $isAdult) {
+      id idMal format seasonYear averageScore
+      startDate { year }
+      title { romaji english native }
+      coverImage { large }
+    }
+  }
+}`;
+
+interface AniBrowseNode extends AniNode { averageScore?: number; coverImage?: { large?: string } }
+
+export interface AniBrowseItem {
+    anilistId: number; malId?: number;
+    title: string; titles: string[];
+    type: 'movie' | 'tv';
+    year?: number; posterUrl?: string; score?: number;
+}
+
+export interface AniBrowseOpts {
+    page?: number; perPage?: number;
+    cats?: string[];                                   // app category keys (OR/AND per AniList semantics)
+    type?: 'all' | 'tv' | 'movie';
+    cat?: string;                                      // popular | trending | newest | toprated | random
+    range?: string;                                    // day | week | month | year | all (for trending/toprated/newest)
+    adult?: boolean;
+}
+
+// range → FuzzyDateInt (yyyymmdd) for AniList's startDate_greater.
+const rangeToFuzzy = (range?: string): number | undefined => {
+    const d = new Date();
+    if (range === 'day') d.setDate(d.getDate() - 1);
+    else if (range === 'week') d.setDate(d.getDate() - 7);
+    else if (range === 'month') d.setMonth(d.getMonth() - 1);
+    else if (range === 'year') d.setFullYear(d.getFullYear() - 1);
+    else return undefined;
+    return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+};
+const todayFuzzy = (): number => { const d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); };
+
+// Browse results are cached to survive AniList's aggressive rate limit (~30–90
+// req/min). Without this, every category click is a fresh AniList call, so rapid
+// browsing / multiple users get 429'd and the grid goes empty ("categories broken").
+// We cache successes, serve STALE on failure, and never cache an empty result.
+const browseCache = new Map<string, { at: number; data: { items: AniBrowseItem[]; lastPage: number } }>();
+const BROWSE_TTL = 15 * 60 * 1000;
+const BROWSE_MAX = 500;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// One retry on a rate-limit / transient 5xx, honouring Retry-After (capped).
+async function anilistPost(query: string, variables: Record<string, any>): Promise<any> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            return await net.post(ANILIST, { query, variables },
+                { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
+        } catch (e: any) {
+            const st = e?.response?.status;
+            if (attempt === 0 && (st === 429 || st === 500 || st === 502 || st === 503 || st === 504)) {
+                const ra = Number(e?.response?.headers?.['retry-after']);
+                await sleep(Math.min(5000, (Number.isFinite(ra) && ra > 0 ? ra : 1.2) * 1000));
+                continue;
+            }
+            throw e;
+        }
+    }
+    return null;
+}
+
+// "Latest Episode" (the default anime view, like anikototv's home): the most recently
+// AIRED episodes across all currently-running anime, newest first — dedup'd to one card
+// per show. This is why an ongoing show that aired ep 100 today ranks above a series that
+// merely premiered this week (which is what the "Newest" tab shows instead).
+const LATEST_QUERY = `
+query ($page: Int, $perPage: Int, $now: Int) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { lastPage }
+    airingSchedules(airingAt_lesser: $now, sort: TIME_DESC) {
+      media {
+        id idMal format seasonYear averageScore isAdult
+        startDate { year }
+        title { romaji english native }
+        coverImage { large }
+      }
+    }
+  }
+}`;
+
+async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
+    const page = o.page || 1;
+    const key = `latest:${JSON.stringify({ page, adult: !!o.adult, type: o.type || 'all' })}`;
+    const cached = browseCache.get(key);
+    if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.data;   // short TTL — new episodes air hourly
+    const wantFmt = o.type === 'movie' ? ['MOVIE'] : o.type === 'tv' ? ['TV', 'TV_SHORT', 'ONA'] : null;
+    try {
+        // perPage 50: dedup by show collapses many airings, so over-fetch to fill a page.
+        const res = await anilistPost(LATEST_QUERY, { page, perPage: 50, now: Math.floor(Date.now() / 1000) });
+        const scheds: { media: AniBrowseNode & { isAdult?: boolean } }[] = res?.data?.data?.Page?.airingSchedules || [];
+        const seen = new Set<number>();
+        const items: AniBrowseItem[] = [];
+        for (const s of scheds) {
+            const n = s.media; if (!n?.id || seen.has(n.id)) continue;
+            if (!o.adult && n.isAdult) continue;
+            if (wantFmt && !wantFmt.includes(n.format || '')) continue;
+            seen.add(n.id);
+            items.push({
+                anilistId: n.id, malId: n.idMal,
+                title: displayTitle(n), titles: titlesOf(n),
+                type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
+                year: yearOf(n), posterUrl: n.coverImage?.large,
+                score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
+            });
+            if (items.length >= 24) break;
+        }
+        const out = { items, lastPage: Math.min(res?.data?.data?.Page?.pageInfo?.lastPage || 1, 50) };
+        if (items.length) browseCache.set(key, { at: Date.now(), data: out });
+        return (!items.length && cached) ? cached.data : out;
+    } catch { return cached ? cached.data : { items: [], lastPage: 1 }; }
+}
+
+/** Browse the AniList anime catalog by category, returning per-cour entries. */
+export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
+    if (o.cat === 'latest' && !(o.cats || []).length) return anilistLatest(o);
+    const genres: string[] = [], tags: string[] = [];
+    for (const c of o.cats || []) {
+        const m = ANILIST_CATEGORY[c]; if (!m) continue;
+        if (m.genre) genres.push(m.genre);
+        if (m.tag) Array.isArray(m.tag) ? tags.push(...m.tag) : tags.push(m.tag);
+    }
+
+    const sort = o.cat === 'trending' ? ['TRENDING_DESC']
+        : o.cat === 'newest' ? ['START_DATE_DESC']
+        : o.cat === 'toprated' ? ['SCORE_DESC']
+        : ['POPULARITY_DESC'];   // 'airing' + 'popular' both rank by popularity
+    const format = o.type === 'movie' ? ['MOVIE'] : o.type === 'tv' ? ['TV', 'TV_SHORT', 'ONA'] : undefined;
+
+    let page = o.page || 1;
+    if (o.cat === 'random') page = 1 + Math.floor(Math.random() * 20);
+
+    const variables: Record<string, any> = {
+        page, perPage: o.perPage || 24,
+        genres: genres.length ? genres : undefined,
+        tags: tags.length ? tags : undefined,
+        format, sort,
+        startGte: (o.cat === 'newest' || o.cat === 'trending' || o.cat === 'toprated') ? rangeToFuzzy(o.range) : undefined,
+        // Cap Newest/Trending/Top-Rated at today so unreleased/announced titles (which
+        // AniList sorts to the very top by START_DATE_DESC) don't dominate the list.
+        startLte: (o.cat === 'newest' || o.cat === 'trending' || o.cat === 'toprated') ? todayFuzzy() : undefined,
+        // Top-Rated by raw score is dominated by tiny-sample outliers; require a real
+        // popularity floor so it returns actual acclaimed titles.
+        popGte: o.cat === 'toprated' ? 5000 : undefined,
+        // 'airing' = the seasonal / currently-releasing view (anikototv's "Top Airing").
+        status: o.cat === 'airing' ? 'RELEASING' : undefined,
+        isAdult: o.adult ? undefined : false,
+    };
+
+    const useCache = o.cat !== 'random';
+    const key = JSON.stringify(variables);
+    const cached = browseCache.get(key);
+    if (useCache && cached && Date.now() - cached.at < BROWSE_TTL) return cached.data;
+
+    try {
+        const res = await anilistPost(BROWSE_QUERY, variables);
+        const p = res?.data?.data?.Page;
+        const media: AniBrowseNode[] = p?.media || [];
+        const items: AniBrowseItem[] = media.map((n) => ({
+            anilistId: n.id, malId: n.idMal,
+            title: displayTitle(n), titles: titlesOf(n),
+            type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
+            year: yearOf(n), posterUrl: n.coverImage?.large,
+            score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
+        })).filter((x) => x.anilistId && x.title);
+        const out = { items, lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
+        // Cache only a real result; never cache an empty (a rate-limited/blank response
+        // must not stick). Serve stale on the next failure instead.
+        if (useCache && items.length) {
+            if (browseCache.size >= BROWSE_MAX) { const oldest = browseCache.keys().next().value; if (oldest) browseCache.delete(oldest); }
+            browseCache.set(key, { at: Date.now(), data: out });
+        }
+        // If the live call came back empty but we have a stale hit, prefer the stale data.
+        if (!items.length && cached) return cached.data;
+        return out;
+    } catch {
+        // Network/429 error — serve stale data if we have any, else empty.
+        return cached ? cached.data : { items: [], lastPage: 1 };
+    }
+}
+
+/** Title variants + year + format for ONE AniList id — used to resolve a browsed
+ *  cour back to a TMDB entry when the client didn't pass the titles. */
+export async function anilistTitleVariants(id: number): Promise<{ titles: string[]; year?: number; type: 'movie' | 'tv' } | null> {
+    const m = await fetchMedia(id);
+    if (!m) return null;
+    return { titles: titlesOf(m.node), year: yearOf(m.node), type: m.node.format === 'MOVIE' ? 'movie' : 'tv' };
+}
+
 export interface AniEpisode {
     episodeNumber: number;
     name?: string;

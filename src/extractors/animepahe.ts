@@ -36,19 +36,25 @@ function extractJson(html: string): any {
  * carries a Dean-Edwards packed `const source='...m3u8'`.
  */
 const KWIK_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+
+// Pull the .m3u8 out of a kwik embed page (Dean-Edwards packed `source='...m3u8'`).
+const parseKwik = (html: string | null | undefined): string | null => {
+    if (!html) return null;
+    const packed = getPacked(html);
+    const src = packed ? getAndUnpack(packed) : html;
+    const m = /source\s*=\s*['"]([^'"]+\.m3u8[^'"]*)['"]/.exec(src) || /(https?:\/\/[^'"\s]+\.m3u8[^'"\s]*)/.exec(src);
+    return m ? (m[1] || m[0]) : null;
+};
+
 async function resolveKwik(kwikUrl: string, referer: string): Promise<string | null> {
+    // kwik serves the Dean-Edwards packed `source='...m3u8'` to a browser-UA + referer
+    // request (WARP mode egresses via the WARP SOCKS for a clean IP). NOTE: as of
+    // 2026-07 kwik.cx returns a Cloudflare 403 on direct, WARP, AND FlareSolverr egress
+    // — verified — so this fast-fails to null on this infra. A FlareSolverr solve was
+    // tried and did NOT clear it (and cost ~40s/slot), so it's intentionally not used.
     try {
-        // Kwik serves the Dean-Edwards packed `source='...m3u8'` DIRECTLY to a plain
-        // request that carries a browser UA + the animepahe referer — exactly what the
-        // CloudStream plugin does. We must NOT route this through FlareSolverr: its
-        // headless browser 500s on kwik's autoplay embed (the failure the trace showed).
-        // In WARP mode this app.get still egresses via the WARP SOCKS, so it gets the
-        // clean IP; a Kwik IP-ban just yields no packed script → null (not a 500).
         const res = await app.get(kwikUrl, { referer, headers: { 'User-Agent': KWIK_UA, Referer: referer }, timeout: 15000 });
-        const packed = getPacked(res.text);
-        const src = packed ? getAndUnpack(packed) : res.text;
-        const m = /source\s*=\s*['"]([^'"]+\.m3u8[^'"]*)['"]/.exec(src) || /(https?:\/\/[^'"\s]+\.m3u8[^'"\s]*)/.exec(src);
-        return m ? (m[1] || m[0]) : null;
+        return parseKwik(res.text);
     } catch { return null; }
 }
 

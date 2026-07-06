@@ -42,7 +42,7 @@ export const WyzieSubsProvider: Provider = {
 
             for (const sub of subs) {
                 const lang = sub.language;
-                if (!lang) continue;
+                if (!lang || !sub.url) continue;   // a missing url would break subProxy() downstream
                 result.subtitles.push({
                     language: sub.display ?? getLanguage(lang),
                     url: sub.url,

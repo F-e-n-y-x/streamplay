@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { proxyWarpAgent } from '../utils/warp';
-import { guardUrl, ssrfAgents } from '../utils/ssrf';
+import { guardUrl, ssrfAgents, guardRedirect, SSRF_BLOCKED } from '../utils/ssrf';
 
 /**
  * Fetch an upstream URL for the proxy, retrying through WARP when the direct
@@ -14,22 +14,14 @@ import { guardUrl, ssrfAgents } from '../utils/ssrf';
  * of) an internal address is refused at connect time — not just at guardUrl.
  * The WARP fallback egresses through Cloudflare, which can't reach the LAN.
  */
-// Re-validate every redirect hop. On the direct branch the guarded DNS lookup already
-// rejects internal targets at connect time, but the WARP fallback resolves DNS remotely
-// through the SOCKS proxy, so that lookup never runs there — a 302 to an internal literal
-// host would otherwise be followed unchecked. guardUrl on each hop closes that gap on both
-// branches. ('bad url' from a reconstruction hiccup is ignored so legit redirects aren't
-// broken; only an explicit blocked-host/scheme aborts.)
-const guardRedirect = (options: any): void => {
-    const href = options.href || `${options.protocol || 'https:'}//${options.host || options.hostname || ''}${options.path || ''}`;
-    const blocked = guardUrl(href);
-    if (blocked && blocked !== 'bad url') throw new Error(`blocked redirect: ${blocked}`);
-};
-
 async function fetchUpstream(url: string, config: AxiosRequestConfig): Promise<AxiosResponse> {
     try {
         return await axios.get(url, { ...config, ...ssrfAgents(), beforeRedirect: guardRedirect });
-    } catch (e) {
+    } catch (e: any) {
+        // NEVER fall back to WARP when the direct attempt was refused by the SSRF
+        // guard: the WARP agent resolves DNS remotely (socks5h), so retrying there
+        // would connect to the very private/rebound target the guard just blocked.
+        if (e?.code === SSRF_BLOCKED) throw e;
         const agent = proxyWarpAgent();
         if (!agent) throw e;
         return await axios.get(url, { ...config, httpAgent: agent, httpsAgent: agent, beforeRedirect: guardRedirect });
@@ -63,6 +55,11 @@ const router = Router();
 
 const DEFAULT_UA =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+
+// The manifest/subtitle branches buffer the whole body into memory (responseType
+// 'text'). Cap it so a caller can't point the (unauthenticated) proxy at a multi-GB
+// file with &m3u8=1 and OOM the server. Real HLS manifests / subtitle files are KB–low-MB.
+const TEXT_MAX_BYTES = 25 * 1024 * 1024;
 
 const b64 = (s: string) => Buffer.from(s, 'utf-8').toString('base64url');
 const unb64 = (s: string) => Buffer.from(s, 'base64url').toString('utf-8');
@@ -163,7 +160,7 @@ router.get('/', async (req, res) => {
 
     try {
         if (isM3u8) {
-            const upstream = await fetchUpstream(url, { headers, responseType: 'text', timeout: 20000, transformResponse: r => r });
+            const upstream = await fetchUpstream(url, { headers, responseType: 'text', timeout: 20000, maxContentLength: TEXT_MAX_BYTES, transformResponse: r => r });
             const rewritten = rewriteManifest(String(upstream.data), url, (req.query.h as string) || '', req.query.audio as string | undefined);
             res.set('Access-Control-Allow-Origin', '*');
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
@@ -236,7 +233,7 @@ router.get('/sub', async (req, res) => {
         const upstream = await fetchUpstream(url, {
             // Referer = the sub's own origin avoids most CDN hotlink 403s.
             headers: { 'User-Agent': DEFAULT_UA, ...(origin ? { Referer: origin + '/' } : {}), ...decodeHeaders(req.query.h as string) },
-            responseType: 'text', timeout: 15000, transformResponse: r => r,
+            responseType: 'text', timeout: 15000, maxContentLength: TEXT_MAX_BYTES, transformResponse: r => r,
         });
         let body = String(upstream.data);
 

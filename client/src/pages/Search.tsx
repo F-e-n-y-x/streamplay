@@ -16,7 +16,11 @@ export default function Search() {
   const [totalPages, setTotalPages] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
 
-  useEffect(() => { setMore([]); setPage(1); setTotalPages(first?.totalPages || 1); }, [q, first]);
+  // Reset appended pages ONLY when the query changes. Keying this on `first` too meant
+  // any background refetch of page 1 (new object identity) silently wiped the pages the
+  // user had loaded and snapped back to page 1.
+  useEffect(() => { setMore([]); setPage(1); }, [q]);
+  useEffect(() => { if (first) setTotalPages(first.totalPages || 1); }, [first]);
 
   const items: Card[] | null = q.trim() ? (first ? [...first.items, ...more] : null) : [];
 

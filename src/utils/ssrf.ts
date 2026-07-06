@@ -85,18 +85,35 @@ export const guardUrl = (raw: string): string | null => {
     return null;
 };
 
+/** Error code stamped on a guarded-lookup rejection so callers can tell an SSRF
+ *  block apart from an ordinary network error (e.g. so the WARP fallback in the
+ *  proxy does NOT retry — and thereby smuggle — a DNS-rebinding target). */
+export const SSRF_BLOCKED = 'SSRF_BLOCKED';
+
+/** axios `beforeRedirect` hook: re-validate every redirect hop's target. Used on
+ *  both the direct and WARP branches so a 302 to an internal literal host is
+ *  refused even on the branch whose DNS lookup runs remotely (socks5h/WARP).
+ *  A 'bad url' from a reconstruction hiccup is ignored so legit redirects aren't
+ *  broken; only an explicit blocked-host/scheme aborts. */
+export const guardRedirect = (options: any): void => {
+    const href = options.href || `${options.protocol || 'https:'}//${options.host || options.hostname || ''}${options.path || ''}`;
+    const blocked = guardUrl(href);
+    if (blocked && blocked !== 'bad url') throw new Error(`blocked redirect: ${blocked}`);
+};
+
 // ── guarded DNS lookup + agents ───────────────────────────────────────────────
 const guardedLookup: LookupFunction = ((hostname: string, options: any, cb: any) => {
     const base = dohEnabled ? dohLookup : (dns.lookup as LookupFunction);
     const check = (addr: string) => isPrivateAddress(addr);
+    const blocked = (addr: string) => Object.assign(new Error(`blocked private address ${addr}`), { code: SSRF_BLOCKED });
     base(hostname, { ...(typeof options === 'object' ? options : {}) }, ((err: any, address: any, family: any) => {
         if (err) return cb(err);
         if (Array.isArray(address)) {
             const bad = address.find((r: any) => check(r.address));
-            if (bad) return cb(new Error(`blocked private address ${bad.address}`));
+            if (bad) return cb(blocked(bad.address));
             return cb(null, address);
         }
-        if (check(address)) return cb(new Error(`blocked private address ${address}`));
+        if (check(address)) return cb(blocked(address));
         cb(null, address, family);
     }) as any);
 }) as LookupFunction;

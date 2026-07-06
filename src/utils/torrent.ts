@@ -40,6 +40,11 @@ async function getClient(): Promise<any> {
                 // and fewer playback stalls on a thin swarm. DHT + uTP stay on (defaults)
                 // for peer discovery beyond the trackers baked into each magnet.
                 const c = new WebTorrent({ maxConns: 200 });
+                // The client is an EventEmitter; a client-level 'error' (DHT/UDP bind
+                // failure, fatal tracker error, …) with no listener is an unhandled
+                // 'error' event that throws and crashes the whole server. Swallow it —
+                // per-torrent errors are still handled where each torrent is added.
+                c.on('error', (e: any) => console.error('[torrent] client error:', e?.message || e));
                 console.log('[torrent] WebTorrent client ready (maxConns=200)');
                 return c;
             } catch (e: any) {
@@ -55,7 +60,9 @@ async function getClient(): Promise<any> {
 interface Entry { torrent: any; lastUsed: number }
 const torrents = new Map<string, Entry>();     // infoHash -> entry
 
-const magnetHash = (m: string): string => (m.match(/btih:([a-z0-9]{32,40})/i) || [])[1]?.toLowerCase() || m;
+// Lowercase the fallback too: a bare infohash and the same hash inside a magnet's
+// `btih:` must map to ONE key, or dedup/eviction/getStatus see two entries.
+const magnetHash = (m: string): string => (m.match(/btih:([a-z0-9]{32,40})/i) || [])[1]?.toLowerCase() || m.toLowerCase();
 
 /** Add (or reuse) a magnet and resolve once its metadata (file list) is ready. */
 export async function addTorrent(magnetOrHash: string): Promise<any> {
@@ -122,8 +129,15 @@ export function hasFfmpeg(): Promise<boolean> {
  * ($TORRENT_VAAPI=1, needs /dev/dri) handles HEVC. Returns the ffmpeg child; pipe
  * ffmpeg.stdout to the HTTP response.
  */
-export function remuxToMp4(file: any): any {
-    const input = file.createReadStream();
+/**
+ * Remux any readable stream (a torrent file stream OR an SSRF-guarded HTTP fetch
+ * stream) to fragmented MP4 for the browser, reading from ffmpeg's stdin. Feeding
+ * ffmpeg via stdin — rather than `ffmpeg -i <url>` — is deliberate: ffmpeg does its
+ * OWN DNS/redirects, so `-i <caller-url>` would bypass the SSRF guard entirely
+ * (DNS-rebinding / redirect-to-internal). Callers fetch through the guarded agents
+ * and pipe the result here. Returns the ffmpeg child; pipe `ff.stdout` to the response.
+ */
+export function remuxReadableToMp4(input: NodeJS.ReadableStream): any {
     const vaapi = /^(1|true|yes)$/i.test(process.env.TORRENT_VAAPI || '');
     const args = [
         '-hide_banner', '-loglevel', 'error',
@@ -138,29 +152,17 @@ export function remuxToMp4(file: any): any {
     ];
     const ff = spawn('ffmpeg', args, { stdio: ['pipe', 'pipe', 'inherit'] });
     input.on('error', () => { try { ff.kill('SIGKILL'); } catch { /* */ } });
-    input.pipe(ff.stdin).on('error', () => { /* client aborted */ });
+    // When ffmpeg exits (including a SIGKILL on client disconnect) destroy the source
+    // stream too, so an aborted play doesn't leak the torrent/HTTP read stream until
+    // the 20-minute idle evictor runs.
+    ff.on('close', () => { try { (input as any).destroy?.(); } catch { /* */ } });
+    input.pipe(ff.stdin).on('error', () => { /* client aborted / ffmpeg gone */ });
     return ff;
 }
 
-/**
- * Remux a remote HTTP file (a debrid-cached .mkv link) to fragmented MP4 for the
- * browser. ffmpeg reads the URL directly (it follows redirects), so we don't manage
- * the fetch stream. Same codec policy as remuxToMp4. Returns the ffmpeg child.
- */
-export function remuxUrlToMp4(url: string): any {
-    const vaapi = /^(1|true|yes)$/i.test(process.env.TORRENT_VAAPI || '');
-    const args = [
-        '-hide_banner', '-loglevel', 'error',
-        '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_delay_max', '5',
-        ...(vaapi ? ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-filter_hw_device', 'va'] : []),
-        '-i', url,
-        '-map', '0:v:0', '-map', '0:a:0?',
-        '-c:v', vaapi ? 'h264_vaapi' : 'copy',
-        '-c:a', 'aac', '-ac', '2',
-        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-        '-f', 'mp4', 'pipe:1',
-    ];
-    return spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'inherit'] });
+/** Remux a torrent file (mkv/HEVC) to fragmented MP4. */
+export function remuxToMp4(file: any): any {
+    return remuxReadableToMp4(file.createReadStream());
 }
 
 // ── idle eviction ─────────────────────────────────────────────────────────────
