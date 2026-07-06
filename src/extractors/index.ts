@@ -71,7 +71,6 @@ export const providers: Provider[] = [
     // sources for anime titles. Each early-returns for non-anime content, so this
     // ordering costs movies nothing while putting the good sub/dub sources at the
     // top of the list for anime.
-    AllAnimeProvider,     // ani-cli backend — reliable native SUB + DUB (no FlareSolverr/key)
     AniZoneProvider,      // HLS + multi-audio (JP/KR/EN) + subtitles
     AnimeWorldProvider,   // Indian dubs (Hindi/Tamil/Telugu) + Eng/Jap via zephyrflick
     ConsumetProvider,     // aggregator: Zoro/AnimePahe/Gogo/AnimeKai fallback (needs CONSUMET_URL)
@@ -109,6 +108,10 @@ export const providers: Provider[] = [
 
 /** Ported but disabled (dead/changed upstream). Not served; here for reference + easy revival. */
 export const disabledProviders: Provider[] = [
+    // AllAnime gates episode sources behind an IP-reputation captcha (NEED_CAPTCHA) that
+    // is triggered on this box's direct IP AND its WARP egress IPs (verified live 2026-07)
+    // → resolves 0 streams every request. Revive from a clean residential IP.
+    AllAnimeProvider,
     // kwik.cx (AnimePahe's video CDN) returns a Cloudflare 403 on direct, WARP, AND
     // FlareSolverr egress (verified 2026-07) → it resolves nothing while burning a
     // FlareSolverr solve on search/release/play every anime request (and returns state

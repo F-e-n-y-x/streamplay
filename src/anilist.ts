@@ -275,10 +275,10 @@ const BROWSE_MAX = 500;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 // One retry on a rate-limit / transient 5xx, honouring Retry-After (capped).
-async function anilistPost(variables: Record<string, any>): Promise<any> {
+async function anilistPost(query: string, variables: Record<string, any>): Promise<any> {
     for (let attempt = 0; attempt < 2; attempt++) {
         try {
-            return await net.post(ANILIST, { query: BROWSE_QUERY, variables },
+            return await net.post(ANILIST, { query, variables },
                 { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
         } catch (e: any) {
             const st = e?.response?.status;
@@ -293,8 +293,60 @@ async function anilistPost(variables: Record<string, any>): Promise<any> {
     return null;
 }
 
+// "Latest Episode" (the default anime view, like anikototv's home): the most recently
+// AIRED episodes across all currently-running anime, newest first — dedup'd to one card
+// per show. This is why an ongoing show that aired ep 100 today ranks above a series that
+// merely premiered this week (which is what the "Newest" tab shows instead).
+const LATEST_QUERY = `
+query ($page: Int, $perPage: Int, $now: Int) {
+  Page(page: $page, perPage: $perPage) {
+    pageInfo { lastPage }
+    airingSchedules(airingAt_lesser: $now, sort: TIME_DESC) {
+      media {
+        id idMal format seasonYear averageScore isAdult
+        startDate { year }
+        title { romaji english native }
+        coverImage { large }
+      }
+    }
+  }
+}`;
+
+async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
+    const page = o.page || 1;
+    const key = `latest:${JSON.stringify({ page, adult: !!o.adult, type: o.type || 'all' })}`;
+    const cached = browseCache.get(key);
+    if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.data;   // short TTL — new episodes air hourly
+    const wantFmt = o.type === 'movie' ? ['MOVIE'] : o.type === 'tv' ? ['TV', 'TV_SHORT', 'ONA'] : null;
+    try {
+        // perPage 50: dedup by show collapses many airings, so over-fetch to fill a page.
+        const res = await anilistPost(LATEST_QUERY, { page, perPage: 50, now: Math.floor(Date.now() / 1000) });
+        const scheds: { media: AniBrowseNode & { isAdult?: boolean } }[] = res?.data?.data?.Page?.airingSchedules || [];
+        const seen = new Set<number>();
+        const items: AniBrowseItem[] = [];
+        for (const s of scheds) {
+            const n = s.media; if (!n?.id || seen.has(n.id)) continue;
+            if (!o.adult && n.isAdult) continue;
+            if (wantFmt && !wantFmt.includes(n.format || '')) continue;
+            seen.add(n.id);
+            items.push({
+                anilistId: n.id, malId: n.idMal,
+                title: displayTitle(n), titles: titlesOf(n),
+                type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
+                year: yearOf(n), posterUrl: n.coverImage?.large,
+                score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
+            });
+            if (items.length >= 24) break;
+        }
+        const out = { items, lastPage: Math.min(res?.data?.data?.Page?.pageInfo?.lastPage || 1, 50) };
+        if (items.length) browseCache.set(key, { at: Date.now(), data: out });
+        return (!items.length && cached) ? cached.data : out;
+    } catch { return cached ? cached.data : { items: [], lastPage: 1 }; }
+}
+
 /** Browse the AniList anime catalog by category, returning per-cour entries. */
 export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
+    if (o.cat === 'latest' && !(o.cats || []).length) return anilistLatest(o);
     const genres: string[] = [], tags: string[] = [];
     for (const c of o.cats || []) {
         const m = ANILIST_CATEGORY[c]; if (!m) continue;
@@ -334,7 +386,7 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
     if (useCache && cached && Date.now() - cached.at < BROWSE_TTL) return cached.data;
 
     try {
-        const res = await anilistPost(variables);
+        const res = await anilistPost(BROWSE_QUERY, variables);
         const p = res?.data?.data?.Page;
         const media: AniBrowseNode[] = p?.media || [];
         const items: AniBrowseItem[] = media.map((n) => ({
