@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useBrowse } from "../lib/queries";
-import { useSettings } from "../lib/settings";
+import { updateSettings, useSettings } from "../lib/settings";
 import PosterCard from "../components/PosterCard";
 import CategoryPicker, { ANIME_CATEGORIES, GENERIC_CATEGORIES } from "../components/CategoryPicker";
 import { ChevronDown, ChevronLeft, ChevronRight, Film, Globe, Sparkles, Tv } from "../components/icons";
@@ -80,7 +80,7 @@ export default function Browse({ section }: { section: Section }) {
   const [page, setPage] = useState(1);
   const [nonce, setNonce] = useState(0);
   const [rangeOpen, setRangeOpen] = useState(false);
-  const { adult } = useSettings();
+  const { adult, anime } = useSettings();
 
   const gridRef = useRef<HTMLDivElement>(null);
   const cols = useColumns(gridRef);
@@ -164,6 +164,18 @@ export default function Browse({ section }: { section: Section }) {
               <button className={`seg-opt ${type === "all" ? "active" : ""}`} onClick={() => { setType("all"); setPage(1); }}>All</button>
               <button className={`seg-opt ${type === "tv" ? "active" : ""}`} onClick={() => { setType("tv"); setPage(1); }}>Series</button>
               <button className={`seg-opt ${type === "movie" ? "active" : ""}`} onClick={() => { setType("movie"); setPage(1); }}>Movies</button>
+            </div>
+          )}
+          {/* Audio preference: sets the DEFAULT playback track (the player auto-picks the
+              dubbed audio when a source carries it). Not a catalog filter — dub availability
+              isn't in the metadata — so it doesn't change the grid. */}
+          {cfg.track && (
+            <div className="seg-labeled" title="Default playback audio — the player plays the dubbed track when a source has one">
+              <span className="seg-cap">Audio</span>
+              <div className="segmented">
+                <button className={`seg-opt ${anime === "sub" ? "active" : ""}`} onClick={() => updateSettings({ anime: "sub" })}>Sub</button>
+                <button className={`seg-opt ${anime === "dub" ? "active" : ""}`} onClick={() => updateSettings({ anime: "dub" })}>Dub</button>
+              </div>
             </div>
           )}
           {cfg.region && (
