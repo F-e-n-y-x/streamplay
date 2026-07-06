@@ -144,8 +144,9 @@ const PROVIDER_KINDS: Record<string, ContentKind[]> = {
     allanime: ['anime'], anizone: ['anime'], animepahe: ['anime'], consumet: ['anime'],
     // Asian drama
     kisskh: ['asian'],
+    // CastleTV also carries Indian-dubbed anime (Hindi/Tamil/Telugu), so it runs for anime too.
+    castle: ['movie', 'series', 'asian', 'anime'],
     // Indian / scraper multi (movies + series + Asian, NOT anime — AnimeWorld covers dubbed anime)
-    castle: ['movie', 'series', 'asian'],
     vegamovies: ['movie', 'series', 'asian'], hdhub4u: ['movie', 'series', 'asian'], fourkhdhub: ['movie', 'series', 'asian'],
     movies4u: ['movie', 'series', 'asian'], rogmovies: ['movie', 'series', 'asian'], multimovies: ['movie', 'series', 'asian'],
     uhdmovies: ['movie', 'series', 'asian'], moviesmod: ['movie', 'series', 'asian'], topmovies: ['movie', 'series', 'asian'],
