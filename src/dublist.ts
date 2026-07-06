@@ -31,9 +31,17 @@ async function fetchDubSet(): Promise<Set<number>> {
     const set = new Set<number>();
     await Promise.all(LANGS.map(async (lang) => {
         try {
+            // GitHub raw serves .json as text/plain, so axios does NOT auto-parse it —
+            // r.data comes back as a STRING; parse it ourselves. The payload is an
+            // object { language, dubbed:[malIds], partial:[malIds], ... } (not a bare
+            // array), so pull the id arrays out. "partial" = some episodes dubbed —
+            // still counts as "has a dub" for the filter.
             const r = await net.get(`${BASE}/dubbed_${lang}.json`, { timeout: 15000 });
-            const arr: unknown = r.data;
-            if (Array.isArray(arr)) for (const id of arr) { const n = Number(id); if (Number.isFinite(n)) set.add(n); }
+            let data: any = r.data;
+            if (typeof data === 'string') { try { data = JSON.parse(data); } catch { data = null; } }
+            const ids: unknown[] = Array.isArray(data) ? data
+                : [...(Array.isArray(data?.dubbed) ? data.dubbed : []), ...(Array.isArray(data?.partial) ? data.partial : [])];
+            for (const id of ids) { const n = Number(id); if (Number.isFinite(n)) set.add(n); }
         } catch { /* one language failing shouldn't sink the whole set */ }
     }));
     return set;
