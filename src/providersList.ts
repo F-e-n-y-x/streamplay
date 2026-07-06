@@ -24,6 +24,7 @@ export const providerDomains = [
     { id: 'vaplayer', name: 'Vaplayer', url: 'https://streamdata.vaplayer.ru' },
     { id: 'peachify', name: 'Peachify', url: 'https://peachify.top' },
     { id: 'anineko', name: 'AniNeko', url: 'https://anineko.to' },
+    { id: 'animenosub', name: 'AnimeNoSub', url: 'https://animenosub.to' },
     { id: 'anizone', name: 'AniZone', url: 'https://anizone.to' },
     { id: 'animeworld', name: 'AnimeWorld', url: 'https://watchanimeworld.net' },
     { id: 'castle', name: 'CastleTV', url: 'https://api.hlowb.com' },

@@ -33,6 +33,7 @@ import { HDRezkaProvider } from './hdrezka';   // huge movies+series catalog (mu
 import { AllAnimeProvider } from './allanime';    // ani-cli backend: reliable native SUB + DUB, no FlareSolverr/key
 import { AniZoneProvider } from './anizone';
 import { AniNekoProvider } from './anineko';       // anineko.to: SUB/HardSub/DUB via FlareSolverr + packed embeds
+import { AnimeNoSubProvider } from './animenosub';  // animenosub.to: English SUB+DUB, plain HTTP → megaplay m3u8
 import { AnimeWorldProvider } from './animeworld';
 import { ConsumetProvider } from './consumet';   // multi-backend aggregator (opt-in via CONSUMET_URL)
 import { AnimePaheProvider } from './animepahe';
@@ -75,6 +76,7 @@ export const providers: Provider[] = [
     // top of the list for anime.
     AniZoneProvider,      // HLS + multi-audio (JP/KR/EN) + subtitles
     AniNekoProvider,      // anineko.to — SUB/HardSub/DUB (FlareSolverr-solved, packed embeds)
+    AnimeNoSubProvider,   // animenosub.to — English SUB+DUB, plain HTTP → megaplay direct m3u8
     AnimeWorldProvider,   // Indian dubs (Hindi/Tamil/Telugu) + Eng/Jap via zephyrflick
     ConsumetProvider,     // aggregator: Zoro/AnimePahe/Gogo/AnimeKai fallback (needs CONSUMET_URL)
 
@@ -145,7 +147,7 @@ export const disabledProviders: Provider[] = [
 const PROVIDER_KINDS: Record<string, ContentKind[]> = {
     // dedicated anime. (AnimeWorld is intentionally NOT listed → it serves ALL kinds:
     // it carries anime, Western cartoons like Ben 10, plus series & movies.)
-    allanime: ['anime'], anizone: ['anime'], anineko: ['anime'], animepahe: ['anime'], consumet: ['anime'],
+    allanime: ['anime'], anizone: ['anime'], anineko: ['anime'], animenosub: ['anime'], animepahe: ['anime'], consumet: ['anime'],
     // Asian drama
     kisskh: ['asian'],
     // CastleTV also carries Indian-dubbed anime (Hindi/Tamil/Telugu), so it runs for anime too.
