@@ -4,7 +4,8 @@ import { app } from '../utils/http';
 import { seasonScore } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 import { getLanguage } from '../utils/common';
-import { loadExtractor } from '../utils/hostextractors';
+import { loadExtractor, getPacked, getAndUnpack } from '../utils/hostextractors';
+import { flareSolverrGetHtml } from '../utils/flaresolverr';
 
 /**
  * AnimeNoSub (animenosub.to) — English SUB + DUB anime, DooPlay WordPress site,
@@ -132,10 +133,31 @@ export const AnimeNoSubProvider: Provider = {
                         }
                     }));
                 } else {
-                    // other hosts (StreamWish / Filelions / VidHide family) → shared extractor.
+                    // Other hosts. Try the shared extractor first (fast, plain HTTP — handles
+                    // the StreamWish/Filelions/VidHide family that DON'T gate). If it finds
+                    // nothing, the host is likely a JS-anti-bot INTERSTITIAL ("Redirecting…",
+                    // e.g. sbanh/sblongvu) that only a headless render passes — fall back to
+                    // FlareSolverr and pull the m3u8 out of the (packed) player.
+                    const origin = (() => { try { return new URL(embed).origin; } catch { return BASE; } })();
+                    const host = (() => { try { return new URL(embed).hostname; } catch { return 'AnimeNoSub'; } })();
                     const res = await loadExtractor(embed, `${BASE}/`);
                     for (const sub of res.subtitles) if (!subtitles.find((x) => x.url === sub.url)) subtitles.push(sub);
                     for (const st of res.streams) if (!streams.find((s) => s.link === st.link)) streams.push({ ...st, server: `AnimeNoSub · ${st.server}` });
+
+                    if (!res.streams.length) {
+                        const rendered = await flareSolverrGetHtml(embed).catch(() => null);
+                        if (rendered) {
+                            const packed = getPacked(rendered);
+                            const src = packed ? getAndUnpack(packed) : rendered;
+                            const m = src.match(/(?:file|source|src)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']/i)
+                                || src.match(/(https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)/i);
+                            const m3u8 = m ? (m[1] || m[0]) : undefined;
+                            if (process.env.ANIME_DEBUG) console.error(`[AnimeNoSub] FS render ${host} => ${m3u8 ? m3u8.slice(0, 55) : 'NULL'}`);
+                            if (m3u8 && !streams.find((s) => s.link === m3u8)) {
+                                streams.push({ server: `AnimeNoSub · ${host}`, link: m3u8, type: 'm3u8', headers: { Referer: `${origin}/`, Origin: origin } });
+                            }
+                        }
+                    }
                 }
                 if (process.env.ANIME_DEBUG) console.error(`[AnimeNoSub] ${pick.slug} ep${episode} host=${embed.slice(0, 40)} streams=${streams.length}`);
                 if (streams.length) break;   // got this episode — stop trying candidates
