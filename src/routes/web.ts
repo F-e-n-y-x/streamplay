@@ -143,10 +143,22 @@ async function resolveAnimeToTmdb(anilistId: number, titles: string[], year?: nu
         const info = await anilistTitleVariants(anilistId);
         if (info) { list = info.titles; ty = ty || info.type; yr = yr ?? info.year; }
     }
+    // TMDB indexes the ROOT series ("Skeleton Knight in Another World"), not the cour
+    // ("… Season 2"), so strip season/part markers and search the base name too — else a
+    // Season-2 card finds nothing and the card dead-ends. The exact season is then
+    // re-selected on the title page via ?al=.
+    const stripSeason = (t: string): string => t
+        .replace(/\s*[:\-–]?\s*(the\s+)?(final\s+season|season\s*\d+|\d+(?:st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+)\s*$/i, '')
+        .replace(/\s{2,}/g, ' ').trim();
+    const seenQ = new Set<string>();
+    const queries: string[] = [];
+    for (const t of list.slice(0, 3)) {
+        for (const q of [t, stripSeason(t)]) { const k = normTitle(q); if (q && k && !seenQ.has(k)) { seenQ.add(k); queries.push(q); } }
+    }
     const searchTypes: ('tv' | 'movie')[] = ty ? [ty] : ['tv', 'movie'];
     let best: { type: 'movie' | 'tv'; id: number } | null = null;
     let bestScore = 0;
-    for (const t of list.slice(0, 3)) {
+    for (const t of queries) {
         for (const st of searchTypes) {
             let d: any;
             try { d = await tmdbGet(`/search/${st}`, { query: t }); } catch { continue; }
@@ -155,14 +167,16 @@ async function resolveAnimeToTmdb(anilistId: number, titles: string[], year?: nu
                 if (!cand || !want) continue;
                 let s = cand === want ? 4 : (cand.includes(want) || want.includes(cand)) ? 1 : 0;
                 if (!s) continue;
+                // Year MATCH is a bonus only — a cour's year differs from the root series,
+                // so a mismatch must NOT penalize the correct root entry.
                 const iy = parseInt((it.first_air_date || it.release_date || '').slice(0, 4)) || 0;
-                if (yr && iy) s += iy === yr ? 2 : -Math.min(2, Math.abs(iy - yr));
+                if (yr && iy && iy === yr) s += 2;
                 if (it.original_language === 'ja') s += 1;
                 if ((it.genre_ids || []).includes(16)) s += 1;   // Animation
                 if (s > bestScore) { bestScore = s; best = { type: st, id: it.id }; }
             }
         }
-        if (best && bestScore >= 6) break;   // strong exact+year+ja+anim match — stop early
+        if (best && bestScore >= 6) break;   // strong exact+ja+anim match — stop early
     }
     if (anilistId) { if (aniTmdb.size >= ANI_TMDB_MAX) aniTmdb.clear(); aniTmdb.set(anilistId, best); }
     return best;
