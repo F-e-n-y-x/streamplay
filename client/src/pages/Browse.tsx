@@ -87,7 +87,10 @@ export default function Browse({ section }: { section: Section }) {
 
   // Data via TanStack Query — cancels the in-flight request on any filter change,
   // caches results, and keys on lang/adult (inside the hook). `nonce` re-rolls Random.
-  const browseQ = useBrowse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, ol: cfg.industry ? industry : undefined, genres, page, nonce });
+  // Anime: "Dub" also filters the grid to titles with a known dub (best-effort);
+  // "Sub" shows everything (all anime are subbed). It doubles as the playback pref.
+  const audio = cfg.track && anime === "dub" ? "dub" : undefined;
+  const browseQ = useBrowse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, ol: cfg.industry ? industry : undefined, audio, genres, page, nonce });
   const items = browseQ.isError ? [] : browseQ.data?.items ?? null;
   const totalPages = browseQ.data?.totalPages ?? 1;
 
@@ -166,15 +169,16 @@ export default function Browse({ section }: { section: Section }) {
               <button className={`seg-opt ${type === "movie" ? "active" : ""}`} onClick={() => { setType("movie"); setPage(1); }}>Movies</button>
             </div>
           )}
-          {/* Audio preference: sets the DEFAULT playback track (the player auto-picks the
-              dubbed audio when a source carries it). Not a catalog filter — dub availability
-              isn't in the metadata — so it doesn't change the grid. */}
+          {/* Audio: filters the grid AND sets the default playback track. "Dub" shows
+              only titles with a known dub (best-effort — MyDubList, since AniList has no
+              dub data) and makes the player prefer the dubbed source/track; "Sub" shows
+              all anime (everything is subbed). */}
           {cfg.track && (
-            <div className="seg-labeled" title="Default playback audio — the player plays the dubbed track when a source has one">
+            <div className="seg-labeled" title="Sub shows all anime; Dub shows only titles with a known dub and defaults playback to the dubbed source">
               <span className="seg-cap">Audio</span>
               <div className="segmented">
-                <button className={`seg-opt ${anime === "sub" ? "active" : ""}`} onClick={() => updateSettings({ anime: "sub" })}>Sub</button>
-                <button className={`seg-opt ${anime === "dub" ? "active" : ""}`} onClick={() => updateSettings({ anime: "dub" })}>Dub</button>
+                <button className={`seg-opt ${anime === "sub" ? "active" : ""}`} onClick={() => { updateSettings({ anime: "sub" }); setPage(1); }}>Sub</button>
+                <button className={`seg-opt ${anime === "dub" ? "active" : ""}`} onClick={() => { updateSettings({ anime: "dub" }); setPage(1); }}>Dub</button>
               </div>
             </div>
           )}

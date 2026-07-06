@@ -388,14 +388,15 @@ router.get('/browse', async (req, res) => {
 
     // Anime browses AniList directly (complete catalog, real multi-genres/tags, correct
     // per-cour dates so new seasons surface in Newest/Top-Rated). Each card is a cour
-    // resolved to a TMDB id on click. Sub/Dub is a playback pref only here — AniList has
-    // no dub data, and the old vote-count proxy gutted niche categories.
+    // resolved to a TMDB id on click. Sub/Dub also FILTERS here: audio=dub keeps only
+    // titles with a known dub (best-effort, from MyDubList — see dublist.ts), since
+    // AniList itself has no dub data.
     if (section === 'anime') {
         try {
             const r = await anilistBrowse({
                 page, cats,
                 type: (reqType === 'tv' || reqType === 'movie') ? reqType : 'all',
-                cat, range, adult: adultOf(req),
+                cat, range, adult: adultOf(req), audio,
             });
             const items = r.items.map((m) => ({
                 id: m.anilistId, type: m.type, title: m.title,

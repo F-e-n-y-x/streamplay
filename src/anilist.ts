@@ -1,4 +1,5 @@
 import net from './utils/net';
+import { getDubSet } from './dublist';
 
 /**
  * AniList franchise/episode metadata for ANIME.
@@ -251,6 +252,7 @@ export interface AniBrowseOpts {
     cat?: string;                                      // popular | trending | newest | toprated | random
     range?: string;                                    // day | week | month | year | all (for trending/toprated/newest)
     adult?: boolean;
+    audio?: string;                                    // 'dub' → only titles with a known dub (best-effort, see dublist.ts)
 }
 
 // range → FuzzyDateInt (yyyymmdd) for AniList's startDate_greater.
@@ -314,10 +316,12 @@ query ($page: Int, $perPage: Int, $now: Int) {
 
 async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
     const page = o.page || 1;
-    const key = `latest:${JSON.stringify({ page, adult: !!o.adult, type: o.type || 'all' })}`;
+    const dubOnly = o.audio === 'dub';
+    const key = `latest:${JSON.stringify({ page, adult: !!o.adult, type: o.type || 'all', dub: dubOnly })}`;
     const cached = browseCache.get(key);
     if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.data;   // short TTL — new episodes air hourly
     const wantFmt = o.type === 'movie' ? ['MOVIE'] : o.type === 'tv' ? ['TV', 'TV_SHORT', 'ONA'] : null;
+    const dubSet = dubOnly ? await getDubSet() : null;
     try {
         // perPage 50: dedup by show collapses many airings, so over-fetch to fill a page.
         const res = await anilistPost(LATEST_QUERY, { page, perPage: 50, now: Math.floor(Date.now() / 1000) });
@@ -328,6 +332,9 @@ async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]
             const n = s.media; if (!n?.id || seen.has(n.id)) continue;
             if (!o.adult && n.isAdult) continue;
             if (wantFmt && !wantFmt.includes(n.format || '')) continue;
+            // Dub filter (best-effort): keep only titles with a known dub. An empty set
+            // means the dataset is unavailable — don't filter (never blank the grid).
+            if (dubSet && dubSet.size && !(n.idMal && dubSet.has(n.idMal))) continue;
             seen.add(n.id);
             items.push({
                 anilistId: n.id, malId: n.idMal,
@@ -363,8 +370,11 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
     let page = o.page || 1;
     if (o.cat === 'random') page = 1 + Math.floor(Math.random() * 20);
 
+    // Dub filter is applied AFTER AniList returns (AniList can't filter by dub), so
+    // over-fetch to keep the page from collapsing once non-dubbed titles are dropped.
+    const dubOnly = o.audio === 'dub';
     const variables: Record<string, any> = {
-        page, perPage: o.perPage || 24,
+        page, perPage: dubOnly ? 50 : (o.perPage || 24),
         genres: genres.length ? genres : undefined,
         tags: tags.length ? tags : undefined,
         format, sort,
@@ -381,14 +391,18 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
     };
 
     const useCache = o.cat !== 'random';
-    const key = JSON.stringify(variables);
+    const key = JSON.stringify(variables) + (dubOnly ? '|dub' : '');
     const cached = browseCache.get(key);
     if (useCache && cached && Date.now() - cached.at < BROWSE_TTL) return cached.data;
 
+    const dubSet = dubOnly ? await getDubSet() : null;
     try {
         const res = await anilistPost(BROWSE_QUERY, variables);
         const p = res?.data?.data?.Page;
-        const media: AniBrowseNode[] = p?.media || [];
+        let media: AniBrowseNode[] = p?.media || [];
+        // Dub filter (best-effort): drop titles without a known dub. Skip when the
+        // dataset is empty/unavailable so a fetch outage never blanks the grid.
+        if (dubSet && dubSet.size) media = media.filter((n) => n.idMal && dubSet.has(n.idMal));
         const items: AniBrowseItem[] = media.map((n) => ({
             anilistId: n.id, malId: n.idMal,
             title: displayTitle(n), titles: titlesOf(n),
