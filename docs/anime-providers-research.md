@@ -31,8 +31,8 @@ Last investigated: 2026-07 (domains rotate — re-verify before building).
 ## 🟢 English-dub candidates — portable, build-ready (recommended next)
 | Provider | Domain | Dub | Method | Verdict |
 |---|---|---|---|---|
-| **Wcofun / WCO** (WatchCartoonOnline) | wcofun.net | ✅ **dub-heavy** | `getvidlink.php` + base64/char-shift decode (plain) | 🟢 Best dub-catalog gain. May need FlareSolverr (CF on some mirrors). Cartoons + dubbed anime. |
-| **KickAssAnime** | kaa.mx / kickassanime.mx | ✅ sub+dub | base64→`pb.kaast1.com/…/master.m3u8` + `/api/source/` JSON | 🟢 m3u8, no megacloud. Site API rewrites often → port against the CURRENT kaa.mx API, not the 2024 hexated code. |
+| **Wcofun / WCO** (WatchCartoonOnline) | wcofun.net → **wcoflix.tv** | ✅ **dub-heavy** | `getvidlink.php` + base64/char-shift decode (plain) | 🟡 Domain rotated to wcoflix.tv and now **403 (Cloudflare)** — needs FlareSolverr + re-RE of the new domain. Biggest dub catalog if revived. |
+| **KickAssAnime** | kaa.mx / kickassanime.mx | ✅ sub+dub | base64→`pb.kaast1.com/…/master.m3u8` + `/api/source/` JSON | 🟡 Current kaa.mx API endpoints all **404** (moved to signed/obfuscated routes) — needs browser-level RE. The 2024 hexated code (`www2.kickassanime.ro`) is stale. |
 | **AnimeDekho** (phisher98) | — | ✅ OnePace DUB/SUB + Hindi | phisher source is compiled-only; RE from live site | 🟢 Indian multi + dub. |
 
 ## 🟡 Reachable but harder (anti-bot / captcha / needs work)
