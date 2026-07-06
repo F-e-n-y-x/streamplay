@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useTitle, useSeason } from "../lib/queries";
 import type { Card } from "../lib/types";
 import { inWatchlist, toggleWatchlist } from "../lib/watchlist";
@@ -11,8 +11,12 @@ import { Check, Clock, Layers, Play, Plus, Star } from "../components/icons";
 export default function Title() {
   const { type, id } = useParams<{ type: "movie" | "tv"; id: string }>();
   const nav = useNavigate();
+  const [params] = useSearchParams();
   const tid = Number(id);
   const ttype = (type as "movie" | "tv") ?? "movie";
+  // When arriving from the anime browse, ?al=<anilistId> is the exact cour the user
+  // clicked — pre-select the matching season instead of defaulting to the first.
+  const wantAnilistId = Number(params.get("al")) || 0;
 
   const [season, setSeason] = useState<number | null>(null);
   const [player, setPlayer] = useState<PlayerSource | null>(null);
@@ -21,8 +25,13 @@ export default function Title() {
   useStore();
 
   const { data, isPending, isError } = useTitle(ttype, tid);
-  // Default to the first season once the title loads (or when we switch titles).
-  useEffect(() => { setSeason(data?.seasons[0]?.seasonNumber ?? null); }, [data]);
+  // Default to the first season once the title loads (or when we switch titles) —
+  // unless a specific cour was deep-linked via ?al=, then select that one.
+  useEffect(() => {
+    const seasons = data?.seasons ?? [];
+    const deep = wantAnilistId ? seasons.find((s) => s.anilistId === wantAnilistId) : undefined;
+    setSeason((deep ?? seasons[0])?.seasonNumber ?? null);
+  }, [data, wantAnilistId]);
   const { data: seasonData } = useSeason(tid, season, ttype === "tv");
   const episodes = ttype === "tv" ? seasonData?.episodes ?? null : null;
 

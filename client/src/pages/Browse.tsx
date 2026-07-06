@@ -178,7 +178,7 @@ export default function Browse({ section }: { section: Section }) {
               ))}
             </div>
           )}
-          {cfg.track && <span className="subtle" style={{ fontSize: "var(--text-sm)" }}>Sub / Dub filters the catalog and sets your playback track. Availability is estimated by popularity.</span>}
+          {cfg.track && <span className="subtle" style={{ fontSize: "var(--text-sm)" }}>Sub / Dub sets your default playback audio — the player picks the dubbed track when a source has one. (Dub availability isn't in the catalog data, so it doesn't filter the grid.)</span>}
         </div>
       )}
 

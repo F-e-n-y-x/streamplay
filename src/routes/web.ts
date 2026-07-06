@@ -4,6 +4,7 @@ import { tmdbGet, tmdbImg, tmdbIsLive, getTMDBInfo } from '../tmdb';
 import { getProviders, getProvidersForKind, torrentProviders } from '../extractors';
 import { providerDomains } from '../providersList';
 import { resolveAnimeIds } from '../anime';
+import { anilistBrowse, anilistTitleVariants } from '../anilist';
 import { seasonPlan, planEpisodes } from '../meta';
 import { tvdbEnabled } from '../utils/tvdb';
 import { LinkData, Stream, ContentKind } from '../types';
@@ -124,6 +125,48 @@ const proxify = (s: Stream, episode?: number): string => {
 };
 const subProxy = (url: string): string => `/api/proxy/sub?url=${b64(url)}`;
 const hostOf = (url: string): string => { try { return new URL(url).hostname; } catch { return ''; } };
+
+// ── AniList → TMDB bridge (for the AniList-powered anime browse) ───────────────
+// A browsed anime is an AniList cour; playback runs off a TMDB id, so map it back by
+// searching TMDB across the title's Japanese/romaji/English variants (the user's
+// "some sources use the JP name, some the translated, some the English" case) and
+// scoring by exact title + air year + Japanese-origin + Animation genre. Cached —
+// mappings are stable, so each cour resolves TMDB at most once per process.
+const normTitle = (s: string): string => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const aniTmdb = new Map<number, { type: 'movie' | 'tv'; id: number } | null>();
+const ANI_TMDB_MAX = 5000;
+async function resolveAnimeToTmdb(anilistId: number, titles: string[], year?: number, type?: 'movie' | 'tv'): Promise<{ type: 'movie' | 'tv'; id: number } | null> {
+    if (anilistId && aniTmdb.has(anilistId)) return aniTmdb.get(anilistId)!;
+    let list = (titles || []).filter(Boolean);
+    let ty = type, yr = year;
+    if (!list.length && anilistId) {
+        const info = await anilistTitleVariants(anilistId);
+        if (info) { list = info.titles; ty = ty || info.type; yr = yr ?? info.year; }
+    }
+    const searchTypes: ('tv' | 'movie')[] = ty ? [ty] : ['tv', 'movie'];
+    let best: { type: 'movie' | 'tv'; id: number } | null = null;
+    let bestScore = 0;
+    for (const t of list.slice(0, 3)) {
+        for (const st of searchTypes) {
+            let d: any;
+            try { d = await tmdbGet(`/search/${st}`, { query: t }); } catch { continue; }
+            for (const it of (d.results || [])) {
+                const cand = normTitle(it.title || it.name || ''), want = normTitle(t);
+                if (!cand || !want) continue;
+                let s = cand === want ? 4 : (cand.includes(want) || want.includes(cand)) ? 1 : 0;
+                if (!s) continue;
+                const iy = parseInt((it.first_air_date || it.release_date || '').slice(0, 4)) || 0;
+                if (yr && iy) s += iy === yr ? 2 : -Math.min(2, Math.abs(iy - yr));
+                if (it.original_language === 'ja') s += 1;
+                if ((it.genre_ids || []).includes(16)) s += 1;   // Animation
+                if (s > bestScore) { bestScore = s; best = { type: st, id: it.id }; }
+            }
+        }
+        if (best && bestScore >= 6) break;   // strong exact+year+ja+anim match — stop early
+    }
+    if (anilistId) { if (aniTmdb.size >= ANI_TMDB_MAX) aniTmdb.clear(); aniTmdb.set(anilistId, best); }
+    return best;
+}
 
 const withTimeout = <T>(p: Promise<T>, ms: number, fallback: T): Promise<T> => {
     // Swallow a rejection that arrives AFTER the race already settled — otherwise a
@@ -329,6 +372,29 @@ router.get('/browse', async (req, res) => {
 
     const cats = ((req.query.genres as string) || '').split(',').map((s) => s.trim()).filter(Boolean);
 
+    // Anime browses AniList directly (complete catalog, real multi-genres/tags, correct
+    // per-cour dates so new seasons surface in Newest/Top-Rated). Each card is a cour
+    // resolved to a TMDB id on click. Sub/Dub is a playback pref only here — AniList has
+    // no dub data, and the old vote-count proxy gutted niche categories.
+    if (section === 'anime') {
+        try {
+            const r = await anilistBrowse({
+                page, cats,
+                type: (reqType === 'tv' || reqType === 'movie') ? reqType : 'all',
+                cat, range, adult: adultOf(req),
+            });
+            const items = r.items.map((m) => ({
+                id: m.anilistId, type: m.type, title: m.title,
+                posterUrl: m.posterUrl, year: m.year ? String(m.year) : undefined,
+                voteAverage: m.score, voteCount: 0,
+                needsResolve: true, anilistId: m.anilistId, resolveTitles: m.titles, resolveType: m.type,
+            }));
+            return res.json({ items, page, totalPages: r.lastPage });
+        } catch (e: any) {
+            return res.status(500).json({ items: [], page: 1, totalPages: 0, error: e?.message });
+        }
+    }
+
     try {
         // When 18+ is off, exclude hentai/erotic keyword content (TMDB doesn't flag all of it as adult).
         const withoutKeywords = adultOf(req) ? undefined : await getAdultKeywordIds();
@@ -377,6 +443,22 @@ router.get('/browse', async (req, res) => {
     }
 });
 
+// ── /resolve/anime — map a browsed AniList cour → a playable TMDB id ──────────
+// The anime browse returns AniList entries; a card carries its title variants + year
+// so playback can find the TMDB entry on click (`anilistId` is echoed back so the
+// title page can pre-select the exact season/cour that was clicked).
+router.get('/resolve/anime', async (req, res) => {
+    const al = parseInt(req.query.al as string) || 0;
+    let titles: string[] = [];
+    try { const raw = req.query.titles as string; if (raw) { const j = JSON.parse(raw); if (Array.isArray(j)) titles = j.map(String); } } catch { /* */ }
+    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
+    const type = req.query.type === 'movie' ? 'movie' : req.query.type === 'tv' ? 'tv' : undefined;
+    if (!al && !titles.length) return res.status(400).json({ error: 'need al or titles' });
+    const r = await resolveAnimeToTmdb(al, titles, year, type as any);
+    if (!r) return res.status(404).json({ error: 'no matching TMDB entry' });
+    res.json({ ...r, anilistId: al || undefined });
+});
+
 // ── /title/:type/:id ─────────────────────────────────────────────────────────
 router.get('/title/:type/:id', async (req, res) => {
     const type = req.params.type as 'movie' | 'tv';
@@ -408,7 +490,7 @@ router.get('/title/:type/:id', async (req, res) => {
                     9000, { source: 'tmdb' as const, seasons: [] },
                 );
                 if (plan.source !== 'tmdb' && plan.seasons.length) {
-                    seasons = plan.seasons.map((s) => ({ seasonNumber: s.seasonNumber, name: s.name, episodeCount: s.episodeCount }));
+                    seasons = plan.seasons.map((s) => ({ seasonNumber: s.seasonNumber, name: s.name, episodeCount: s.episodeCount, anilistId: (s as any).anilistId }));
                     metaSource = plan.source;
                 }
             } catch { /* keep TMDB seasons */ }
