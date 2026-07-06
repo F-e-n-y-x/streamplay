@@ -429,15 +429,44 @@ export interface AniEpisode {
 }
 
 /**
- * Per-episode metadata (titles/images) for ONE cour from ani.zip, which maps an
- * AniList/MAL id to episode data. Falls back to a bare numbered list of `count`
- * episodes when ani.zip has nothing.
+ * Episode titles for one cour from Jikan (the free MyAnimeList API), keyed by the
+ * cour's MAL id. Used to FILL episode names that ani.zip is missing — combining the
+ * two sources so a gap in one doesn't leave the episode nameless. Cached (Jikan
+ * rate-limits) and fully best-effort: any failure returns an empty map.
  */
-export async function animeEpisodes(anilistId: number, count: number): Promise<AniEpisode[]> {
+const jikanCache = new Map<number, { at: number; titles: Map<number, string> }>();
+const JIKAN_TTL = 60 * 60 * 1000;
+async function jikanEpisodeTitles(malId: number): Promise<Map<number, string>> {
+    const c = jikanCache.get(malId);
+    if (c && Date.now() - c.at < JIKAN_TTL) return c.titles;
+    const titles = new Map<number, string>();
+    try {
+        for (let page = 1; page <= 3; page++) {   // up to 300 eps — covers a cour with room to spare
+            const r = await net.get(`https://api.jikan.moe/v4/anime/${malId}/episodes?page=${page}`, { timeout: 10000 });
+            for (const e of (r.data?.data || [])) {
+                const num = Number(e.mal_id);
+                const title = e.title || e.title_romanji || e.title_english || undefined;
+                if (Number.isFinite(num) && title) titles.set(num, String(title).trim());
+            }
+            if (!r.data?.pagination?.has_next_page) break;
+        }
+    } catch { /* best-effort enrichment */ }
+    jikanCache.set(malId, { at: Date.now(), titles });
+    return titles;
+}
+
+/**
+ * Per-episode metadata (titles/images) for ONE cour. ani.zip (AniDB/TVDB merge) is
+ * the primary source; when it's missing episode titles — or returns nothing — we
+ * fill from Jikan/MAL (via the cour's `malId`), combining two providers so episodes
+ * don't render nameless. Falls back to a bare numbered list of `count` episodes.
+ */
+export async function animeEpisodes(anilistId: number, count: number, malId?: number): Promise<AniEpisode[]> {
+    let eps: AniEpisode[] = [];
     try {
         const r = await net.get(`https://api.ani.zip/mappings?anilist_id=${anilistId}`, { timeout: 10000 });
         const epObj = r.data?.episodes || {};
-        const eps: AniEpisode[] = Object.keys(epObj)
+        eps = Object.keys(epObj)
             .map((k) => ({ k, e: epObj[k] }))
             .filter((x) => /^\d+$/.test(x.k))                 // skip "S1" specials keys
             .map(({ k, e }) => ({
@@ -448,8 +477,21 @@ export async function animeEpisodes(anilistId: number, count: number): Promise<A
                 airDate: e.airDate || e.airdate || undefined,
             }))
             .sort((a, b) => a.episodeNumber - b.episodeNumber);
-        if (eps.length) return eps;
-    } catch { /* fall through to bare list */ }
+    } catch { /* fall through to Jikan / bare list */ }
+
+    // Combine with Jikan/MAL when ani.zip has gaps (missing titles) or nothing at all.
+    if (malId && (!eps.length || eps.some((e) => !e.name))) {
+        const titles = await jikanEpisodeTitles(malId);
+        if (titles.size) {
+            if (!eps.length) {
+                const n = count > 0 ? count : titles.size;
+                eps = Array.from({ length: n }, (_v, i) => ({ episodeNumber: i + 1, name: titles.get(i + 1) }));
+            } else {
+                eps = eps.map((e) => (e.name ? e : { ...e, name: titles.get(e.episodeNumber) }));
+            }
+        }
+    }
+    if (eps.length) return eps;
     const n = count > 0 ? count : 0;
     return Array.from({ length: n }, (_v, i) => ({ episodeNumber: i + 1 }));
 }

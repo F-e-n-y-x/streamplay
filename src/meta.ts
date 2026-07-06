@@ -153,7 +153,7 @@ export async function planEpisodes(plan: SeasonPlan, seasonNumber: number): Prom
     if (plan.source === 'anilist') {
         const s = plan.seasons.find((x) => x.seasonNumber === seasonNumber);
         if (!s?.anilistId) return null;
-        const eps = await animeEpisodes(s.anilistId, s.episodeCount);
+        const eps = await animeEpisodes(s.anilistId, s.episodeCount, s.malId);
         return eps.map((e) => ({ ...e, seasonNumber }));
     }
     if (plan.source === 'tvdb' && plan.tvdbId) {
