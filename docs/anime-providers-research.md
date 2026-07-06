@@ -1,59 +1,76 @@
-# Anime Providers — Research & Build Plan
+# Anime provider research — English-dub focus
 
-> Compiled from the CloudStream extensions wiki (https://cloudstream.miraheze.org/wiki/List_of_extensions),
-> the major community repos, and **live probing on 2026-07-06**. Ratings are honest:
-> "Catalog" = how much anime it has; "Maint." = how often it breaks; "Difficulty" =
-> effort to port + keep working in StreamPlay's in-process scraper model.
+Goal: as many **English-dubbed** anime sources as possible, so if one provider
+breaks the user can switch to another. This surveys the whole CloudStream extension
+ecosystem (not just the popular repos), classifies every anime provider found, and
+records a feasibility verdict for porting each to StreamPlay's `Provider` interface.
 
-## TL;DR
+**Legend** — Feasibility: ✅ built · 🟢 portable (build-ready) · 🟡 hard (anti-bot / needs FlareSolverr / API rewrite) · 🔴 dead/infeasible.
+Dub = has an English dub track/servers. "Plain" = no obfuscation; resolves to m3u8 over plain HTTP.
 
-Every large free anime source (HiAnime, AnimeKai, AnimePahe, anikoto…) sits behind
-**rotating anti-bot + encrypted embeds** (Cloudflare challenges, MegaCloud/MegaUp AES
-that rotates keys, VRF tokens). In-process scrapers for them are a constant cat-and-mouse.
-The **highest-ROI move is a self-hosted aggregator** you run like FlareSolverr/WARP —
-**Consumet** (already supported here via `CONSUMET_URL`) or **aniwatch-api** — which the
-community keeps patched and which unlocks Zoro/HiAnime/AnimeKai/Gogo/Pahe behind one env var.
+Last investigated: 2026-07 (domains rotate — re-verify before building).
 
-## StreamPlay's current anime providers (live-audited 2026-07-06)
-
-| Provider | Live result | Verdict |
+## Repos surveyed
+| Repo | Where | Notes |
 |---|---|---|
-| **AniZone** | ✅ 1 stream + ~15 subs every title | works — primary source |
-| **AnimeWorld** (watchanimeworld) | ✅ returns m3u8 (zephyrflick) | works, a bit slow |
-| **AllAnime** | ❌ NEED_CAPTCHA on server IP **and** WARP IPs | IP-reputation dead; needs clean residential IP |
-| **AnimePahe** | ❌ Kwik host `kwik.cx` = Cloudflare 403 on every egress | needs FlareSolverr solve for Kwik |
-| **Consumet** | ❌ 0 (returns instantly) | just unconfigured — set `CONSUMET_URL` |
+| phisher98/cloudstream-extensions-phisher | GitHub (460★, active) | Biggest current English repo. Source is compiled-only (`builds` branch) — 42 anime plugins in `plugins.json`. |
+| cloudstream/cloudstream-extensions-hexated | Codeberg (active) | Classic hexated set; full source. Kickassanime, YugenAnime, Wcofun, many regional. |
+| HatsuneMikuUwU/cloudstream-extensions-uwu | GitHub (active) | Anime/donghua, **Indonesian** sub. |
+| Blatzar/recloudstream | GitHub (official, older) | Mostly regional movie/TV; FMovies/Sflix family (megacloud). |
+| CakesTwix (uk), ImZaw (arabic), Luna712, 821938089 | GitHub | Non-English / niche. |
 
-## CloudStream anime providers — ranked
+## ✅ Built & active in StreamPlay (dub-capable first)
+| Provider | Dub | Notes |
+|---|---|---|
+| **AnimeNoSub** (animenosub.to) | ✅ EN sub+dub | NEW. DooPlay → megaplay.buzz `getSources` → direct m3u8 + subs. `/sub↔/dub` swap. Plain HTTP. |
+| **AniNeko** (anineko.to) | ✅ sub/hardsub/dub | Via FlareSolverr + packed embeds. |
+| **AnimeWorld** (watchanimeworld.net) | ✅ Hindi/Tamil/Telugu + Eng/Jap | Indian dubs. |
+| **CastleTV** (api.hlowb.com) | ✅ Hindi/Eng dubs | Also carries dubbed anime (medium-matched). |
+| **AniZone** (anizone.to) | 🔸 multi-audio | Single HLS with JP/EN audio + many subs (dub via audio track). |
 
-Catalog / Maint. / Difficulty are Low→High. "Repo" = a CloudStream source to port from.
+## 🟢 English-dub candidates — portable, build-ready (recommended next)
+| Provider | Domain | Dub | Method | Verdict |
+|---|---|---|---|---|
+| **Wcofun / WCO** (WatchCartoonOnline) | wcofun.net | ✅ **dub-heavy** | `getvidlink.php` + base64/char-shift decode (plain) | 🟢 Best dub-catalog gain. May need FlareSolverr (CF on some mirrors). Cartoons + dubbed anime. |
+| **KickAssAnime** | kaa.mx / kickassanime.mx | ✅ sub+dub | base64→`pb.kaast1.com/…/master.m3u8` + `/api/source/` JSON | 🟢 m3u8, no megacloud. Site API rewrites often → port against the CURRENT kaa.mx API, not the 2024 hexated code. |
+| **AnimeDekho** (phisher98) | — | ✅ OnePace DUB/SUB + Hindi | phisher source is compiled-only; RE from live site | 🟢 Indian multi + dub. |
 
-| Provider | Catalog | Sub/Dub | Maint. | Difficulty | Embed / gate | Repo (reference) | Notes |
-|---|---|---|---|---|---|---|---|
-| **HiAnime** (hianime, ex-Zoro/AniWatch) | Very High | Both | High | Hard | MegaCloud (AES, rotates) | aniwatch (MIT npm), phisher98 | Biggest catalog. `aniwatch` npm handles MegaCloud but was **broken on 2026-07-06** (domain rotation) — proves the maintenance cost. |
-| **AnimeKai** (animekai.to/.bz) | Very High | Both + soft-sub | High | Very Hard | MegaUp + custom enc/dec | phisher98, Kraptor | Huge, but the hardest active cat-and-mouse (token + AES rotate frequently). |
-| **AllAnime** | High | Both | Med | Medium (but IP-gated) | native + clock.json | doGior, recloudstream | Already ported here; blocked by captcha on this box's IPs. |
-| **AnimePahe** | High | Both | Med | Medium (blocked) | Kwik (Cloudflare) | recloudstream | Already ported; Kwik.cx now CF-403 — needs FlareSolverr. |
-| **AnimeParadise** (animeparadise.moe) | Med-High | Sub | Low | **Easy** | direct JSON API | community | **Best portability**: clean JSON API, little obfuscation. Top pick for a new build. |
-| **Miruro** (miruro.tv) | High | Both | Med | Medium | API aggregator | community | Front-end over AllAnime/others; API-based. |
-| **AnimeOwl** | Med | Both | Med | Medium | custom embed | phisher98 | Decent fallback. |
-| **AniZone** (anizone.to) | Med | Sub | Low | Easy | direct | already here | Already the working primary. |
-| **AnimeWorld** (watchanimeworld) | Med | Both (dub-heavy) | Med | Medium | zephyrflick | already here | Already works. |
-| **Gogoanime / Anitaku** | — | — | — | — | — | — | Effectively dead / endlessly moved — skip. |
-| **anikototv.to** | High | Both | High | Hard | VRF token + MegaCloud | (site only) | Two rotating anti-bot layers; not worth a bespoke scraper — same catalog as HiAnime. |
+## 🟡 Reachable but harder (anti-bot / captcha / needs work)
+| Provider | Domain | Dub | Blocker |
+|---|---|---|---|
+| **YugenAnime** | yugenanime.ro/.tv | ✅ sub+dub | JS **fingerprint** anti-bot (`/js/fingerprint/iife.min.js`) — needs headless/FlareSolverr; `/api/embed/` otherwise clean. |
+| **AllAnime / Anichi** | allanime.to | ✅ native sub+dub | Already in tree (disabled): `NEED_CAPTCHA` on our IP + WARP egress. Revive from residential IP. |
+| **AnimePahe** | animepahe.* | ✅ SUB/DUB | Already in tree (disabled): kwik.cx CDN 403s our egresses (incl. FlareSolverr). |
+| **AnimeOwl** | animeowl.me | ✅ sub+dub | Returns a JS-challenge shell (473 B) — headless needed. |
+| **AnimeOnsen** | animeonsen.xyz | ✅ **dub-focused** | 301/redirect; small catalog, API auth. Worth a look for dub-only. |
 
-## Recommended 3 to build (feasibility-weighted)
+## 🔴 Dead / infeasible (do not build)
+| Provider | Why |
+|---|---|
+| HiAnime / Zoro / aniwatch, HDToday, Sflix, Dopebox, Fmovies | Operation 404 (2026) + megacloud/rabbitstream AES key dance (dead). |
+| **AnimeKai** (animekai.to) | Cloudflare + megacloud-family (unreachable/obfuscated). |
+| **9anime / aniwave / AnimeSuge** | RC4 `vrf` anti-bot (same class as anikoto — infeasible). |
+| AnimeHeaven (animeheaven.me), Hikari (hikari.gg) | Unreachable (dead domains). |
+| Animixplay | Long dead. |
 
-1. **AnimeParadise** — clean JSON API, biggest bang-for-effort, **verifiable**. Build first.
-2. **HiAnime** — biggest catalog; reuse the MIT `aniwatch` MegaCloud decryptor, pointed at the current domain. High value but expect upkeep.
-3. **AnimeKai** *or* self-hosted **Consumet** — AnimeKai is the largest gap but the hardest; **Consumet (self-host) is the pragmatic substitute** — one env var unlocks AnimeKai + Zoro + Gogo + Pahe, community-maintained.
+## Regional (non-English) — skipped for the dub goal
+Kept for completeness; useful only for those languages.
+- **Indonesian (sub):** Otakudesu, Samehadaku, Kuronime, Kuramanime, Gomunime, Oploverz, Neonime, NontonAnimeID, AnimeSail, AnimeIndo, Anoboy, Nimegami, Winbu, Anichin (donghua), Animexin (donghua).
+- **Spanish / LatAm:** Latanime, Animeav1, DoramasYT.
+- **German:** AnimeCloud, Aniworld (Serienstream), Megakino.
+- **Chinese (donghua):** Animekhor, Donghuastream, Bilibili.
+- **Other:** Anilibria (ru), Anizm (tr), Cinefreak (bn), Tocanime, Anifreakz.
 
-Plus: **fix AnimePahe** (FlareSolverr fallback for the CF-gated Kwik host).
+## Hindi / multi-language dub (carry English dub for some titles)
+From phisher98 (compiled-only — would RE from the live sites):
+AnimeDekho, Animedubhindi, Animesalt, Piratexplay, RingZ, DoraBash (Doraemon),
+ToonHub (toonhub4u), Toonstream, ToonTales, Topcartoons. StreamPlay already has the
+overlapping movie/multi ones (AllMovieLand, MultiMovies, HDhub4u).
 
-## Build order (this effort)
+## Recommendation (priority order for the next builds)
+1. **Wcofun / WCO** — biggest English-**dub** catalog gain (dubbed anime + cartoons), plain decode. Verify Cloudflare first (use FlareSolverr if needed).
+2. **KickAssAnime** — large sub+dub, clean m3u8, but port against the *current* kaa.mx API.
+3. **AnimeDekho** — Indian + English dub (OnePace etc.).
+4. Revisit **AllAnime** and **AnimePahe** from a residential IP / self-hosted Consumet — both are natively sub+dub and already coded.
 
-- [x] Research + this list
-- [ ] AnimePahe: FlareSolverr fallback for kwik.cx CF-403 (in progress)
-- [ ] AnimeParadise (new, API-based, verifiable)
-- [ ] HiAnime (MegaCloud via aniwatch decryptor)
-- [ ] Consumet: document self-host so AnimeKai/Gogo come for free
+Non-goals: anything on megacloud/vrf (dead), and non-English regional sites.
