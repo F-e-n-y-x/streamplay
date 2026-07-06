@@ -26,5 +26,6 @@ export const providerDomains = [
     { id: 'anineko', name: 'AniNeko', url: 'https://anineko.to' },
     { id: 'anizone', name: 'AniZone', url: 'https://anizone.to' },
     { id: 'animeworld', name: 'AnimeWorld', url: 'https://watchanimeworld.net' },
-    { id: 'castle', name: 'CastleTV', url: 'https://api.hlowb.com' }
+    { id: 'castle', name: 'CastleTV', url: 'https://api.hlowb.com' },
+    { id: 'hdrezka', name: 'HDRezka', url: 'https://rezka.ag' }
 ];

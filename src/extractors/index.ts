@@ -22,6 +22,7 @@ import { MoviesModProvider } from './moviesmod';
 import { TopMoviesProvider } from './topmovies';
 import { BollyflixProvider } from './bollyflix';
 import { CineMacityProvider } from './cinemacity';
+import { HDRezkaProvider } from './hdrezka';   // huge movies+series catalog (multi-audio), no Cloudflare
 
 // --- Anime providers (title-matched; via the persistent FlareSolverr session) ---
 //     AniZone works (single HLS with JP/KR/EN audio + many subtitle tracks).
@@ -103,6 +104,7 @@ export const providers: Provider[] = [
     TopMoviesProvider,
     BollyflixProvider,
     CineMacityProvider,
+    HDRezkaProvider,      // large movies + series catalog with multiple audio tracks (rezka.ag)
     // subtitles
     SubtitleApiProvider,
     WyzieSubsProvider,
@@ -153,6 +155,9 @@ const PROVIDER_KINDS: Record<string, ContentKind[]> = {
     movies4u: ['movie', 'series', 'asian'], rogmovies: ['movie', 'series', 'asian'], multimovies: ['movie', 'series', 'asian'],
     uhdmovies: ['movie', 'series', 'asian'], moviesmod: ['movie', 'series', 'asian'], topmovies: ['movie', 'series', 'asian'],
     bollyflix: ['movie', 'series', 'asian'], cinemacity: ['movie', 'series', 'asian'],
+    // HDRezka: movies + series + Asian drama (Russian-origin catalog, multi-audio). Not
+    // anime — the dedicated anime providers cover that with better sub/dub handling.
+    hdrezka: ['movie', 'series', 'asian'],
 };
 for (const p of providers) if (PROVIDER_KINDS[p.id]) p.kinds = PROVIDER_KINDS[p.id];
 
