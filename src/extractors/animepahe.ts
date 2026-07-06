@@ -47,22 +47,14 @@ const parseKwik = (html: string | null | undefined): string | null => {
 };
 
 async function resolveKwik(kwikUrl: string, referer: string): Promise<string | null> {
-    // 1) Plain request first: kwik historically served the packed `source='...m3u8'`
-    //    directly to a browser-UA + animepahe-referer request (and in WARP mode this
-    //    egresses via the WARP SOCKS for a clean IP).
+    // kwik serves the Dean-Edwards packed `source='...m3u8'` to a browser-UA + referer
+    // request (WARP mode egresses via the WARP SOCKS for a clean IP). NOTE: as of
+    // 2026-07 kwik.cx returns a Cloudflare 403 on direct, WARP, AND FlareSolverr egress
+    // — verified — so this fast-fails to null on this infra. A FlareSolverr solve was
+    // tried and did NOT clear it (and cost ~40s/slot), so it's intentionally not used.
     try {
         const res = await app.get(kwikUrl, { referer, headers: { 'User-Agent': KWIK_UA, Referer: referer }, timeout: 15000 });
-        const direct = parseKwik(res.text);
-        if (direct) return direct;
-    } catch { /* fall through to FlareSolverr */ }
-    // 2) The kwik host (kwik.cx) is now Cloudflare-challenged (HTTP 403) on datacenter
-    //    AND WARP egress, so the plain fetch gets a block page with no packed source.
-    //    Fall back to a FlareSolverr solve to clear the challenge, then unpack. (Kept as
-    //    a FALLBACK — FS can be slow/flaky on kwik's autoplay embed — so a working direct
-    //    egress still takes the fast path above.)
-    try {
-        const solved = await flareSolverrGetHtml(kwikUrl, 40000);
-        return parseKwik(solved);
+        return parseKwik(res.text);
     } catch { return null; }
 }
 

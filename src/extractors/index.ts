@@ -74,7 +74,6 @@ export const providers: Provider[] = [
     AllAnimeProvider,     // ani-cli backend — reliable native SUB + DUB (no FlareSolverr/key)
     AniZoneProvider,      // HLS + multi-audio (JP/KR/EN) + subtitles
     AnimeWorldProvider,   // Indian dubs (Hindi/Tamil/Telugu) + Eng/Jap via zephyrflick
-    AnimePaheProvider,    // JP/EN native HLS via animepahe.pw + Kwik
     ConsumetProvider,     // aggregator: Zoro/AnimePahe/Gogo/AnimeKai fallback (needs CONSUMET_URL)
 
     // direct-API (fast, reliable)
@@ -110,6 +109,12 @@ export const providers: Provider[] = [
 
 /** Ported but disabled (dead/changed upstream). Not served; here for reference + easy revival. */
 export const disabledProviders: Provider[] = [
+    // kwik.cx (AnimePahe's video CDN) returns a Cloudflare 403 on direct, WARP, AND
+    // FlareSolverr egress (verified 2026-07) → it resolves nothing while burning a
+    // FlareSolverr solve on search/release/play every anime request (and returns state
+    // `empty`, which doesn't trip the circuit breaker). Revive when kwik clears, or use
+    // a self-hosted Consumet (its own maintained AnimePahe extractor).
+    AnimePaheProvider,
     VidlinkProvider,
     VidEasyProvider,
     VidzeeProvider,
