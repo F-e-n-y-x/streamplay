@@ -42,6 +42,18 @@ export default function ProviderPrefsEditor({ kind, onClose }: { kind: string; o
     [ids[idx], ids[j]] = [ids[j], ids[idx]];
     savePref(ids, pref.hidden);
   };
+  // Drag-and-drop reorder (arrows remain as a fallback / for keyboard).
+  const [dragIdx, setDragIdx] = useState<number | null>(null);
+  const [overIdx, setOverIdx] = useState<number | null>(null);
+  const drop = () => {
+    if (dragIdx !== null && overIdx !== null && dragIdx !== overIdx) {
+      const ids = ordered.map((p) => p.id);
+      const [moved] = ids.splice(dragIdx, 1);
+      ids.splice(overIdx, 0, moved);
+      savePref(ids, pref.hidden);
+    }
+    setDragIdx(null); setOverIdx(null);
+  };
   const toggleHidden = (id: string) => {
     const hidden = pref.hidden.includes(id) ? pref.hidden.filter((x) => x !== id) : [...pref.hidden, id];
     // materialize the current order too so hiding doesn't lose an unsaved order
@@ -58,7 +70,7 @@ export default function ProviderPrefsEditor({ kind, onClose }: { kind: string; o
         </div>
         <div className="modal-body">
           <div className="hint" style={{ marginBottom: "var(--space-3)" }}>
-            Drag order with the arrows — providers higher up are tried and auto-played first for {KIND_LABEL[kind]?.toLowerCase() || kind}. Turn one off to hide it entirely for this kind. Saved to your account and synced across devices.
+            Drag rows to reorder (or use the arrows) — providers higher up are tried and auto-played first for {KIND_LABEL[kind]?.toLowerCase() || kind}. Turn one off to hide it entirely for this kind. Saved to your account and synced across devices.
           </div>
           {!providers ? (
             <div className="empty">Loading providers…</div>
@@ -67,8 +79,16 @@ export default function ProviderPrefsEditor({ kind, onClose }: { kind: string; o
               {ordered.map((p, i) => {
                 const hidden = pref.hidden.includes(p.id);
                 return (
-                  <div className={`prov-row ${hidden ? "off" : ""}`} key={p.id}>
-                    <span className="prov-idx">{i + 1}</span>
+                  <div
+                    className={`prov-row ${hidden ? "off" : ""} ${dragIdx === i ? "dragging" : ""} ${overIdx === i && dragIdx !== null && dragIdx !== i ? "drag-over" : ""}`}
+                    key={p.id}
+                    draggable
+                    onDragStart={() => setDragIdx(i)}
+                    onDragOver={(e) => { e.preventDefault(); if (overIdx !== i) setOverIdx(i); }}
+                    onDrop={drop}
+                    onDragEnd={() => { setDragIdx(null); setOverIdx(null); }}
+                  >
+                    <span className="prov-idx" title="Drag to reorder">{i + 1}</span>
                     <span className="prov-name">{p.name}<span className="prov-kind subtle"> · {p.kind}</span></span>
                     <div className="prov-move">
                       <button className="btn btn-icon btn-ghost btn-sm" disabled={i === 0} onClick={() => move(i, -1)} aria-label="Move up"><ChevronUp size={15} /></button>

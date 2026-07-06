@@ -637,6 +637,10 @@ table.tbl { width: 100%; min-width: 660px; border-collapse: collapse; font-size:
 .prov-editor { display: flex; flex-direction: column; gap: var(--space-1); }
 .prov-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface); }
 .prov-row.off { opacity: .5; }
+/* drag-and-drop reorder */
+.prov-editor .prov-row { cursor: grab; }
+.prov-editor .prov-row.dragging { opacity: .4; cursor: grabbing; }
+.prov-editor .prov-row.drag-over { border-color: var(--accent); box-shadow: inset 0 2px 0 0 var(--accent); }
 .prov-idx { width: 20px; text-align: center; font-size: var(--text-xs); color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
 .prov-name { flex: 1; min-width: 0; font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .prov-kind { font-size: var(--text-xs); }

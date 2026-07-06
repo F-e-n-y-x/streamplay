@@ -17,6 +17,9 @@ export function useDragScroll<T extends HTMLElement>() {
     let down = false, startX = 0, startLeft = 0, moved = false;
     const onDown = (e: PointerEvent) => {
       if (e.pointerType !== "mouse" || e.button !== 0) return;  // touch/pen scroll natively
+      // Suppress the browser's native image/anchor drag (ghost image) which otherwise
+      // hijacks the gesture so the rail never scrolls. Click still fires if we don't move.
+      e.preventDefault();
       down = true; moved = false; startX = e.clientX; startLeft = el.scrollLeft;
       el.classList.add("dragging");
     };

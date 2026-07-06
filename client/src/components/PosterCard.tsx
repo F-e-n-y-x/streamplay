@@ -29,13 +29,15 @@ export default function PosterCard({ card, badge }: { card: Card; badge?: string
 
   const inner = (
     <>
+      {/* draggable=false on the img below + this wrapper stops the browser's native
+          image/link drag from hijacking the row's click-drag-to-scroll gesture. */}
       {resolving ? <span className="audio-badge" style={{ background: "var(--accent)" }}>…</span> : null}
       {badge ? <span className={`audio-badge ${badge.toLowerCase()}`}>{badge}</span> : null}
       {card.voteAverage ? (
         <span className="rating"><Star size={11} /> {card.voteAverage.toFixed(1)}</span>
       ) : null}
       {card.posterUrl && !broken ? (
-        <img className="img" src={card.posterUrl} alt={card.title} loading="lazy" onError={() => setBroken(true)} />
+        <img className="img" src={card.posterUrl} alt={card.title} loading="lazy" draggable={false} onError={() => setBroken(true)} />
       ) : (
         <div className="ph">{card.title}</div>
       )}
@@ -57,6 +59,7 @@ export default function PosterCard({ card, badge }: { card: Card; badge?: string
         href={`/title/${card.type}/${card.id}`}
         role="button"
         aria-busy={resolving}
+        draggable={false}
         onClick={onResolve}
       >
         {inner}
@@ -65,7 +68,7 @@ export default function PosterCard({ card, badge }: { card: Card; badge?: string
   }
 
   return (
-    <Link className="poster" to={`/title/${card.type}/${card.id}`}>
+    <Link className="poster" to={`/title/${card.type}/${card.id}`} draggable={false}>
       {inner}
     </Link>
   );
