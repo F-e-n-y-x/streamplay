@@ -314,6 +314,38 @@ query ($page: Int, $perPage: Int, $now: Int) {
   }
 }`;
 
+/**
+ * Consistent pagination for a POST-filtered (dub) list. AniList can't filter by
+ * dub, so we accumulate whole AniList pages, keep only dubbed entries, and slice
+ * out a FIXED-size display page — otherwise every page shows a different count.
+ * `fetchAniPage(n)` returns one AniList page's mapped items + its lastPage.
+ */
+async function paginateDubbed(
+    fetchAniPage: (aniPage: number) => Promise<{ items: AniBrowseItem[]; lastPage: number }>,
+    displayPage: number, pageSize: number, dubSet: Set<number> | null,
+): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
+    const collected: AniBrowseItem[] = [];
+    const seen = new Set<number>();
+    let aniPage = 1, aniLast = 1;
+    const need = displayPage * pageSize + 1;   // +1 so we can tell if a further page exists
+    while (collected.length < need && aniPage <= aniLast && aniPage <= 25) {
+        const r = await fetchAniPage(aniPage);
+        aniLast = r.lastPage;
+        for (const it of r.items) {
+            if (!it.anilistId || seen.has(it.anilistId)) continue;
+            if (dubSet && dubSet.size && !(it.malId && dubSet.has(it.malId))) continue;
+            seen.add(it.anilistId);
+            collected.push(it);
+        }
+        aniPage++;
+    }
+    const items = collected.slice((displayPage - 1) * pageSize, displayPage * pageSize);
+    const lastPage = (collected.length > displayPage * pageSize || aniPage <= aniLast) ? displayPage + 1 : displayPage;
+    return { items, lastPage };
+}
+
+const PAGE_SIZE = 24;
+
 async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
     const page = o.page || 1;
     const dubOnly = o.audio === 'dub';
@@ -321,10 +353,11 @@ async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]
     const cached = browseCache.get(key);
     if (cached && Date.now() - cached.at < 5 * 60 * 1000) return cached.data;   // short TTL — new episodes air hourly
     const wantFmt = o.type === 'movie' ? ['MOVIE'] : o.type === 'tv' ? ['TV', 'TV_SHORT', 'ONA'] : null;
-    const dubSet = dubOnly ? await getDubSet() : null;
-    try {
-        // perPage 50: dedup by show collapses many airings, so over-fetch to fill a page.
-        const res = await anilistPost(LATEST_QUERY, { page, perPage: 50, now: Math.floor(Date.now() / 1000) });
+
+    // One AniList airing page → deduped, format/adult-filtered items (perPage 50: dedup
+    // by show collapses many airings, so over-fetch to fill a page).
+    const fetchAniPage = async (aniPage: number): Promise<{ items: AniBrowseItem[]; lastPage: number }> => {
+        const res = await anilistPost(LATEST_QUERY, { page: aniPage, perPage: 50, now: Math.floor(Date.now() / 1000) });
         const scheds: { media: AniBrowseNode & { isAdult?: boolean } }[] = res?.data?.data?.Page?.airingSchedules || [];
         const seen = new Set<number>();
         const items: AniBrowseItem[] = [];
@@ -332,9 +365,6 @@ async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]
             const n = s.media; if (!n?.id || seen.has(n.id)) continue;
             if (!o.adult && n.isAdult) continue;
             if (wantFmt && !wantFmt.includes(n.format || '')) continue;
-            // Dub filter (best-effort): keep only titles with a known dub. An empty set
-            // means the dataset is unavailable — don't filter (never blank the grid).
-            if (dubSet && dubSet.size && !(n.idMal && dubSet.has(n.idMal))) continue;
             seen.add(n.id);
             items.push({
                 anilistId: n.id, malId: n.idMal,
@@ -343,11 +373,20 @@ async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]
                 year: yearOf(n), posterUrl: n.coverImage?.large,
                 score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
             });
-            if (items.length >= 24) break;
         }
-        const out = { items, lastPage: Math.min(res?.data?.data?.Page?.pageInfo?.lastPage || 1, 50) };
-        if (items.length) browseCache.set(key, { at: Date.now(), data: out });
-        return (!items.length && cached) ? cached.data : out;
+        return { items, lastPage: Math.min(res?.data?.data?.Page?.pageInfo?.lastPage || 1, 50) };
+    };
+
+    try {
+        let out: { items: AniBrowseItem[]; lastPage: number };
+        if (dubOnly) {
+            out = await paginateDubbed(fetchAniPage, page, PAGE_SIZE, await getDubSet());
+        } else {
+            const r = await fetchAniPage(page);
+            out = { items: r.items.slice(0, PAGE_SIZE), lastPage: r.lastPage };
+        }
+        if (out.items.length) browseCache.set(key, { at: Date.now(), data: out });
+        return (!out.items.length && cached) ? cached.data : out;
     } catch { return cached ? cached.data : { items: [], lastPage: 1 }; }
 }
 
@@ -369,12 +408,11 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
 
     let page = o.page || 1;
     if (o.cat === 'random') page = 1 + Math.floor(Math.random() * 20);
-
-    // Dub filter is applied AFTER AniList returns (AniList can't filter by dub), so
-    // over-fetch to keep the page from collapsing once non-dubbed titles are dropped.
     const dubOnly = o.audio === 'dub';
-    const variables: Record<string, any> = {
-        page, perPage: dubOnly ? 50 : (o.perPage || 24),
+    const PAGE = o.perPage || PAGE_SIZE;
+
+    const buildVars = (aniPage: number, perPage: number): Record<string, any> => ({
+        page: aniPage, perPage,
         genres: genres.length ? genres : undefined,
         tags: tags.length ? tags : undefined,
         format, sort,
@@ -388,37 +426,45 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
         // 'airing' = the seasonal / currently-releasing view (anikototv's "Top Airing").
         status: o.cat === 'airing' ? 'RELEASING' : undefined,
         isAdult: o.adult ? undefined : false,
+    });
+
+    const mapNode = (n: AniBrowseNode): AniBrowseItem => ({
+        anilistId: n.id, malId: n.idMal,
+        title: displayTitle(n), titles: titlesOf(n),
+        type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
+        year: yearOf(n), posterUrl: n.coverImage?.large,
+        score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
+    });
+    const fetchAniPage = async (aniPage: number): Promise<{ items: AniBrowseItem[]; lastPage: number }> => {
+        const res = await anilistPost(BROWSE_QUERY, buildVars(aniPage, 50));
+        const p = res?.data?.data?.Page;
+        return { items: ((p?.media || []) as AniBrowseNode[]).map(mapNode).filter((x) => x.anilistId && x.title), lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
     };
 
     const useCache = o.cat !== 'random';
-    const key = JSON.stringify(variables) + (dubOnly ? '|dub' : '');
+    const key = JSON.stringify(buildVars(page, PAGE)) + (dubOnly ? '|dub' : '');
     const cached = browseCache.get(key);
     if (useCache && cached && Date.now() - cached.at < BROWSE_TTL) return cached.data;
 
-    const dubSet = dubOnly ? await getDubSet() : null;
     try {
-        const res = await anilistPost(BROWSE_QUERY, variables);
-        const p = res?.data?.data?.Page;
-        let media: AniBrowseNode[] = p?.media || [];
-        // Dub filter (best-effort): drop titles without a known dub. Skip when the
-        // dataset is empty/unavailable so a fetch outage never blanks the grid.
-        if (dubSet && dubSet.size) media = media.filter((n) => n.idMal && dubSet.has(n.idMal));
-        const items: AniBrowseItem[] = media.map((n) => ({
-            anilistId: n.id, malId: n.idMal,
-            title: displayTitle(n), titles: titlesOf(n),
-            type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
-            year: yearOf(n), posterUrl: n.coverImage?.large,
-            score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
-        })).filter((x) => x.anilistId && x.title);
-        const out = { items, lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
+        let out: { items: AniBrowseItem[]; lastPage: number };
+        if (dubOnly && useCache) {
+            // Accumulate across AniList pages so each display page is a full 24.
+            out = await paginateDubbed(fetchAniPage, page, PAGE, await getDubSet());
+        } else {
+            const res = await anilistPost(BROWSE_QUERY, buildVars(page, dubOnly ? 50 : PAGE));
+            const p = res?.data?.data?.Page;
+            let items = ((p?.media || []) as AniBrowseNode[]).map(mapNode).filter((x) => x.anilistId && x.title);
+            if (dubOnly) { const ds = await getDubSet(); if (ds.size) items = items.filter((x) => x.malId && ds.has(x.malId)); }
+            out = { items, lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
+        }
         // Cache only a real result; never cache an empty (a rate-limited/blank response
         // must not stick). Serve stale on the next failure instead.
-        if (useCache && items.length) {
+        if (useCache && out.items.length) {
             if (browseCache.size >= BROWSE_MAX) { const oldest = browseCache.keys().next().value; if (oldest) browseCache.delete(oldest); }
             browseCache.set(key, { at: Date.now(), data: out });
         }
-        // If the live call came back empty but we have a stale hit, prefer the stale data.
-        if (!items.length && cached) return cached.data;
+        if (!out.items.length && cached) return cached.data;
         return out;
     } catch {
         // Network/429 error — serve stale data if we have any, else empty.

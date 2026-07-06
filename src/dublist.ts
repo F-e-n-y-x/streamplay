@@ -18,7 +18,7 @@ import net from './utils/net';
  *   DUB_LIST_LANGS      = comma-separated (default: english,hindi — the tiers
  *                         MyDubList currently publishes; add more when available)
  */
-const CONFIDENCE = (process.env.DUB_LIST_CONFIDENCE || 'normal').replace(/[^a-z-]/gi, '');
+const CONFIDENCE = (process.env.DUB_LIST_CONFIDENCE || 'very-high').replace(/[^a-z-]/gi, '');
 const LANGS = (process.env.DUB_LIST_LANGS || 'english,hindi')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
 const BASE = `https://raw.githubusercontent.com/Joelis57/MyDubList/main/dubs/confidence/${CONFIDENCE}`;
@@ -34,13 +34,12 @@ async function fetchDubSet(): Promise<Set<number>> {
             // GitHub raw serves .json as text/plain, so axios does NOT auto-parse it —
             // r.data comes back as a STRING; parse it ourselves. The payload is an
             // object { language, dubbed:[malIds], partial:[malIds], ... } (not a bare
-            // array), so pull the id arrays out. "partial" = some episodes dubbed —
-            // still counts as "has a dub" for the filter.
+            // array). We take ONLY `dubbed` (fully-dubbed) — `partial` (a few episodes
+            // dubbed / announced) produced false positives in the catalog filter.
             const r = await net.get(`${BASE}/dubbed_${lang}.json`, { timeout: 15000 });
             let data: any = r.data;
             if (typeof data === 'string') { try { data = JSON.parse(data); } catch { data = null; } }
-            const ids: unknown[] = Array.isArray(data) ? data
-                : [...(Array.isArray(data?.dubbed) ? data.dubbed : []), ...(Array.isArray(data?.partial) ? data.partial : [])];
+            const ids: unknown[] = Array.isArray(data) ? data : (Array.isArray(data?.dubbed) ? data.dubbed : []);
             for (const id of ids) { const n = Number(id); if (Number.isFinite(n)) set.add(n); }
         } catch { /* one language failing shouldn't sink the whole set */ }
     }));
