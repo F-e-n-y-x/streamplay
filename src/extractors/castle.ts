@@ -15,6 +15,28 @@ const API = 'https://api.hlowb.com';
 const HEADERS = { Referer: API, 'User-Agent': 'okhttp/4.9.2', 'Content-Type': 'application/json' };
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
+/**
+ * CastleTV tags every catalogue entry with a `movieTypeName`
+ * (Anime / Movies / TV shows / Reality Shows / …). The SAME title often exists
+ * as several mediums — e.g. searching "One Piece" returns the **anime**, the
+ * **Netflix live-action** ("TV shows"), AND a dozen **movies**, all sharing the
+ * title. Matching on title alone made an anime request land on the live-action or
+ * a film ("playing a completely different anime"). We classify each row and score
+ * medium alignment so an anime request wins the Anime entry, a movie wins a film,
+ * and a (non-anime) series wins the live-action show.
+ */
+type Medium = 'anime' | 'movie' | 'tv' | '';
+const mediumOf = (row: any): Medium => {
+    const n = String(row?.movieTypeName || '').toLowerCase();
+    if (/anime/.test(n)) return 'anime';
+    if (/movie|film/.test(n)) return 'movie';
+    if (/tv|show|series|drama|reality|season/.test(n)) return 'tv';
+    return '';
+};
+const desiredMedium = (data: LinkData): Medium =>
+    data.isAnime ? (data.type === 'movie' ? 'movie' : 'anime')
+                 : (data.type === 'movie' ? 'movie' : 'tv');
+
 let keyCache: { value: string; exp: number } | null = null;
 async function securityKey(): Promise<string | null> {
     if (keyCache && keyCache.exp > Date.now()) return keyCache.value;
@@ -117,6 +139,8 @@ export const CastleProvider: Provider = {
         const rows: any[] = sr?.rows || sr?.list || [];
         if (!rows.length) return { streams, subtitles };
         const want = norm(data.title);
+        const wantOrg = data.orgTitle ? norm(data.orgTitle) : '';
+        const wantMedium = desiredMedium(data);
         // CastleTV lists each SEASON of a show as its own entry, usually with the
         // SAME title and only the year differing. Disambiguate by the selected
         // season's air year (falling back to the series year) — this is what stops
@@ -124,7 +148,14 @@ export const CastleProvider: Provider = {
         const targetYear = data.seasonYear || data.year;
         const best = rows.map((m) => {
             const t = norm(m.title || '');
-            let s = t === want ? 3 : (t.includes(want) || want.includes(t)) ? 1 : 0;
+            const hit = (w: string): number => !w ? 0 : t === w ? 3 : (t.includes(w) || w.includes(t)) ? 1 : 0;
+            let s = Math.max(hit(want), hit(wantOrg));
+            // Medium alignment (anime vs live-action vs film) — the decisive tiebreak
+            // when several mediums share the title. A wrong medium is penalised hard
+            // so it drops below the `best.s <= 0` floor and is rejected rather than
+            // served as "the wrong anime".
+            const med = mediumOf(m);
+            if (med) s += med === wantMedium ? 2 : -3;
             if (targetYear && m.publishTime) {
                 try {
                     // publishTime may be ms-epoch, SECONDS-epoch, or an ISO string.
