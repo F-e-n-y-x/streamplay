@@ -223,10 +223,10 @@ const ANILIST_CATEGORY: Record<string, { genre?: string; tag?: string | string[]
 };
 
 const BROWSE_QUERY = `
-query ($page: Int, $perPage: Int, $genres: [String], $tags: [String], $format: [MediaFormat], $sort: [MediaSort], $startGte: FuzzyDateInt, $startLte: FuzzyDateInt, $popGte: Int, $isAdult: Boolean) {
+query ($page: Int, $perPage: Int, $genres: [String], $tags: [String], $format: [MediaFormat], $sort: [MediaSort], $startGte: FuzzyDateInt, $startLte: FuzzyDateInt, $popGte: Int, $status: MediaStatus, $isAdult: Boolean) {
   Page(page: $page, perPage: $perPage) {
     pageInfo { lastPage }
-    media(type: ANIME, genre_in: $genres, tag_in: $tags, format_in: $format, sort: $sort, startDate_greater: $startGte, startDate_lesser: $startLte, popularity_greater: $popGte, isAdult: $isAdult) {
+    media(type: ANIME, genre_in: $genres, tag_in: $tags, format_in: $format, sort: $sort, startDate_greater: $startGte, startDate_lesser: $startLte, popularity_greater: $popGte, status: $status, isAdult: $isAdult) {
       id idMal format seasonYear averageScore
       startDate { year }
       title { romaji english native }
@@ -305,7 +305,7 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
     const sort = o.cat === 'trending' ? ['TRENDING_DESC']
         : o.cat === 'newest' ? ['START_DATE_DESC']
         : o.cat === 'toprated' ? ['SCORE_DESC']
-        : ['POPULARITY_DESC'];
+        : ['POPULARITY_DESC'];   // 'airing' + 'popular' both rank by popularity
     const format = o.type === 'movie' ? ['MOVIE'] : o.type === 'tv' ? ['TV', 'TV_SHORT', 'ONA'] : undefined;
 
     let page = o.page || 1;
@@ -323,6 +323,8 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
         // Top-Rated by raw score is dominated by tiny-sample outliers; require a real
         // popularity floor so it returns actual acclaimed titles.
         popGte: o.cat === 'toprated' ? 5000 : undefined,
+        // 'airing' = the seasonal / currently-releasing view (anikototv's "Top Airing").
+        status: o.cat === 'airing' ? 'RELEASING' : undefined,
         isAdult: o.adult ? undefined : false,
     };
 

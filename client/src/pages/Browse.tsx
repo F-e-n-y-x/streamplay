@@ -40,7 +40,7 @@ const REGIONS = [
   { key: "ja", label: "Japanese" },
 ];
 
-type Cat = "popular" | "trending" | "newest" | "toprated" | "random";
+type Cat = "popular" | "trending" | "newest" | "toprated" | "random" | "airing";
 
 // Anime categories that are inherently 18+/suggestive — hidden from the picker and
 // stripped from the query when the Show 18+ setting is off.
@@ -128,6 +128,7 @@ export default function Browse({ section }: { section: Section }) {
             <button className={`atab ${audio === "dub" ? "active" : ""}`} onClick={() => pickAudio("dub")}>Dub</button>
           </>}
           <button className={`atab ${cat === "trending" ? "active" : ""}`} onClick={() => pickCat("trending")}>Trending</button>
+          {cfg.track && <button className={`atab ${cat === "airing" ? "active" : ""}`} onClick={() => pickCat("airing")}>Airing</button>}
           <button className={`atab ${cat === "newest" ? "active" : ""}`} onClick={() => pickCat("newest")}>Newest</button>
           <button className={`atab ${cat === "toprated" ? "active" : ""}`} onClick={() => pickCat("toprated")}>Top Rated</button>
           <button className={`atab ${cat === "random" ? "active" : ""}`} onClick={() => pickCat("random")}>Random</button>
