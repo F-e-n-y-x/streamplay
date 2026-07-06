@@ -37,6 +37,32 @@ const desiredMedium = (data: LinkData): Medium =>
     data.isAnime ? (data.type === 'movie' ? 'movie' : 'anime')
                  : (data.type === 'movie' ? 'movie' : 'tv');
 
+/**
+ * Token-based title match. CastleTV's keyword search is FUZZY — asking for a title
+ * it doesn't carry returns a page of unrelated shows that merely share a filler
+ * word ("… in Another World" returns 20 different isekai). A plain substring check
+ * scored those as matches, so we'd play a completely different anime. Instead we
+ * compare the DISTINCTIVE tokens (dropping filler like "the/in/another/world"): a
+ * candidate must contain the smaller title's distinctive words to count, so a title
+ * CastleTV lacks resolves to nothing rather than the wrong show.
+ */
+const STOP = new Set(['the', 'a', 'an', 'of', 'in', 'on', 'to', 'and', 'or', 'my', 'with', 'season', 'part', 'world', 'another', 'life', 'story', 'movie', 'film', 'tv', 'series', 'saga', 'arc', 'chapter', 'no', 'wo', 'ga', 'isekai', 'de']);
+const distinctiveTokens = (s: string) => norm(s).split(' ').filter((w) => w && !STOP.has(w));
+function titleMatch(want: string, candidate: string): number {
+    if (!want || !candidate) return 0;
+    const nt = norm(candidate);
+    if (nt === want) return 3;                       // exact
+    const A = new Set(distinctiveTokens(want));
+    const B = new Set(distinctiveTokens(candidate));
+    if (!A.size || !B.size) return 0;
+    let inter = 0;
+    for (const w of A) if (B.has(w)) inter++;
+    const contain = inter / Math.min(A.size, B.size);
+    if (contain >= 0.999) return 2;                  // every distinctive token of the shorter side present
+    if (contain >= 0.6) return 1;                    // strong partial
+    return 0;
+}
+
 let keyCache: { value: string; exp: number } | null = null;
 async function securityKey(): Promise<string | null> {
     if (keyCache && keyCache.exp > Date.now()) return keyCache.value;
@@ -101,8 +127,8 @@ export async function castleEpisodes(title: string, year?: number): Promise<Cast
         if (!rows.length) return [];
         const want = norm(title);
         const best = rows.map((m) => {
-            const t = norm(m.title || '');
-            let s = t === want ? 3 : (t.includes(want) || want.includes(t)) ? 1 : 0;
+            let s = titleMatch(want, m.title || '');
+            if (s <= 0) return { m, s: 0 };
             if (year && m.publishTime) {
                 try {
                     let pt: number | string = m.publishTime;
@@ -147,9 +173,11 @@ export const CastleProvider: Provider = {
         // "S1E2" from landing on whichever same-titled entry happened to rank first.
         const targetYear = data.seasonYear || data.year;
         const best = rows.map((m) => {
-            const t = norm(m.title || '');
-            const hit = (w: string): number => !w ? 0 : t === w ? 3 : (t.includes(w) || w.includes(t)) ? 1 : 0;
-            let s = Math.max(hit(want), hit(wantOrg));
+            // A REAL title-token match is required first. Medium/year only refine an
+            // already-matching candidate — they can never promote a zero-title row
+            // (CastleTV's fuzzy search returns unrelated same-genre shows otherwise).
+            let s = Math.max(titleMatch(want, m.title || ''), titleMatch(wantOrg, m.title || ''));
+            if (s <= 0) return { m, s: 0 };
             // Medium alignment (anime vs live-action vs film) — the decisive tiebreak
             // when several mediums share the title. A wrong medium is penalised hard
             // so it drops below the `best.s <= 0` floor and is rejected rather than
