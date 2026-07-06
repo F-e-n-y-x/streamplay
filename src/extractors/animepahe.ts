@@ -36,19 +36,33 @@ function extractJson(html: string): any {
  * carries a Dean-Edwards packed `const source='...m3u8'`.
  */
 const KWIK_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+
+// Pull the .m3u8 out of a kwik embed page (Dean-Edwards packed `source='...m3u8'`).
+const parseKwik = (html: string | null | undefined): string | null => {
+    if (!html) return null;
+    const packed = getPacked(html);
+    const src = packed ? getAndUnpack(packed) : html;
+    const m = /source\s*=\s*['"]([^'"]+\.m3u8[^'"]*)['"]/.exec(src) || /(https?:\/\/[^'"\s]+\.m3u8[^'"\s]*)/.exec(src);
+    return m ? (m[1] || m[0]) : null;
+};
+
 async function resolveKwik(kwikUrl: string, referer: string): Promise<string | null> {
+    // 1) Plain request first: kwik historically served the packed `source='...m3u8'`
+    //    directly to a browser-UA + animepahe-referer request (and in WARP mode this
+    //    egresses via the WARP SOCKS for a clean IP).
     try {
-        // Kwik serves the Dean-Edwards packed `source='...m3u8'` DIRECTLY to a plain
-        // request that carries a browser UA + the animepahe referer — exactly what the
-        // CloudStream plugin does. We must NOT route this through FlareSolverr: its
-        // headless browser 500s on kwik's autoplay embed (the failure the trace showed).
-        // In WARP mode this app.get still egresses via the WARP SOCKS, so it gets the
-        // clean IP; a Kwik IP-ban just yields no packed script → null (not a 500).
         const res = await app.get(kwikUrl, { referer, headers: { 'User-Agent': KWIK_UA, Referer: referer }, timeout: 15000 });
-        const packed = getPacked(res.text);
-        const src = packed ? getAndUnpack(packed) : res.text;
-        const m = /source\s*=\s*['"]([^'"]+\.m3u8[^'"]*)['"]/.exec(src) || /(https?:\/\/[^'"\s]+\.m3u8[^'"\s]*)/.exec(src);
-        return m ? (m[1] || m[0]) : null;
+        const direct = parseKwik(res.text);
+        if (direct) return direct;
+    } catch { /* fall through to FlareSolverr */ }
+    // 2) The kwik host (kwik.cx) is now Cloudflare-challenged (HTTP 403) on datacenter
+    //    AND WARP egress, so the plain fetch gets a block page with no packed source.
+    //    Fall back to a FlareSolverr solve to clear the challenge, then unpack. (Kept as
+    //    a FALLBACK — FS can be slow/flaky on kwik's autoplay embed — so a working direct
+    //    egress still takes the fast path above.)
+    try {
+        const solved = await flareSolverrGetHtml(kwikUrl, 40000);
+        return parseKwik(solved);
     } catch { return null; }
 }
 
