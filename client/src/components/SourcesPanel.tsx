@@ -50,11 +50,17 @@ function parse(link: StreamLink, providerName: string): Parsed {
   return { ...link, variant, audio: detectAudio(name), q, bucket: bucketOf(q), external: /\bvlc\b/i.test(name) };
 }
 
-// For anime, these are the PRIMARY providers — the ones we want to load and play
-// from first. They're registered first server-side (so they head the list), and
-// the autoplay below waits for them before falling back to a generic source.
-const PRIMARY_ANIME = new Set(["allanime", "anizone", "animepahe", "animeworld"]);
+// The dedicated anime providers. For anime we wait for these to resolve (and pick
+// the one matching the Sub/Dub preference) before falling back to a generic source,
+// so a fast movie provider can't grab the player ahead of the good anime sources.
+const ANIME_PROVIDERS = new Set(["anizone", "anineko", "animeworld", "allanime", "animepahe", "consumet", "castle"]);
 const isTerminal = (state?: string) => state === "found" || state === "empty" || state === "failed";
+
+// Sub/Dub markers in a source's name (AniNeko "… DUB", CastleTV "· Hindi/English"
+// = dub; "SUB"/"Original"/"Japanese" = sub). Used to auto-pick the source matching
+// the viewer's anime audio preference.
+const DUB_RE = /\b(dub|dubbed|hindi|english|tamil|telugu|malayalam|kannada|dual|multi)\b/i;
+const SUB_RE = /\b(sub|subbed|subtitle|japanese|jpn|\bjp\b|original|raw)\b/i;
 
 export default function SourcesPanel({
   type, id, season, episode, isAnime, kind, onPlay, currentUrl, failedUrl, failSeq,
@@ -183,6 +189,18 @@ export default function SourcesPanel({
   const prefLangs = settings.audioLanguages || [];
   const langRank = (a: string) => { const i = prefLangs.indexOf(a); return i < 0 ? 99 : i; };
 
+  // Anime Sub/Dub audio preference → a rank for auto-play (0 = matches the pref).
+  // Dub pref: an explicit dub source is best (0), a neutral source is meh (1), a
+  // sub source is worst (2). Sub pref (the default): sub OR neutral is fine (0),
+  // an explicit dub is worst (2) — so a neutral source like AniZone still plays
+  // instantly for sub viewers instead of waiting for a "sub"-labelled one.
+  const animePref = liveSettings.anime ?? "sub";
+  const audioRank = (s: Parsed): number => {
+    const hay = `${s.name || s.variant || ""} ${s.audio || ""}`;
+    const dub = DUB_RE.test(hay), sub = SUB_RE.test(hay);
+    return animePref === "dub" ? (dub ? 0 : sub ? 2 : 1) : ((sub || !dub) ? 0 : 2);
+  };
+
   // group parsed links by provider
   const byProvider = useMemo(() => {
     const map = new Map<string, Parsed[]>();
@@ -225,9 +243,12 @@ export default function SourcesPanel({
   // `providers` is already in the effective order (user pref → registration order,
   // anime providers first by default), so we just preserve that and push VLC/
   // external-only sources to the very end of the auto-play order.
+  // External/VLC sources sink to the end; for anime, the Sub/Dub preference orders
+  // ahead of provider priority (a stable sort keeps provider order within a tier),
+  // so a dub-preferring viewer auto-plays a dub source even from a lower provider.
   playableRef.current = providers.flatMap((p) => p.items)
     .filter((s) => s.type === "m3u8" || s.type === "mp4")
-    .sort((a, b) => Number(a.external) - Number(b.external));
+    .sort((a, b) => Number(a.external) - Number(b.external) || (isAnime ? audioRank(a) - audioRank(b) : 0));
 
   function play(p: Parsed) {
     const ordered = [...subs].sort((a, b) => {
@@ -256,13 +277,20 @@ export default function SourcesPanel({
       if (st) { autostarted.current = true; play(st); return; }
       if (order.includes(sticky) && !isTerminal(runs[sticky]?.state)) return;
     }
-    // 2) Anime: wait for the primary anime providers before falling back to a generic one.
+    // 2) Anime: honour the Sub/Dub preference. Play the first anime source that
+    //    MATCHES the preference as soon as it resolves; if none matches yet, wait
+    //    for the still-pending anime providers (one may bring the preferred audio —
+    //    e.g. AniNeko's DUB arrives a few seconds after AniZone's sub). Only once
+    //    every anime provider has settled do we play the best available (pref-sorted)
+    //    anime source, so a generic movie provider never grabs the player first.
     if (isAnime) {
-      const primary = playableRef.current.find((s) => PRIMARY_ANIME.has(s.providerId) && notFailed(s));
-      if (primary) { autostarted.current = true; play(primary); return; }
-      const primaryIds = order.filter((pid) => PRIMARY_ANIME.has(pid) && !pref.hidden.includes(pid));
-      const stillPending = primaryIds.some((pid) => !isTerminal(runs[pid]?.state));
-      if (primaryIds.length && stillPending) return;
+      const animeAvail = playableRef.current.filter((s) => ANIME_PROVIDERS.has(s.providerId) && notFailed(s));
+      const prefMatch = animeAvail.find((s) => audioRank(s) === 0);
+      if (prefMatch) { autostarted.current = true; play(prefMatch); return; }
+      const animeIds = order.filter((pid) => ANIME_PROVIDERS.has(pid) && !pref.hidden.includes(pid));
+      const stillPending = animeIds.some((pid) => !isTerminal(runs[pid]?.state));
+      if (animeIds.length && stillPending) return;
+      if (animeAvail.length) { autostarted.current = true; play(animeAvail[0]); return; }
     }
     const first = playableRef.current.find(notFailed);
     if (first) { autostarted.current = true; play(first); }
