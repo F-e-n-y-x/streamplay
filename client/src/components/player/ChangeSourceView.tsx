@@ -2,7 +2,7 @@ import { useState } from "react";
 import { copyText } from "../../lib/clipboard";
 import { updateSettings, useSettings } from "../../lib/settings";
 import { browserOk, isDirect, qualityLabel, type SourceLink, type Sources } from "../../lib/useSources";
-import { Button, ListGroup, ListRow, StateMessage, StatusDot, toast } from "../ui";
+import { Button, FilterChip, ListGroup, ListRow, StateMessage, StatusDot, toast } from "../ui";
 import { Check, ChevronDown, RotateCcw } from "../icons";
 
 type Tone = "success" | "warning" | "error" | "neutral";
@@ -62,7 +62,22 @@ export default function ChangeSourceView({ sources, anime, onPicked }: { sources
   const visible = links.filter((l) => !hiddenPids.includes(l.providerId));
   const bad = visible.filter((l) => failed[l.url] || l.verified === false || l.hidden || recent(l));
   const ext = visible.filter((l) => !bad.includes(l) && isDirect(l) && !browserOk(l));
-  const good = visible.filter((l) => !bad.includes(l) && !ext.includes(l))
+  const ready = visible.filter((l) => !bad.includes(l) && !ext.includes(l));
+
+  // Filter chips (quality / audio language / addon), built from what was actually found
+  const [fq, setFq] = useState<string | null>(null);
+  const [fl, setFl] = useState<string | null>(null);
+  const [fa, setFa] = useState<string | null>(null);
+  const langsOf = (l: SourceLink) => (l.languages?.length ? l.languages : l.audio && !/multi|dual/i.test(l.audio) ? [l.audio] : []);
+  const addonOf = (l: SourceLink) => l.providerName ?? name(l);
+  const tally = (keys: string[]) => [...keys.reduce((m, k) => m.set(k, (m.get(k) ?? 0) + 1), new Map<string, number>())].sort((a, b) => b[1] - a[1]);
+  const facets = [
+    { label: "Quality", value: fq, set: setFq, opts: GROUPS.filter((g) => g.key !== "Unknown quality").map((g) => [g.key, ready.filter((l) => g.test(l.quality || 0)).length] as [string, number]).filter(([, n]) => n) },
+    { label: "Audio", value: fl, set: setFl, opts: tally(ready.flatMap(langsOf)).slice(0, 8) },
+    { label: "Addon", value: fa, set: setFa, opts: tally(ready.map(addonOf)) },
+  ].filter((f) => f.opts.length > 1 || f.value);
+  const good = ready
+    .filter((l) => (!fq || GROUPS.find((g) => g.key === fq)!.test(l.quality || 0)) && (!fl || langsOf(l).includes(fl)) && (!fa || addonOf(l) === fa))
     .sort((a, b) => Number(b.verified === true) - Number(a.verified === true) || (b.score ?? -999) - (a.score ?? -999)
       || (a.startupMs ?? a.latencyMs ?? 9e9) - (b.startupMs ?? b.latencyMs ?? 9e9));
 
@@ -78,16 +93,30 @@ export default function ChangeSourceView({ sources, anime, onPicked }: { sources
   const fold = (list: SourceLink[]) => {
     const m = new Map<string, SourceLink[]>();
     for (const l of list) {
-      const k = `${l.providerId}|${l.origin ?? ""}|${l.quality || 0}|${audioOf(l, primary, anime)}|${l.type === "iframe"}`;
+      const k = `${l.providerId}|${l.origin ?? ""}|${l.addonDesc ?? ""}|${l.quality || 0}|${audioOf(l, primary, anime)}|${l.type === "iframe"}`;
       m.set(k, [...(m.get(k) ?? []), l]);
     }
     return [...m.entries()];
   };
 
-  // Row = "Addon · 4K · Site" / specs line / size · audio · status (the release-formatter layout)
+  // Row = the addon's own card verbatim when it sent one (Nuvio-style: emoji lines with
+  // quality, specs, size, audio, subtitles), else "Addon · 4K · Site" / specs / size · audio
   const row = (l: SourceLink, label: string) => {
     const st = statusOf(l, failed[l.url]);
     const on = l.url === current?.url;
+    if (l.addonName || l.addonDesc) {
+      const head = l.addonName || label;
+      const title = l.providerName && !head.toLowerCase().includes(l.providerName.toLowerCase()) ? `${l.providerName} · ${head}` : head;
+      return (
+        <ListRow key={l.url} className="cs-row cs-card" kind="choice" checked={on} tooltip={l.variant || l.name}
+          title={<span className="cs-card-title">{title}</span>}
+          description={<>
+            {l.addonDesc && <span className="cs-desc">{l.addonDesc}</span>}
+            <span className="cs-status" data-tone={st.tone}>{st.text}</span>
+          </>}
+          leading={<StatusDot tone={st.tone} />} onClick={() => pick(l)} />
+      );
+    }
     const langs = l.languages ?? [];
     const audio = langs.length ? langs.slice(0, 3).join(", ") + (langs.length > 3 ? ` +${langs.length - 3}` : "") : audioOf(l, primary, anime);
     const specs = [...(l.specs ?? []), l.container].filter(Boolean).join(" · ");
@@ -113,6 +142,21 @@ export default function ChangeSourceView({ sources, anime, onPicked }: { sources
           <span className="cs-now-v">{[name(cur), qualityLabel(cur.quality), audioOf(cur, undefined, anime)].filter(Boolean).join(" · ")}</span>
           <Check size={18} aria-hidden="true" />
         </div>
+      )}
+
+      {facets.length > 0 && (
+        <div className="cs-filters">
+          {facets.map((f) => (
+            <div key={f.label} className="cs-filter-row" role="group" aria-label={`Filter by ${f.label.toLowerCase()}`}>
+              <span className="cs-filter-k">{f.label}</span>
+              {f.opts.map(([k, n]) => <FilterChip key={k} selected={f.value === k} count={n} onClick={() => f.set(f.value === k ? null : k)}>{k}</FilterChip>)}
+            </div>
+          ))}
+        </div>
+      )}
+      {(fq || fl || fa) && !good.length && (
+        <StateMessage kind="empty" align="center" title="No sources match these filters."
+          actions={<Button variant="secondary" onClick={() => { setFq(null); setFl(null); setFa(null); }}>Clear filters</Button>} />
       )}
 
       {progress.done && !visible.length && (

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import path from 'path';
 process.env.PROVIDER_STATS_FILE = path.join(os.tmpdir(), `sp-stats-test-${process.pid}.json`);
-import { sniffMedia, parsePlaylist, scoreSource, streamFacts, parseReport, langScore, webReadyOf, mbpsOf, GOOD_SCORE, audioTracks, failReason } from '../src/utils/sourceProbe';
+import { sniffMedia, parsePlaylist, scoreSource, streamFacts, parseReport, languagesOf, langScore, webReadyOf, mbpsOf, GOOD_SCORE, audioTracks, failReason } from '../src/utils/sourceProbe';
 import { recordPlayback, recordVerify, providerHidden, providerReliability } from '../src/utils/providerStats';
 
 const ts = () => { const b = Buffer.alloc(188 * 4); for (let i = 0; i < 4; i++) b[i * 188] = 0x47; return b; };
@@ -126,4 +126,10 @@ test('streamFacts: specs, size and languages from a release name', () => {
     assert.equal(f.size, '9.45 GB');
     assert.deepEqual(f.languages, ['Hindi', 'English']);
     assert.equal(streamFacts('1.6 GiB').size, '1.6 GB');
+});
+
+test('languagesOf: an addon card\'s Audio: line wins; a card without one names none', () => {
+    assert.deepEqual(languagesOf('x', '📡 Breaking Bad\n🎞️ 4K • MKV\n🛰️ Source: 4KHDHub\n🎧 Audio: English, Hindi').sort(), ['English', 'Hindi']);
+    assert.deepEqual(languagesOf('Breaking Bad [Hindi] Russian sub audio', '📡 Breaking Bad [Hindi]\n🎞️ 720p • Russian sub audio\n🛰️ Source: MovieBox'), []);
+    assert.deepEqual(languagesOf('Hdflix 2160p · Hindi, English · 9.45 GB', '2160p · 4K · Hindi, English · 9.45 GB'), ['Hindi', 'English']);
 });

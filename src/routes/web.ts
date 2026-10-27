@@ -13,7 +13,9 @@ import { runWithWarp, normalizeWarpMode, warpConfigured, warpConfig, probeWarpSo
 import { runWithSignal } from '../utils/reqctx';
 import { flareSolverrEndpoints, probeFlareSolverr, flareSolverrLoad } from '../utils/flaresolverr';
 import { recordProvider, providerShouldRun, providerStat, providerPriority, recordPlayback, recordVerify, providerHidden, providerReliability } from '../utils/providerStats';
-import { probeStream, scoreSource, detectAudio, parseReport, webReadyOf, mbpsOf, streamFacts, ScorePrefs, GOOD_SCORE, audioTracks, failReason, FailReason } from '../utils/sourceProbe';
+import { probeStream, scoreSource, detectAudio, parseReport, webReadyOf, mbpsOf, streamFacts, languagesOf, ScorePrefs, GOOD_SCORE, audioTracks, failReason, FailReason } from '../utils/sourceProbe';
+import { isAdmin } from './addons';
+import { hlsReady } from '../utils/torrent';
 import { rateLimit } from './sync';
 import { torznabPublic, setTorznab, addonPublic, setAddonUrls, AddonKind } from '../utils/serverConfig';
 import { reloadNuvio, nuvioStatus } from '../extractors/nuvio';
@@ -126,7 +128,8 @@ const proxify = (s: Stream, episode?: number): string => {
     if (s.type === 'iframe') return s.link;
     // Debrid-cached direct file: stream through /api/torrent/http (range passthrough for
     // mp4, on-the-fly mkv→mp4 remux) — instant, no P2P.
-    if (s.debrid) return `/api/torrent/http?url=${b64(s.link)}&remux=1`;
+    // With NVENC the conversion is served as seekable HLS (full-length slider); else a one-shot remux.
+    if (s.debrid) return hlsReady() ? `/api/torrent/hls.m3u8?url=${b64(s.link)}` : `/api/torrent/http?url=${b64(s.link)}&remux=1`;
     // Torrent sources carry a magnet as the link — stream it through /api/torrent
     // (remux=1 so the browser can play the usual .mkv release as fragmented MP4).
     // Pass the episode so a BATCH torrent serves the RIGHT file (not just the largest).
@@ -838,16 +841,16 @@ router.get('/providers/health', async (_req, res) => {
 // Writes are gated by ADMIN_TOKEN when it's set (lock down a public instance); open
 // otherwise (personal use). Header only (X-Admin-Token) — a ?token= lands in access logs.
 // The API key is never returned to the client.
-const configAuthed = (req: any): boolean => !process.env.ADMIN_TOKEN || req.get('x-admin-token') === process.env.ADMIN_TOKEN;
+const configAuthed = (req: any): boolean => !process.env.ADMIN_TOKEN || isAdmin(req);
 // Addon URLs often embed secrets (Torrentio: /realdebrid=KEY/manifest.json), so full URLs
 // go only to a request carrying the real ADMIN_TOKEN; everyone else sees just the host.
 const maskUrl = (u: string) => { try { return `${new URL(u).origin}/…`; } catch { return '…'; } };
 router.get('/config', (req, res) => {
-    const full = !!process.env.ADMIN_TOKEN && req.get('x-admin-token') === process.env.ADMIN_TOKEN;
+    const full = isAdmin(req);
     const view = <T extends { urls: string[] }>(l: T) => (full ? l : { ...l, urls: l.urls.map(maskUrl), redacted: true });
     const status = nuvioStatus().map(st => (full ? st : { ...st, manifest: maskUrl(st.manifest) }));
     res.json({
-        torznab: torznabPublic(), adminLock: !!process.env.ADMIN_TOKEN,
+        torznab: torznabPublic(), adminLock: !!process.env.ADMIN_TOKEN && process.env.ADDON_ADMIN !== 'open',
         nuvio: { ...view(addonPublic('nuvio')), status }, stremio: view(addonPublic('stremio')),
     });
 });
@@ -856,8 +859,8 @@ router.get('/config', (req, res) => {
 // ADMIN_TOKEN to be set: a Nuvio plugin is code the server executes, and both lists
 // allowlist their (possibly LAN) origins in the SSRF guard — never open to anonymous writes.
 const addonRoute = (kind: AddonKind, reload: () => Promise<void>) => async (req: any, res: any) => {
-    if (!process.env.ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'set ADMIN_TOKEN on the server to manage addons from the UI' });
-    if (!configAuthed(req)) return res.status(403).json({ ok: false, error: 'admin token required' });
+    if (!isAdmin(req) && !process.env.ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'set ADMIN_TOKEN on the server to manage addons from the UI' });
+    if (!isAdmin(req)) return res.status(403).json({ ok: false, error: 'admin token required' });
     const urls = req.body?.urls;
     if (urls !== null && !(Array.isArray(urls) && urls.every((u: unknown) => typeof u === 'string'))) return res.status(400).json({ ok: false, error: 'urls must be a string[] or null' });
     setAddonUrls(kind, urls);
@@ -1271,18 +1274,25 @@ router.get('/sources/stream', async (req, res) => {
                     .filter((s: Stream) => typeof s.link === 'string' && s.link)   // guard: a non-string link would crash proxify's Buffer.from
                     .map(async (s: Stream, i: number) => {
                         const label = `${s.server || ''} ${s.quality || ''} ${(s as any).description || ''}`;
-                        const url = proxify(s, ep);
+                        // direct files the browser can't decode (MKV / HEVC / DTS…) play through the server's
+                        // ffmpeg remux (NVENC for HEVC) instead of being shelved as "external player only"
+                        const ready = webReadyOf(`${label} ${s.link.split('?')[0]}`, undefined, (s as any).notWebReady);
+                        const canRemux = s.type === 'mp4' && !s.headers && !s.link.startsWith('magnet:');
+                        const remuxed = !!s.debrid || (!ready && canRemux);
+                        const url = proxify(remuxed ? { ...s, debrid: true } : s, ep);
                         const audio = detectAudio(`${s.server || ''} ${s.audioName || ''}`);
                         const l: any = {
                             id: createHash('sha1').update(url).digest('hex').slice(0, 16), providerId: p.id, providerName: p.name, variant: s.server,
-                            name: s.server, url, type: s.type, external: /\bvlc\b/i.test(label),
+                            name: s.server, url, type: url.startsWith('/api/torrent/hls') ? 'm3u8' : s.type, external: /\bvlc\b/i.test(label),
                             audioTracks: audioTracks(`${label} ${s.audioName || ''}`, audio, info.isAnime),
                             quality: qualityNum(s) || undefined, playable: s.type !== 'iframe', host: hostOf(s.link),
                             audio: audio || undefined, verified: 'unknown',
                             // the URL path counts too: CDNs file HEVC under /h265/, names end .mkv
-                            webReady: webReadyOf(`${label} ${s.link.split('?')[0]}`, undefined, (s as any).notWebReady), mbps: mbpsOf(label),
+                            webReady: ready || remuxed, mbps: mbpsOf(label),
+                            // the addon's own card, shown verbatim (Nuvio-style)
+                            addonName: s.addonName, addonDesc: (s as any).description || undefined,
                             // source-list facts: inner source (addon streams), specs/size/languages, container
-                            origin: (s as any).origin, ...streamFacts(label),
+                            origin: (s as any).origin, ...streamFacts(label), languages: languagesOf(label, (s as any).description),
                             container: s.type === 'm3u8' ? 'HLS' : /\.mpd(\?|$)/i.test(s.link) ? 'DASH' : /\.mkv(\?|$)/i.test(s.link) || /\.mkv\b/i.test(label) ? 'MKV' : s.type === 'mp4' ? 'MP4' : undefined,
                         };
                         if (!torrentMode && s.type !== 'iframe' && !s.link.startsWith('magnet:') && i < PROBES_PER_PROVIDER) {
@@ -1291,7 +1301,10 @@ router.get('/sources/stream', async (req, res) => {
                             l.verified = pr.inconclusive ? 'unknown' : pr.ok; l.latencyMs = pr.latencyMs; l.kbps = pr.kbps; l.verifiedAt = pr.at;
                             if (pr.height) l.quality = pr.height;   // the playlist's advertised max beats the label
                             if (!pr.ok) l.verifyError = pr.error;
-                            if (pr.format === 'mkv' || pr.hevc) l.webReady = false;
+                            if ((pr.format === 'mkv' || pr.hevc) && !remuxed) {
+                                if (canRemux) { l.url = proxify({ ...s, debrid: true }, ep); if (l.url.startsWith('/api/torrent/hls')) l.type = 'm3u8'; }   // sniffed MKV/HEVC → convert it
+                                else l.webReady = false;
+                            }
                             if (pr.hevc) l.codec = 'hevc';
                         }
                         return rescore(l, prefs);

@@ -238,6 +238,17 @@
 .cs-spec { color: var(--foreground); opacity: 0.85; }
 .cs-meta { color: var(--muted-foreground); }
 .cs-row .list-row-trail { gap: var(--space-1); }
+/* Nuvio-style addon card: the addon's own title + its emoji detail lines, verbatim */
+.cs-card .list-row-title { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+.cs-desc { display: block; margin-top: 2px; white-space: pre-line; overflow-wrap: anywhere; line-height: 1.55; color: var(--foreground); opacity: 0.8; }
+.cs-status { display: block; margin-top: 4px; font: var(--type-meta); color: var(--muted-foreground); }
+.cs-status[data-tone="success"] { color: var(--success); }
+.cs-status[data-tone="warning"] { color: var(--warning); }
+.cs-status[data-tone="error"] { color: var(--error); }
+.cs-filters { display: grid; gap: var(--space-2); padding: var(--space-2) var(--space-4) var(--space-1); }
+.cs-filter-row { display: flex; align-items: center; gap: var(--space-2); overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.cs-filter-row::-webkit-scrollbar { display: none; }
+.cs-filter-k { flex: none; min-width: 3.75rem; font: var(--type-caption); color: var(--muted-foreground); }
 .cs-more { display: block; margin: 0 0 var(--space-2) 2.75rem; padding: var(--space-1) 0; font: var(--type-meta); }
 .cs-extra { margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--border); }
 .cs-toggle {

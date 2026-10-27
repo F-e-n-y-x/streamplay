@@ -16,6 +16,13 @@ Post-deploy fixes:
 - NVIDIA GPUs: HEVC/AV1 sources are converted to H.264 with NVENC (auto-detected; compose
   `gpus: all`). H.264 is still copied as-is. The runtime image is now Debian (NVIDIA's
   driver libs are glibc-only). VAAPI no longer breaks every MKV when it can't open.
+- Converted files (MKV / HEVC / DTS…) play as seekable HLS on NVIDIA: full-length slider,
+  seeking, 1080p H.264, every audio track switchable. Before, they were shelved as "external
+  player only" or played as a one-shot stream whose slider grew as it downloaded.
+- Change source shows each addon's own card verbatim (Nuvio-style emoji lines: specs, size,
+  audio, subtitles) with Quality / Audio / Addon filter chips. Audio languages come from the
+  card's "Audio:" line only.
+- `ADDON_ADMIN=open` lets a private LAN instance manage addons without the admin token.
 
 - The Docker image now runs as the non-root `node` user. Existing data volumes are
   root-owned — run once: `docker run --rm -v streamplay-data:/d alpine chown -R 1000:1000 /d`

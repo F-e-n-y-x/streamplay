@@ -15,12 +15,14 @@ import { getAddonUrls, setScraperOverrides } from '../utils/serverConfig';
  */
 const router = Router();
 
+// ADDON_ADMIN=open: anyone who can reach the server manages addons — only for a private (LAN) instance
+export const isAdmin = (req: any) => process.env.ADDON_ADMIN === 'open' || (!!process.env.ADMIN_TOKEN && req.get('x-admin-token') === process.env.ADMIN_TOKEN);
 const admin = (req: any, res: any): boolean => {
+    if (isAdmin(req)) return true;
     if (!process.env.ADMIN_TOKEN) { res.status(403).json({ ok: false, error: 'set ADMIN_TOKEN on the server to manage addons from the UI' }); return false; }
     if (req.get('x-admin-token') !== process.env.ADMIN_TOKEN) { res.status(403).json({ ok: false, error: 'admin token required' }); return false; }
     return true;
 };
-const isAdmin = (req: any) => !!process.env.ADMIN_TOKEN && req.get('x-admin-token') === process.env.ADMIN_TOKEN;
 // manifest URLs can embed tokens (debrid keys, PenguPlay auth) → full URL only for the admin
 const maskUrl = (u: string) => { try { return `${new URL(u).origin}/…`; } catch { return '…'; } };
 

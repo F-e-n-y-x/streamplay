@@ -91,11 +91,11 @@ export const mapStremioStreams = (label: string, items: any[], d?: LinkData): { 
             // ponytail: that path doesn't forward `headers`; fine for UA-only addons (PenguPlay).
             const mkv = /\.mkv(\?|$)/i.test(s.url) || /\.mkv$/i.test(filename) || (bh.notWebReady === true && /\b(mkv|hevc|x265|h\.?265)\b/i.test(all));
             http.push({
-                server, link: s.url, origin: src || undefined, description: desc, type: /\.m3u8(\?|$)/i.test(s.url) || /\b(hls|m3u8)\b/i.test(desc) ? 'm3u8' : 'mp4',
+                server, link: s.url, origin: src || undefined, description: desc, addonName: name || undefined, type: /\.m3u8(\?|$)/i.test(s.url) || /\b(hls|m3u8)\b/i.test(desc) ? 'm3u8' : 'mp4',
                 ...(quality ? { quality } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}), ...(mkv ? { debrid: true } : {}),
             });
         } else if (typeof s?.infoHash === 'string' && /^[0-9a-f]{40}$/i.test(s.infoHash)) {
-            torrent.push({ server, link: magnetFromHash(s.infoHash, filename || lines[0] || label), type: 'mp4', ...(quality ? { quality } : {}) });
+            torrent.push({ server, link: magnetFromHash(s.infoHash, filename || lines[0] || label), description: desc, addonName: name || undefined, type: 'mp4', ...(quality ? { quality } : {}) });
         } else continue;
         subtitles.push(...mapStremioSubs(s.subtitles));
     }
@@ -125,7 +125,7 @@ export const mapStremioSubs = (items: any): Subtitle[] =>
 const get = async (url: string) => {
     const blocked = guardUrl(url);
     if (blocked) throw new Error(`blocked: ${blocked}`);
-    return (await axios.get(url, { ...ssrfAgents(), beforeRedirect: guardRedirect, timeout: 15000 })).data;
+    return (await axios.get(url, { ...ssrfAgents(), beforeRedirect: guardRedirect, timeout: 30000 })).data;   // aggregators (PlavioHD) scrape 10+ sites per request
 };
 
 let http: Provider[] = [], torrent: Provider[] = [];

@@ -32,7 +32,7 @@ test('mapNuvioStreams: url/type/quality/headers/subtitles; non-http dropped', ()
         { name: 'magnet', url: 'magnet:?xt=urn:btih:abc', infoHash: 'abc' },
     ]);
     assert.equal(r.streams.length, 3);
-    assert.deepEqual(r.streams[0], { server: 'Anime · AniKotoAPI · HD-1 [DUB] · English', link: 'http://192.168.10.10:4001/anime-hls?u=x', type: 'm3u8', quality: '1080p' });
+    assert.deepEqual(r.streams[0], { server: 'Anime · AniKotoAPI · HD-1 [DUB] · English', link: 'http://192.168.10.10:4001/anime-hls?u=x', type: 'm3u8', quality: '1080p', addonName: '1. ⭐ AniKotoAPI · HD-1 [DUB]' });
     assert.equal(r.streams[1].type, 'mp4');
     assert.equal(r.streams[1].quality, '720p');
     assert.deepEqual(r.streams[1].headers, { Referer: 'https://a/' });

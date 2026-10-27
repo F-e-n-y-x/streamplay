@@ -102,6 +102,7 @@ export const mapNuvioStreams = (label: string, items: any[]): ExtractorResult =>
             server: [label, name !== label ? name : '', extra].filter(Boolean).join(' · '),
             link: s.url,
             ...(typeof s.title === 'string' && s.title !== name ? { description: s.title } : {}),
+            ...(typeof s.name === 'string' && s.name.trim() ? { addonName: s.name.trim() } : {}),
             type: /m3u8|hls/.test(fmt) || /\.m3u8(\?|$)/i.test(s.url) ? 'm3u8' : 'mp4',
             ...(quality ? { quality } : {}),
             ...(headers && Object.keys(headers).length ? { headers } : {}),

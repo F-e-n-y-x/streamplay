@@ -295,3 +295,10 @@ export function parseReport(body: any, known: Set<string>): PlayReport | { inval
     if (typeof error === 'string') r.error = error.slice(0, 200);
     return r;
 }
+
+/** Audio languages: an addon card's "Audio:" line is authoritative; a card without one names
+ *  none (its title's "[Hindi]" or "Russian sub audio" aren't the audio). Else the whole label. */
+export const languagesOf = (label: string, desc?: string): string[] => {
+    const line = desc && /\bAudio:\s*([^\n]+)/i.exec(desc);
+    return line ? streamFacts(line[1]).languages : desc && /\bSource:/i.test(desc) ? [] : streamFacts(label).languages;
+};

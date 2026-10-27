@@ -26,6 +26,9 @@ export interface SourceLink extends StreamLink {
   recommended?: boolean;
   /** Source-list facts (server-parsed): site behind an addon, release specs, size, audio languages, container */
   origin?: string;
+  /** Addon streams: the addon's own card (title + multi-line details), shown verbatim like Nuvio. */
+  addonName?: string;
+  addonDesc?: string;
   specs?: string[];
   size?: string;
   languages?: string[];

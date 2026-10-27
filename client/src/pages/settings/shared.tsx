@@ -32,13 +32,14 @@ export function Group({ title, desc, children }: { title?: string; desc?: ReactN
 
 /**
  * Admin state. `lock` = ADMIN_TOKEN is set on the server (undefined while loading).
- * `unlocked` = this tab holds the right token (the server then returns full addon URLs).
+ * `unlocked` = the server returns full addon URLs: this tab holds the right token, or the
+ * server is open (ADDON_ADMIN=open on a private LAN instance).
  */
 export function useAdmin() {
   const token = useAdminToken();
   const cfg = useConfig(token);
   const lock = cfg.data?.adminLock;
-  const unlocked = !!lock && !!cfg.data && !cfg.data.nuvio.redacted;
+  const unlocked = !!cfg.data && !cfg.data.nuvio.redacted;
   return { token, cfg, lock, unlocked };
 }
 
@@ -67,7 +68,7 @@ export function AdminGate({ offText, why }: { offText?: string; why: string }) {
   const [busy, setBusy] = useState(false);
 
   if (lock === undefined) return null;
-  if (!lock) return offText ? <p className="set-note">{offText}</p> : null;
+  if (!lock) return offText && !unlocked ? <p className="set-note">{offText}</p> : null;
   if (unlocked) {
     return (
       <div className="admin-on">

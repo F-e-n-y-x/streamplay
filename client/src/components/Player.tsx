@@ -483,7 +483,9 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
       engineRef.current = "hls";
       // capLevelToPlayerSize: no 1080p into a 400px window; a 5 Mbps first guess starts at
       // ~720p instead of the 240p a cold 500 kbps estimate picks.
-      const inst = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: true, abrEwmaDefaultEstimate: 5_000_000, maxBufferLength: 60, maxMaxBufferLength: 600, backBufferLength: 60, fragLoadingMaxRetry: 6, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 4 });
+      const inst = new Hls({ enableWorker: true, lowLatencyMode: false, capLevelToPlayerSize: true, abrEwmaDefaultEstimate: 5_000_000, maxBufferLength: 60, maxMaxBufferLength: 600, backBufferLength: 60, fragLoadingMaxRetry: 6, manifestLoadingMaxRetry: 2, levelLoadingMaxRetry: 4,
+        // server GPU conversion: the first segment after a start/seek can take ~15 s
+        ...(source.url.includes("/api/torrent/hls") ? { fragLoadingTimeOut: 60_000, manifestLoadingTimeOut: 30_000, levelLoadingTimeOut: 30_000 } : {}) });
       hls.current = inst;
       cleanup = () => { inst.destroy(); hls.current = null; };
       const syncAudio = () => {
@@ -815,7 +817,8 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
           setLoading(true);
           if (firstFrame.current && onStall) {
             window.clearTimeout(stallTimer.current);
-            stallTimer.current = window.setTimeout(() => { if (!failedOnce.current) { failedOnce.current = true; onStall(); } }, STALL_MS);
+            // server-converted streams restart the conversion on a seek: give them longer before giving up
+            stallTimer.current = window.setTimeout(() => { if (!failedOnce.current) { failedOnce.current = true; onStall(); } }, source.url.includes("/api/torrent/") ? 45_000 : STALL_MS);
           }
         }}
         onPlaying={() => { setLoading(false); window.clearTimeout(stallTimer.current); reachedFirstFrame(); }}

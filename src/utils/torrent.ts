@@ -160,6 +160,96 @@ export async function hasFfmpeg(): Promise<boolean> {
     if (hwEnc) console.log(`[remux] HEVC/AV1 → H.264 on the GPU (${hwEnc})`);
     return ffmpegOk;
 }
+hasFfmpeg();   // probe at startup so proxify() knows whether seekable HLS conversion is on
+/** NVENC present → converted files are served as seekable HLS (full-length slider, seeking). */
+export const hlsReady = () => hwEnc === 'nvenc';
+
+// ponytail: 1080p cap — 4K H.264 is black on many phones/tablets/iGPUs and heavy for the viewer's GPU
+const NVENC_ARGS = ['-vf', 'scale=-2:min(1080\\,ih)', '-c:v', 'h264_nvenc', '-preset', 'p4', '-profile:v', 'high', '-pix_fmt', 'yuv420p', '-rc', 'vbr', '-cq', '23', '-maxrate', '8M', '-bufsize', '16M'];
+
+/** The local passthrough of a remote file (/api/torrent/http without remux): ffmpeg/ffprobe read
+ *  it with Range requests (seekable) while every upstream fetch still goes through the SSRF guard —
+ *  ffmpeg never resolves the caller's URL itself. */
+export const loopbackUrl = (url: string) => `http://127.0.0.1:${process.env.PORT || 3000}/api/torrent/http?url=${Buffer.from(url).toString('base64url')}`;
+// ponytail: the password rides in ffmpeg's argv (visible to `ps` in the container); signed URLs if that matters
+const LOOP_IN = ['-protocol_whitelist', 'http,tcp', ...(process.env.STREAMPLAY_PASSWORD ? ['-headers', `x-streamplay-key: ${process.env.STREAMPLAY_PASSWORD}\r\n`] : [])];
+
+// ── Seekable HLS: one continuous GPU conversion per file (the Jellyfin model) ──────────────
+// ffmpeg reads the file once, sequentially, and writes 10 s segments for the video and every
+// audio track (s0_<n>.ts = video, s<k+1>_<n>.ts = audio track k). A request near the conversion
+// is served as soon as its segment is written; a far seek restarts it right at that segment.
+// `-copyts` + keyframes forced on the absolute 10 s grid keep every restart's timestamps on the
+// same timeline; `-bf 0` because NVENC B-frames make the TS muxer shift a run that starts at 0.
+export const HLS_SEG = 10;
+const AHEAD = 30;        // pause the conversion 30 segments (5 min) ahead of the viewer
+const KEEP_BEHIND = 6;   // delete segments more than a minute behind
+interface HlsJob { dir: string; from: number; ff: any; exited: boolean; used: number; frontier: number; want: number; paused: boolean }
+const hlsJobs = new Map<string, HlsJob>();
+const segFile = (j: HlsJob, k: 'v' | number, i: number) => path.join(j.dir, `s${k === 'v' ? 0 : k + 1}_${i}.ts`);
+const stopJob = (url: string, j: HlsJob) => {
+    try { j.ff.kill('SIGKILL'); } catch { /* */ }
+    fs.rm(j.dir, { recursive: true, force: true }, () => { /* */ });
+    if (hlsJobs.get(url) === j) hlsJobs.delete(url);
+};
+
+function startHls(url: string, from: number, tracks: number): HlsJob {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-hls-'));
+    const start = from * HLS_SEG;
+    const args = [
+        '-hide_banner', '-loglevel', 'error', ...LOOP_IN, '-reconnect', '1', '-reconnect_on_network_error', '1',
+        '-probesize', '2M', '-analyzeduration', '1M', '-hwaccel', 'cuda', ...(start ? ['-ss', String(start)] : []), '-i', loopbackUrl(url), '-copyts',
+        '-map', '0:v:0', ...Array.from({ length: tracks }, (_, k) => ['-map', `0:a:${k}`]).flat(),
+        ...NVENC_ARGS, '-bf', '0', '-forced-idr', '1', '-force_key_frames', `expr:gte(t,${start}+n_forced*${HLS_SEG})`,
+        '-c:a', 'aac', '-ac', '2', '-ar', '48000', '-muxdelay', '0', '-muxpreload', '0',
+        '-f', 'hls', '-hls_time', String(HLS_SEG), '-hls_playlist_type', 'event', '-hls_flags', 'temp_file', '-start_number', String(from),
+        '-hls_segment_filename', path.join(dir, 's%v_%d.ts'),
+        '-var_stream_map', ['v:0', ...Array.from({ length: tracks }, (_, k) => `a:${k}`)].join(' '), path.join(dir, 'p%v.m3u8'),
+    ];
+    const j: HlsJob = { dir, from, ff: spawn('ffmpeg', args, { stdio: 'ignore' }), exited: false, used: Date.now(), frontier: from - 1, want: from, paused: false };
+    j.ff.on('close', () => { j.exited = true; });
+    j.ff.on('error', () => { j.exited = true; });
+    return j;
+}
+
+/** Path of finished segment `i` (video 'v' or audio track k) of `url`, or null if the conversion failed. */
+export async function hlsSegmentFile(url: string, i: number, k: 'v' | number, tracks: number): Promise<string | null> {
+    let j = hlsJobs.get(url);
+    if (j) while (fs.existsSync(segFile(j, 'v', j.frontier + 1))) j.frontier++;
+    // reuse the running conversion when `i` is already written or just ahead of it; else restart there
+    const reusable = j && i >= j.from && (fs.existsSync(segFile(j, k, i)) || (!j.exited && i <= j.frontier + 3));
+    if (!reusable) {
+        if (j) stopJob(url, j);
+        j = startHls(url, i, tracks);
+        hlsJobs.set(url, j);
+    }
+    const job = j!;
+    job.used = Date.now();
+    if (k === 'v') {
+        job.want = i;
+        for (const f of fs.readdirSync(job.dir)) {   // drop what's well behind the viewer
+            const n = Number(/_(\d+)\.ts$/.exec(f)?.[1]);
+            if (n < i - KEEP_BEHIND) fs.rm(path.join(job.dir, f), { force: true }, () => { /* */ });
+        }
+    }
+    if (job.paused && job.frontier < job.want + AHEAD) { job.ff.kill('SIGCONT'); job.paused = false; }
+    const file = segFile(job, k, i);
+    for (const until = Date.now() + 90_000; Date.now() < until;) {
+        if (fs.existsSync(file)) return file;
+        if (job.exited) return fs.existsSync(file) ? file : null;
+        await new Promise((r) => setTimeout(r, 150));
+    }
+    return null;
+}
+
+// Pace and reap: pause a conversion far ahead of its viewer (saves GPU, disk, bandwidth), stop
+// ones nobody has asked for in 2 minutes.
+setInterval(() => {
+    for (const [url, j] of hlsJobs) {
+        if (Date.now() - j.used > 120_000) { stopJob(url, j); continue; }
+        while (fs.existsSync(segFile(j, 'v', j.frontier + 1))) j.frontier++;
+        if (!j.paused && !j.exited && j.frontier >= j.want + AHEAD) { j.ff.kill('SIGSTOP'); j.paused = true; }
+    }
+}, 2000).unref?.();
 
 /**
  * Remux any readable stream (a torrent file stream OR an SSRF-guarded HTTP fetch
@@ -181,7 +271,7 @@ export function remuxReadableToMp4(input: NodeJS.ReadableStream, audio = 0, vide
         ...(enc === 'vaapi' ? ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-filter_hw_device', 'va'] : []),
         '-map', '0:v:0', '-map', `0:a:${audio}?`,   // one audio track (browsers can't switch muxed ones) — chosen by the client
         // ponytail: 10-bit HDR is squeezed to 8-bit without tone-mapping (colours look flat); add tonemap_cuda (jellyfin-ffmpeg) if that matters
-        ...(enc === 'nvenc' ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-pix_fmt', 'yuv420p', '-rc', 'vbr', '-cq', '23']
+        ...(enc === 'nvenc' ? NVENC_ARGS
             : enc === 'vaapi' ? ['-c:v', 'h264_vaapi'] : ['-c:v', 'copy']),
         '-c:a', 'aac', '-ac', '2',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
@@ -202,31 +292,36 @@ export function remuxToMp4(file: any, audio = 0, video = ''): any {
     return remuxReadableToMp4(file.createReadStream(), audio, video);
 }
 
-export interface AudioTrackInfo { index: number; lang: string; title: string; channels?: number }
-export interface MediaInfo { video: string; audio: AudioTrackInfo[] }
-/** Video codec + audio tracks of a media file, from its first bytes (MKV/MP4 headers sit at
- *  the start). Audio `index` is what the remux maps with `0:a:<index>`. Empty on failure. */
-export function probeMedia(head: NodeJS.ReadableStream): Promise<MediaInfo> {
+export interface AudioTrackInfo { index: number; lang: string; title: string; channels?: number; codec?: string }
+export interface MediaInfo { video: string; audio: AudioTrackInfo[]; duration?: number }
+/** Video codec + audio tracks (+ duration) of a media file: from its first bytes piped in (MKV
+ *  headers sit at the start), or a loopback URL (seekable, so MP4 moov-at-end works too).
+ *  Audio `index` is what the remux maps with `0:a:<index>`. Empty on failure. */
+export function probeMedia(head: NodeJS.ReadableStream | string): Promise<MediaInfo> {
     return new Promise((resolve) => {
-        const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,channels:stream_tags=language,title', '-of', 'json', '-i', 'pipe:0'], { stdio: ['pipe', 'pipe', 'ignore'] });
+        const url = typeof head === 'string';
+        const ff = spawn('ffprobe', ['-v', 'error', ...(url ? LOOP_IN : []), '-show_entries', 'stream=codec_type,codec_name,channels:stream_tags=language,title:format=duration', '-of', 'json', '-i', url ? head : 'pipe:0'], { stdio: [url ? 'ignore' : 'pipe', 'pipe', 'ignore'] });
         let out = '';
         const timer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch { /* */ } }, 20000);
-        ff.stdout.on('data', (c: Buffer) => { out += c; });
+        ff.stdout!.on('data', (c: Buffer) => { out += c; });
         ff.on('close', () => {
             clearTimeout(timer);
             try {
-                const streams: any[] = JSON.parse(out).streams || [];
+                const j = JSON.parse(out), streams: any[] = j.streams || [];
+                const duration = Number(j.format?.duration) || undefined;
                 resolve({
+                    duration,
                     video: String(streams.find((s) => s.codec_type === 'video')?.codec_name || ''),
                     audio: streams.filter((s) => s.codec_type === 'audio').map((s, index) => ({
-                        index, lang: String(s.tags?.language || ''), title: String(s.tags?.title || ''), ...(s.channels ? { channels: s.channels } : {}),
+                        index, lang: String(s.tags?.language || ''), title: String(s.tags?.title || ''), codec: String(s.codec_name || ''), ...(s.channels ? { channels: s.channels } : {}),
                     })),
                 });
             } catch { resolve({ video: '', audio: [] }); }
         });
         ff.on('error', () => resolve({ video: '', audio: [] }));
+        if (typeof head === 'string') return;
         head.on('error', () => { /* upstream cut short: ffprobe works with what it got */ });
-        head.pipe(ff.stdin).on('error', () => { /* ffprobe stopped reading */ });
+        head.pipe(ff.stdin!).on('error', () => { /* ffprobe stopped reading */ });
     });
 }
 
