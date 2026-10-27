@@ -1,210 +1,229 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { useBrowse } from "../lib/queries";
+import { useEffect, useRef, useState } from "react";
+import { NavLink, useSearchParams } from "react-router-dom";
+import { useInfiniteQuery } from "@tanstack/react-query";
+import { api, type BrowseOpts } from "../lib/api";
+import type { Card } from "../lib/types";
 import { updateSettings, useSettings } from "../lib/settings";
-import PosterCard from "../components/PosterCard";
-import CategoryPicker, { ANIME_CATEGORIES, GENERIC_CATEGORIES } from "../components/CategoryPicker";
-import { ChevronDown, ChevronLeft, ChevronRight, Film, Globe, Sparkles, Tv } from "../components/icons";
+import { useDocTitle } from "../lib/useDocTitle";
+import PosterCard, { PosterSkeleton } from "../components/PosterCard";
+import { ANIME_CATEGORIES, GENERIC_CATEGORIES } from "../components/CategoryPicker";
+import { Button, FilterChip, InputChip, ListGroup, ListRow, Menu, Panel, SegmentedControl, StateMessage, Tabs } from "../components/ui";
+import { ChevronDown, Filter } from "../components/icons";
+import "../styles/browse.css";
 
 type Section = "anime" | "movies" | "series" | "asian";
+type Opt = { value: string; label: string };
 
-const CFG: Record<Section, { title: string; icon: typeof Film; track?: boolean; typeToggle?: boolean; region?: boolean; industry?: boolean }> = {
-  anime: { title: "Anime", icon: Sparkles, track: true, typeToggle: true },
-  movies: { title: "Movies", icon: Film, industry: true },
-  series: { title: "Series", icon: Tv, industry: true },
-  asian: { title: "Asian Drama", icon: Globe, typeToggle: true, region: true },
+const SECTIONS: Opt[] = [{ value: "movies", label: "Movies" }, { value: "series", label: "Series" }, { value: "anime", label: "Anime" }, { value: "asian", label: "Asian" }];
+const SORT_TMDB: Opt[] = [{ value: "popular", label: "Popular" }, { value: "trending", label: "Trending" }, { value: "newest", label: "New releases" }, { value: "toprated", label: "Top rated" }];
+const SORT_ANIME: Opt[] = [{ value: "popular", label: "Popular" }, { value: "trending", label: "Trending" }, { value: "airing", label: "Airing now" }, { value: "latest", label: "New releases" }, { value: "toprated", label: "Top rated" }];
+const CFG: Record<Section, { title: string; sort: Opt[]; type?: boolean; region?: boolean; industry?: boolean; audio?: boolean }> = {
+  movies: { title: "Movies", sort: SORT_TMDB, industry: true },
+  series: { title: "Series", sort: SORT_TMDB, industry: true },
+  anime: { title: "Anime", sort: SORT_ANIME, type: true, audio: true },
+  asian: { title: "Asian", sort: SORT_TMDB, type: true, region: true },
 };
-
-// Film industries → TMDB original-language code. Lets Movies/Series be filtered by
-// Bollywood/Tollywood/etc. (an axis TMDB genres don't cover).
-const INDUSTRIES = [
-  { key: "all", label: "All" },
-  { key: "en", label: "Hollywood" },
-  { key: "hi", label: "Bollywood" },
-  { key: "te", label: "Tollywood" },
-  { key: "ta", label: "Kollywood" },
-  { key: "ml", label: "Mollywood" },
-  { key: "kn", label: "Sandalwood" },
-];
-
-const RANGES = [
-  { key: "day", label: "Today" },
-  { key: "week", label: "This Week" },
-  { key: "month", label: "This Month" },
-  { key: "year", label: "This Year" },
-  { key: "all", label: "All Time" },
-];
-const REGIONS = [
-  { key: "all", label: "All" },
-  { key: "ko", label: "Korean" },
-  { key: "zh", label: "Chinese" },
-  { key: "ja", label: "Japanese" },
-];
-
-type Cat = "popular" | "trending" | "newest" | "toprated" | "random" | "airing" | "latest";
-
-// Anime categories that are inherently 18+/suggestive — hidden from the picker and
-// stripped from the query when the Show 18+ setting is off.
+// Film industries → TMDB original-language code (an axis TMDB genres don't cover).
+const INDUSTRIES: Opt[] = [{ value: "all", label: "All industries" }, { value: "en", label: "Hollywood" }, { value: "hi", label: "Bollywood" }, { value: "te", label: "Tollywood" }, { value: "ta", label: "Kollywood" }, { value: "ml", label: "Mollywood" }, { value: "kn", label: "Sandalwood" }];
+const REGIONS: Opt[] = [{ value: "all", label: "All regions" }, { value: "ko", label: "Korean" }, { value: "zh", label: "Chinese" }, { value: "ja", label: "Japanese" }];
+const RANGES: Opt[] = [{ value: "day", label: "Today" }, { value: "week", label: "This week" }, { value: "month", label: "This month" }, { value: "year", label: "This year" }, { value: "all", label: "All time" }];
+const TYPES = [{ value: "all", label: "All" }, { value: "tv", label: "Series" }, { value: "movie", label: "Movies" }] as const;
+// 18+ anime categories: hidden (and dropped from the URL) while Show 18+ is off.
 const ADULT_ANIME_CATS = new Set(["ecchi", "harem", "shoujoai", "shounenai"]);
+const label = (opts: Opt[], v: string) => opts.find((o) => o.value === v)?.label ?? opts[0].label;
 
-/** Number of columns the auto-fill grid currently shows (min 160px col + 16px gap). */
-function useColumns(ref: React.RefObject<HTMLElement | null>) {
-  const [cols, setCols] = useState(6);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const measure = () => {
-      const w = el.clientWidth;
-      const n = Math.max(1, Math.floor((w + 16) / (160 + 16)));
-      setCols(n);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [ref]);
-  return cols;
+/** Pages of a browse view, appended by infinite scroll. Keyed like useBrowse (+ lang/adult). */
+function useBrowsePages(section: string, opts: BrowseOpts) {
+  const { lang, adult } = useSettings();
+  return useInfiniteQuery({
+    queryKey: ["browse-pages", section, opts, lang, adult],
+    queryFn: ({ signal, pageParam }) => api.browse(section, { ...opts, page: pageParam }, signal),
+    initialPageParam: 1,
+    getNextPageParam: (last) => (last.page < last.totalPages ? last.page + 1 : undefined),
+    placeholderData: (prev) => prev,
+  });
 }
 
+/**
+ * Browse (pages.md §2): one toolbar row (sort · type · audio · Filters), everything else in
+ * the Filters panel. All state lives in the URL (?cat=&range=&type=&region=&ol=&genres=),
+ * so Back/refresh/share restore the view. Routes are keyed per section (App.tsx).
+ */
 export default function Browse({ section }: { section: Section }) {
   const cfg = CFG[section];
-  const Icon = cfg.icon;
-
-  // Anime defaults to "Latest" (recently-aired episodes, like anikoto's home); other
-  // sections default to Popular.
-  const [cat, setCat] = useState<Cat>(cfg.track ? "latest" : "popular");
-  const [range, setRange] = useState("week");
-  const [type, setType] = useState<"all" | "tv" | "movie">("all");
-  const [region, setRegion] = useState("all");
-  const [industry, setIndustry] = useState("all");
-  const [genres, setGenres] = useState<string[]>([]);
-  const [page, setPage] = useState(1);
-  const [nonce, setNonce] = useState(0);
-  const [rangeOpen, setRangeOpen] = useState(false);
+  const [params, setParams] = useSearchParams();
   const { adult, anime } = useSettings();
+  const [panel, setPanel] = useState(false);
+  useDocTitle(cfg.title);
 
-  const gridRef = useRef<HTMLDivElement>(null);
-  const cols = useColumns(gridRef);
+  const cat = params.get("cat") ?? "popular";
+  const ranged = cat === "trending" || cat === "toprated" || cat === "newest";
+  const range = params.get("range") ?? (cat === "toprated" ? "all" : "week");
+  const type = params.get("type") ?? "all";
+  const region = params.get("region") ?? "all";
+  const industry = params.get("ol") ?? "all";
+  const genres = (params.get("genres") ?? "").split(",").filter((g) => g && (adult || !ADULT_ANIME_CATS.has(g)));
+  const nonce = Number(params.get("r")) || 0;
+  const categories = section === "anime" ? ANIME_CATEGORIES.filter((c) => adult || !ADULT_ANIME_CATS.has(c.key)) : GENERIC_CATEGORIES;
+  const catLabel = Object.fromEntries(categories.map((c) => [c.key, c.label]));
 
-  // Data via TanStack Query — cancels the in-flight request on any filter change,
-  // caches results, and keys on lang/adult (inside the hook). `nonce` re-rolls Random.
-  // Anime: "Dub" also filters the grid to titles with a known dub (best-effort);
-  // "Sub" shows everything (all anime are subbed). It doubles as the playback pref.
-  const audio = cfg.track && anime === "dub" ? "dub" : undefined;
-  const browseQ = useBrowse(section, { cat, type: cfg.typeToggle ? type : undefined, range, region: cfg.region ? region : undefined, ol: cfg.industry ? industry : undefined, audio, genres, page, nonce });
-  const items = browseQ.isError ? [] : browseQ.data?.items ?? null;
-  const totalPages = browseQ.data?.totalPages ?? 1;
+  /** Patch the URL. Default values are dropped so shared links stay short. */
+  const set = (patch: Record<string, string | null>) => {
+    const p = new URLSearchParams(params);
+    for (const [k, v] of Object.entries(patch)) (v == null || v === "" || (v === "all" && k !== "range") ? p.delete(k) : p.set(k, v));
+    p.delete("page");
+    setParams(p);
+  };
+  const pickSort = (c: string) => set({ cat: c === "popular" ? null : c, range: null, r: null });
+  const surprise = () => { set({ cat: "random", range: null, r: String(nonce + 1) }); setPanel(false); };
+  const toggleGenre = (g: string) => set({ genres: (genres.includes(g) ? genres.filter((x) => x !== g) : [...genres, g]).join(",") || null });
+  const setAudio = (v: "sub" | "dub") => updateSettings({ anime: v });
+  const clearFilters = () => set({ genres: null, type: null, region: null, ol: null });
 
-  // reset state when the section changes
-  useEffect(() => { setCat(cfg.track ? "latest" : "popular"); setType("all"); setRegion("all"); setIndustry("all"); setGenres([]); setPage(1); }, [section, cfg.track]);
+  // Anime "Dub" also narrows the grid to titles with a known dub and is the playback default.
+  const audio = cfg.audio && anime === "dub" ? "dub" : undefined;
+  const q = useBrowsePages(section, {
+    cat, range: ranged ? range : undefined, type: cfg.type ? type : undefined, region: cfg.region ? region : undefined,
+    ol: cfg.industry ? industry : undefined, audio, genres, nonce,
+  });
+  const seen = new Set<string>();
+  const items: Card[] = [];
+  for (const c of q.data?.pages.flatMap((p) => p.items) ?? []) { const k = `${c.type}-${c.id}`; if (!seen.has(k)) { seen.add(k); items.push(c); } }
 
-  // When 18+ is off, drop any explicitly-adult anime category the user had selected
-  // (and they're hidden from the picker below) so ecchi/harem aren't requested.
-  useEffect(() => { if (!adult) setGenres((g) => g.filter((k) => !ADULT_ANIME_CATS.has(k))); }, [adult]);
+  // infinite scroll: fetch the next page when the sentinel nears the viewport
+  const sentinel = useRef<HTMLDivElement>(null);
+  const { hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage } = q;
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || !hasNextPage || isFetchNextPageError) return;   // after a failed page, only the button retries
+    const io = new IntersectionObserver(([e]) => { if (e.isIntersecting && !isFetchingNextPage) fetchNextPage(); }, { rootMargin: "800px 0px" });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasNextPage, isFetchingNextPage, isFetchNextPageError, fetchNextPage, items.length]);
 
-  function pickCat(c: Cat) {
-    setCat(c); setPage(1);
-    if (c === "random") setNonce((n) => n + 1);
-    // sensible default time-range per category (Reddit-style)
-    if (c === "trending") setRange("week");
-    else if (c === "toprated") setRange("all");
-  }
+  const activeCount = genres.length + (type !== "all" && cfg.type ? 1 : 0) + (region !== "all" && cfg.region ? 1 : 0) + (industry !== "all" && cfg.industry ? 1 : 0);
+  const typeLabel = TYPES.find((t) => t.value === type)?.label;
+  const sortOpts = cfg.sort;
+  const sortLabel = cat === "random" ? "Surprise" : label(sortOpts, cat);
+  const mixed = cfg.type && type === "all";
 
-  const showRange = cat === "trending" || cat === "toprated";
-  // Render every result. (Previously trimmed to whole rows for a tidy grid, but on
-  // the last page that permanently hid the trailing 1..cols-1 items with no way to
-  // reach them.) A short final row is fine; nothing gets dropped.
-  const shown = items;
+  const filtersBtn = (
+    <Button variant="secondary" className="browse-filters-btn" icon={<Filter size={18} />} onClick={() => setPanel(true)} aria-haspopup="dialog" aria-label={`Filters${activeCount ? `, ${activeCount} applied` : ""}`}>
+      <span className="browse-xs-hide">Filters</span>{activeCount > 0 && <span className="badge">{activeCount}</span>}
+    </Button>
+  );
+  const typeSeg = cfg.type && <SegmentedControl label="Type" value={type} onChange={(v) => set({ type: v })} options={TYPES.map((t) => ({ ...t }))} />;
+  const audioSeg = cfg.audio && <SegmentedControl label="Audio" value={anime} onChange={setAudio} options={[{ value: "sub", label: "Sub" }, { value: "dub", label: "Dub" }]} />;
+  const rangeMenu = ranged && (
+    <Menu label="Time range" items={RANGES.map((o) => ({ label: o.label, checked: o.value === range, onSelect: () => set({ range: o.value }) }))}
+      trigger={(p) => <Button {...p} variant="ghost">{label(RANGES, range)} <ChevronDown size={16} aria-hidden="true" /></Button>} />
+  );
 
   return (
-    <div className="container">
-      <div className="anime-head">
-        <h1 className="page-title"><Icon size={22} style={{ verticalAlign: -4, marginRight: 8, color: "var(--accent)" }} />{cfg.title}</h1>
-        <div className="anime-tabs">
-          {cfg.track && <button className={`atab ${cat === "latest" ? "active" : ""}`} onClick={() => pickCat("latest")}>Latest</button>}
-          <button className={`atab ${cat === "popular" ? "active" : ""}`} onClick={() => pickCat("popular")}>{cfg.track ? "Popular" : "All"}</button>
-          <button className={`atab ${cat === "trending" ? "active" : ""}`} onClick={() => pickCat("trending")}>Trending</button>
-          {cfg.track && <button className={`atab ${cat === "airing" ? "active" : ""}`} onClick={() => pickCat("airing")}>Airing</button>}
-          <button className={`atab ${cat === "newest" ? "active" : ""}`} onClick={() => pickCat("newest")}>Newest</button>
-          <button className={`atab ${cat === "toprated" ? "active" : ""}`} onClick={() => pickCat("toprated")}>Top Rated</button>
-          <button className={`atab ${cat === "random" ? "active" : ""}`} onClick={() => pickCat("random")}>Random</button>
+    <div className="container browse">
+      <h1 className="sr-only">{cfg.title}</h1>
+      {/* phones: section switch (the header has no section nav there) */}
+      <nav className="browse-sections" aria-label="Sections">
+        {SECTIONS.map((s) => <NavLink key={s.value} to={`/${s.value}`} className="browse-section">{s.label}</NavLink>)}
+      </nav>
 
-          {showRange && (
-            <div className="menu-wrap" style={{ marginLeft: "var(--space-1)" }}>
-              <button className="btn btn-sm" onClick={() => setRangeOpen((v) => !v)} onBlur={() => setTimeout(() => setRangeOpen(false), 150)}>
-                {RANGES.find((r) => r.key === range)?.label} <ChevronDown size={14} />
-              </button>
-              {rangeOpen && (
-                <div className="menu below right">
-                  <div className="menu-label">Time range</div>
-                  {RANGES.map((r) => (
-                    <button key={r.key} className={`menu-item ${range === r.key ? "active" : ""}`} onMouseDown={() => { setRange(r.key); setPage(1); setRangeOpen(false); }}>{r.label}</button>
-                  ))}
-                </div>
-              )}
-            </div>
+      <div className="browse-toolbar">
+        <Tabs id="sort" label="Sort" className="browse-sort-tabs" value={cat} onChange={pickSort}
+          items={sortOpts.map((o) => ({ value: o.value, label: o.label }))} />
+        <Menu label="Sort" items={sortOpts.map((o) => ({ label: o.label, checked: o.value === cat, onSelect: () => pickSort(o.value) }))}
+          trigger={(p) => <Button {...p} variant="secondary" className="browse-sort-menu"><span className="browse-xs-hide">Sort: </span>{sortLabel} <ChevronDown size={16} aria-hidden="true" /></Button>} />
+        {rangeMenu && <span className="browse-wide-only">{rangeMenu}</span>}
+        <div className="browse-tools">
+          {cfg.industry && (
+            <Menu label="Film industry" align="end" items={INDUSTRIES.map((o) => ({ label: o.label, checked: o.value === industry, onSelect: () => set({ ol: o.value }) }))}
+              trigger={(p) => <Button {...p} variant="secondary" className="browse-wide-only">{label(INDUSTRIES, industry)} <ChevronDown size={16} aria-hidden="true" /></Button>} />
           )}
-        </div>
-        {/* Pagination lives OUTSIDE the scrollable tab row so the next-page button is
-            always visible on mobile (previously it scrolled off the right edge). */}
-        <div className="anime-pager">
-          <button className="btn btn-icon btn-ghost btn-sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} aria-label="Previous page"><ChevronLeft size={16} /></button>
-          <span className="mono subtle" style={{ fontSize: "var(--text-xs)", minWidth: 28, textAlign: "center" }}>{page}</span>
-          <button className="btn btn-icon btn-ghost btn-sm" disabled={page >= totalPages} onClick={() => setPage((p) => p + 1)} aria-label="Next page"><ChevronRight size={16} /></button>
+          {typeSeg && <span className="browse-wide-only">{typeSeg}</span>}
+          {audioSeg}
+          {filtersBtn}
+          <Button variant="ghost" className="browse-wide-only" onClick={surprise}>Surprise me</Button>
         </div>
       </div>
 
-      {(cfg.typeToggle || cfg.region || cfg.industry || cfg.track) && (
-        <div className="anime-toolbar">
-          {cfg.industry && (
-            <div className="segmented">
-              {INDUSTRIES.map((i) => (
-                <button key={i.key} className={`seg-opt ${industry === i.key ? "active" : ""}`} onClick={() => { setIndustry(i.key); setPage(1); }}>{i.label}</button>
-              ))}
-            </div>
-          )}
-          {cfg.typeToggle && (
-            <div className="segmented">
-              <button className={`seg-opt ${type === "all" ? "active" : ""}`} onClick={() => { setType("all"); setPage(1); }}>All</button>
-              <button className={`seg-opt ${type === "tv" ? "active" : ""}`} onClick={() => { setType("tv"); setPage(1); }}>Series</button>
-              <button className={`seg-opt ${type === "movie" ? "active" : ""}`} onClick={() => { setType("movie"); setPage(1); }}>Movies</button>
-            </div>
-          )}
-          {/* Audio: filters the grid AND sets the default playback track. "Dub" shows
-              only titles with a known dub (best-effort — MyDubList, since AniList has no
-              dub data) and makes the player prefer the dubbed source/track; "Sub" shows
-              all anime (everything is subbed). */}
-          {cfg.track && (
-            <div className="seg-labeled" title="Sub shows all anime; Dub shows only titles with a known dub and defaults playback to the dubbed source">
-              <span className="seg-cap">Audio</span>
-              <div className="segmented">
-                <button className={`seg-opt ${anime === "sub" ? "active" : ""}`} onClick={() => { updateSettings({ anime: "sub" }); setPage(1); }}>Sub</button>
-                <button className={`seg-opt ${anime === "dub" ? "active" : ""}`} onClick={() => { updateSettings({ anime: "dub" }); setPage(1); }}>Dub</button>
-              </div>
-            </div>
-          )}
-          {cfg.region && (
-            <div className="segmented">
-              {REGIONS.map((r) => (
-                <button key={r.key} className={`seg-opt ${region === r.key ? "active" : ""}`} onClick={() => { setRegion(r.key); setPage(1); }}>{r.label}</button>
-              ))}
-            </div>
-          )}
+      {activeCount > 0 && (
+        <div className="browse-applied" aria-label="Applied filters">
+          {cfg.type && type !== "all" && <InputChip onRemove={() => set({ type: null })} removeLabel={`Remove ${typeLabel}`}>{typeLabel}</InputChip>}
+          {cfg.industry && industry !== "all" && <InputChip onRemove={() => set({ ol: null })} removeLabel={`Remove ${label(INDUSTRIES, industry)}`}>{label(INDUSTRIES, industry)}</InputChip>}
+          {cfg.region && region !== "all" && <InputChip onRemove={() => set({ region: null })} removeLabel={`Remove ${label(REGIONS, region)}`}>{label(REGIONS, region)}</InputChip>}
+          {genres.map((g) => <InputChip key={g} onRemove={() => toggleGenre(g)} removeLabel={`Remove ${catLabel[g] ?? g}`}>{catLabel[g] ?? g}</InputChip>)}
+          <Button variant="ghost" size="sm" onClick={clearFilters}>Clear all</Button>
         </div>
       )}
 
-      <div style={{ marginBottom: "var(--space-5)" }}>
-        <CategoryPicker selected={genres} onChange={(g) => { setGenres(g); setPage(1); }} categories={section === "anime" ? (adult ? ANIME_CATEGORIES : ANIME_CATEGORIES.filter((c) => !ADULT_ANIME_CATS.has(c.key))) : GENERIC_CATEGORIES} />
-      </div>
+      {q.isError && !items.length ? (
+        <StateMessage kind="error" title={`Couldn't load ${cfg.title.toLowerCase()}.`} body="Check your connection and try again." details={String(q.error)}
+          actions={<Button variant="solid" onClick={() => q.refetch()} loading={q.isFetching}>Try again</Button>} />
+      ) : q.isPending ? (
+        <div className="grid" aria-busy="true">{Array.from({ length: 18 }, (_, i) => <PosterSkeleton key={i} />)}</div>
+      ) : items.length === 0 ? (
+        <StateMessage kind="empty" title="No titles match these filters." body="Remove a filter or two to see more."
+          actions={activeCount > 0 ? <Button variant="solid" onClick={clearFilters}>Clear filters</Button> : undefined} />
+      ) : (
+        <>
+          <div className={`grid${q.isPlaceholderData ? " is-stale" : ""}`} aria-busy={q.isPlaceholderData || undefined}>
+            {items.map((c) => <PosterCard key={`${c.type}-${c.id}`} card={c} showType={mixed} />)}
+            {isFetchingNextPage && Array.from({ length: 6 }, (_, i) => <PosterSkeleton key={`s${i}`} />)}
+          </div>
+          <div ref={sentinel} className="browse-end">
+            {q.isFetchNextPageError
+              ? <Button onClick={() => fetchNextPage()}>Couldn't load more. Try again</Button>
+              : !hasNextPage && <p>That's everything for these filters.</p>}
+          </div>
+        </>
+      )}
 
-      <div className="grid" ref={gridRef}>
-        {!shown
-          ? Array.from({ length: cols * 3 }).map((_, i) => <div className="skeleton" key={i} style={{ aspectRatio: "2/3" }} />)
-          : shown.length === 0
-            ? <div className="empty" style={{ gridColumn: "1 / -1" }}>Nothing found for this filter.</div>
-            : shown.map((c) => (
-              <PosterCard key={`${c.type}-${c.id}`} card={c} />
-            ))}
-      </div>
+      <Panel open={panel} onClose={() => setPanel(false)} title="Filters"
+        footer={<>
+          <Button variant="ghost" onClick={clearFilters} disabled={activeCount === 0}>Clear</Button>
+          <Button variant="solid" onClick={() => setPanel(false)}>Show results</Button>
+        </>}>
+        <div className="browse-panel">
+          {cfg.type && (
+            <section className="browse-panel-sec browse-narrow-only">
+              <h3>Type</h3>
+              <SegmentedControl label="Type" value={type} onChange={(v) => set({ type: v })} options={TYPES.map((t) => ({ ...t }))} />
+            </section>
+          )}
+          {ranged && (
+            <section className="browse-panel-sec browse-narrow-only">
+              <h3>Time range</h3>
+              <ListGroup role="radiogroup" label="Time range">
+                {RANGES.map((o) => <ListRow key={o.value} kind="choice" title={o.label} checked={o.value === range} onClick={() => set({ range: o.value })} />)}
+              </ListGroup>
+            </section>
+          )}
+          {cfg.region && (
+            <section className="browse-panel-sec">
+              <h3>Region</h3>
+              <ListGroup role="radiogroup" label="Region">
+                {REGIONS.map((o) => <ListRow key={o.value} kind="choice" title={o.label} checked={o.value === region} onClick={() => set({ region: o.value })} />)}
+              </ListGroup>
+            </section>
+          )}
+          {cfg.industry && (
+            <section className="browse-panel-sec">
+              <h3>Industry</h3>
+              <ListGroup role="radiogroup" label="Film industry">
+                {INDUSTRIES.map((o) => <ListRow key={o.value} kind="choice" title={o.label} checked={o.value === industry} onClick={() => set({ ol: o.value })} />)}
+              </ListGroup>
+            </section>
+          )}
+          <section className="browse-panel-sec">
+            <h3>Genres</h3>
+            <div className="browse-chips">
+              {categories.map((c) => <FilterChip key={c.key} selected={genres.includes(c.key)} onClick={() => toggleGenre(c.key)}>{c.label}</FilterChip>)}
+            </div>
+          </section>
+          <section className="browse-panel-sec browse-narrow-only">
+            <Button variant="secondary" onClick={surprise}>Surprise me</Button>
+          </section>
+        </div>
+      </Panel>
     </div>
   );
 }

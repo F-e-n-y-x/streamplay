@@ -10,8 +10,15 @@ client/dist
 .env
 .env.local
 sync-data.json
+provider-stats.json
+server-config.json
 cloudflare_debug.png
 *.log
+
+# Not needed in the image
+test
+docs
+*.tsbuildinfo
 
 # Reference material & meta
 StreamPlay-og repo

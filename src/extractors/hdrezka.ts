@@ -1,6 +1,7 @@
-import axios from 'axios';
+import net from '../utils/net';
 import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
+import { norm } from '../utils/season';
 
 /**
  * HDRezka (rezka.ag) — a very large movies + series catalogue with multiple audio
@@ -22,7 +23,6 @@ import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types'
 const BASE = (process.env.HDREZKA_BASE_URL || 'https://rezka.ag').replace(/\/+$/, '');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 const HEADERS = { 'User-Agent': UA, Referer: `${BASE}/`, 'Accept-Language': 'en-US,en;q=0.9' };
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /**
  * Decode HDRezka's obfuscated stream string. Plain responses start with "[" and pass
@@ -90,7 +90,7 @@ function parseSearch(html: string): Hit[] {
 /** POST the CDN ajax and return the decoded {streams, subs}. */
 async function cdnAjax(body: Record<string, string>): Promise<{ streams: { quality: string; url: string }[]; subs: Subtitle[] }> {
     const form = new URLSearchParams({ ...body, is_camrip: '0', is_ads: '0', is_director: '0' }).toString();
-    const r = await axios.post(`${BASE}/ajax/get_cdn_series/?t=${Date.now()}`, form, {
+    const r = await net.post(`${BASE}/ajax/get_cdn_series/?t=${Date.now()}`, form, {
         headers: { ...HEADERS, 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
         timeout: 15000,
     });
@@ -111,14 +111,16 @@ export const HDRezkaProvider: Provider = {
             const queries = [...new Set([data.title, data.orgTitle].filter(Boolean) as string[])];
             let hits: Hit[] = [];
             for (const q of queries) {
-                const r = await axios.get(`${BASE}/search/?do=search&subaction=search&q=${encodeURIComponent(q)}`, { headers: HEADERS, timeout: 15000 });
+                const r = await net.get(`${BASE}/search/?do=search&subaction=search&q=${encodeURIComponent(q)}`, { headers: HEADERS, timeout: 15000 });
                 hits = parseSearch(r.data);
                 if (hits.length) break;
             }
             if (!hits.length) return { streams, subtitles };
 
             const wantSeries = data.type === 'tv';
-            const wantYear = data.seasonYear || data.year;
+            // Search cards carry the series' FIRST-air year, so compare against data.year
+            // (seasonYear of S3 would penalise the right show).
+            const wantYear = data.year;
             const want = norm(data.title), wantOrg = data.orgTitle ? norm(data.orgTitle) : '';
             const pick = hits.map((h) => {
                 let s = h.isSeries === wantSeries ? 2 : -3;          // right medium first
@@ -132,7 +134,7 @@ export const HDRezkaProvider: Provider = {
             const hit = pick.h;
 
             // 2) film page → translators (+ the default one from the CDN init call)
-            const page = (await axios.get(hit.url, { headers: HEADERS, timeout: 15000 })).data as string;
+            const page = (await net.get(hit.url, { headers: HEADERS, timeout: 15000 })).data as string;
             const $ = cheerio.load(page);
             const translators: { id: string; name: string }[] = [];
             $('#translators-list li[data-translator_id]').each((_i, el) => {
@@ -164,7 +166,7 @@ export const HDRezkaProvider: Provider = {
                         server: `HDRezka · ${res.tr.name}${st.quality ? ` ${st.quality}p` : ''}`,
                         link: st.url,
                         type: /\.m3u8/i.test(st.url) ? 'm3u8' : 'mp4',
-                        quality: st.quality || undefined,
+                        quality: st.quality ? `${st.quality}p` : undefined,
                         headers: { Referer: `${BASE}/`, 'User-Agent': UA },
                     });
                 }

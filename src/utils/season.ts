@@ -28,3 +28,16 @@ export function seasonScore(title: string, wanted: number, seasonYear?: number):
     if (ym && seasonYear) score += Number(ym[1]) === seasonYear ? 2 : -1;
     return score;
 }
+
+/** Zero-pad to 2 digits (S1 → "01", 12 → "12"). */
+export const pad2 = (n?: number): string => String(n).padStart(2, '0');
+
+/** Title comparison key: lowercase, apostrophes dropped ("Journey's" → "journeys", as in
+ *  slugs), every other non-alphanumeric run collapsed to one space. */
+export const norm = (s: string): string => s.toLowerCase().replace(/['’]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** "S01" / "S1" / "Season 1" / "Season 01" for season `s` — never S10 / Season 12. */
+export const seasonRe = (s: number): RegExp => new RegExp(`\\b(?:S|Season\\s*)0*${s}(?!\\d)`, 'i');
+
+/** "Episode 1" / "Episodes: 01" / "Ep 1" / "E01" (incl. inside "S01E01") — never Episode 10. */
+export const episodeRe = (e: number): RegExp => new RegExp(`(?:\\b(?:Episodes?|Ep)\\s*[:.-]?\\s*|(?<![a-z])E)0*${e}(?!\\d)`, 'i');

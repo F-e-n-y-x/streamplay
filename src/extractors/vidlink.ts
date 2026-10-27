@@ -1,69 +1,46 @@
-import axios from 'axios';
+import net from '../utils/net';
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { encDecGet, USER_AGENT } from '../utils/encdec';
+import { HAKU_HEADERS } from './moviebox';
 
 const VIDLINK_API = 'https://vidlink.pro';
 
+/**
+ * VidLink — enc-dec.app encrypts the TMDB id, `/api/b/...` returns either an HLS
+ * `playlist` (+ optional `?headers=` JSON) or a `file` stream with per-quality mp4s
+ * (MovieBox's hakunaymatata CDN — see HAKU_HEADERS) plus `captions`.
+ */
 export const VidlinkProvider: Provider = {
     id: 'vidlink',
     name: 'Vidlink',
     invoke: async (data: LinkData): Promise<ExtractorResult> => {
         const result: ExtractorResult = { streams: [], subtitles: [] };
-        if (data.isAnime) return result;
-        if (!data.id) return result;
+        if (data.isAnime || !data.id) return result;
+        const enc = (await encDecGet(`enc-vidlink?text=${data.id}`))?.result;
+        if (!enc) return result;
 
-        try {
-            // Step 1: Encrypt TMDB ID using enc-dec.app
-            const encUrl = `https://enc-dec.app/api/enc-vidlink?text=${data.id}`;
-            const encResponse = await axios.get(encUrl, { timeout: 10000 });
-            const encData = encResponse.data?.result;
-            
-            console.log("[Vidlink] encData:", encData);
-            if (!encData) return result;
+        const headers = { 'User-Agent': USER_AGENT, Referer: `${VIDLINK_API}/`, Origin: VIDLINK_API };
+        const apiUrl = data.season == null
+            ? `${VIDLINK_API}/api/b/movie/${enc}`
+            : `${VIDLINK_API}/api/b/tv/${enc}/${data.season}/${data.episode}`;
+        const stream = (await net.get(apiUrl, { headers, timeout: 12000 })).data?.stream;
+        if (!stream) return result;
 
-            const headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36",
-                "Connection": "keep-alive",
-                "Referer": `${VIDLINK_API}/`,
-                "Origin": VIDLINK_API
-            };
-
-            const apiUrl = data.season == null 
-                ? `${VIDLINK_API}/api/b/movie/${encData}` 
-                : `${VIDLINK_API}/api/b/tv/${encData}/${data.season}/${data.episode}`;
-            
-            console.log("[Vidlink] Fetching API:", apiUrl);
-
-            // Step 2: Fetch M3U8 endpoint
-            const epResponse = await axios.get(apiUrl, { headers, timeout: 10000 });
-            const streamData = epResponse.data?.stream;
-            
-            console.log("[Vidlink] StreamData:", !!streamData);
-            
-            if (!streamData || !streamData.playlist) return result;
-
-            // Optional headers embedded in the query string
-            const urlObj = new URL(streamData.playlist);
-            const headersJsonStr = urlObj.searchParams.get('headers');
-            
+        if (stream.playlist) {
             const reqHeaders: Record<string, string> = { ...headers };
-            if (headersJsonStr) {
-                try {
-                    const parsedHeaders = JSON.parse(decodeURIComponent(headersJsonStr));
-                    Object.assign(reqHeaders, parsedHeaders);
-                } catch(e) {}
-            }
-
-            result.streams.push({
-                server: 'Vidlink',
-                link: streamData.playlist,
-                type: 'm3u8',
-                headers: reqHeaders
-            });
-
-        } catch (error) {
-            console.error('Error in Vidlink extractor:', error);
+            try { Object.assign(reqHeaders, JSON.parse(new URL(stream.playlist).searchParams.get('headers') || '{}')); } catch { /* none */ }
+            result.streams.push({ server: 'Vidlink', link: stream.playlist, type: 'm3u8', headers: reqHeaders });
         }
-
+        for (const [q, f] of Object.entries<any>(stream.qualities || {})) {
+            if (!f?.url) continue;
+            result.streams.push({
+                server: `Vidlink · ${q}p`, link: f.url, quality: `${q}p`,
+                type: f.type === 'hls' || /\.m3u8/.test(f.url) ? 'm3u8' : 'mp4',
+                headers: f.headers && Object.keys(f.headers).length ? f.headers : HAKU_HEADERS,
+            });
+        }
+        result.streams.sort((a, b) => (parseInt(b.quality || '0') || 0) - (parseInt(a.quality || '0') || 0));
+        for (const c of stream.captions || []) if (c?.url) result.subtitles.push({ language: c.language || 'Unknown', url: c.url });
         return result;
-    }
+    },
 };

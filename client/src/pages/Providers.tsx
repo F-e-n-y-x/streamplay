@@ -1,96 +1,101 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { api, type DiagInfo } from "../lib/api";
+import { useMemo, useState } from "react";
+import type { DiagInfo } from "../lib/api";
+import { useDocTitle } from "../lib/useDocTitle";
 import type { ProviderHealth, ProviderInfo } from "../lib/types";
-import { useProviders, useProvidersHealth } from "../lib/queries";
-import { useSettings, updateSettings } from "../lib/settings";
-import { Activity, Zap } from "../components/icons";
+import { useDiag, useProviders, useProvidersHealth } from "../lib/queries";
+import { useSettings } from "../lib/settings";
+import { warpLabel } from "./settings/Server";
+import { Button, StateMessage, StatusDot } from "../components/ui";
+import { ChevronLeft } from "../components/icons";
+import "../styles/settings.css";
 
-/** FlareSolverr + WARP connectivity panel — up/ping/version + the egress IP each
- *  uses, so you can confirm traffic really leaves through WARP (IP differs from the
- *  server's direct IP) and every solver is reachable. */
-export function ConnectionsPanel() {
-  const [diag, setDiag] = useState<DiagInfo | null>(null);
-  const [testing, setTesting] = useState(false);
-  const mounted = useRef(true);
-  // Set true on (re)mount, not just once at init — otherwise React 18 StrictMode's
-  // mount→cleanup→remount leaves it permanently false and every guarded setState is
-  // skipped, freezing the panel on "Probing…" in dev.
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  const run = () => { setTesting(true); api.diag().then((d) => mounted.current && setDiag(d)).catch(() => mounted.current && setDiag(null)).finally(() => mounted.current && setTesting(false)); };
-  useEffect(run, []);
+type DiagNode = DiagInfo["flaresolverr"][number];
 
-  const Node = ({ n, kind }: { n: DiagInfo["flaresolverr"][number]; kind: string }) => {
-    const proxied = !!(diag?.directIp && n.ip && n.ip !== diag.directIp);
-    return (
-      <div className="conn-row">
-        <span className={`dot ${n.up ? "found" : "failed"}`} />
-        <span className="mono conn-host">{n.host}</span>
-        <span className="subtle">{kind}</span>
-        <span className="grow" style={{ flex: 1 }} />
-        {n.up ? <span className="mono subtle">{n.latencyMs}ms</span> : <span className="badge badge-error">{n.error || "down"}</span>}
-        {n.version && <span className="badge">v{n.version}</span>}
-        {n.ip && <span className={`badge ${proxied ? "badge-success" : "badge-warning"}`} title={proxied ? "egress via WARP (differs from server IP)" : "egress IP matches the server — NOT going through WARP"}>{n.ip}{proxied ? " ✓WARP" : " ⚠direct"}</span>}
-      </div>
-    );
-  };
+function ago(ts: number): string {
+  const m = Math.round((Date.now() - ts) / 60_000);
+  return m < 1 ? "just now" : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+}
 
+/** FlareSolverr + WARP: reachable, latency, version, and the egress IP each one uses
+ *  (a different IP from the server's means traffic really leaves through WARP). */
+function Connections() {
+  const { data: diag, isFetching, isError, refetch } = useDiag();
+  const { warp } = useSettings();
+  const nodes: (DiagNode & { kind: string })[] = diag ? [
+    ...diag.flaresolverr.map((n) => ({ ...n, kind: "FlareSolverr" })),
+    ...diag.warpSocks.map((n) => ({ ...n, kind: "WARP proxy" })),
+  ] : [];
   return (
-    <div className="conn-panel">
-      <div className="toolbar" style={{ marginBottom: "var(--space-3)" }}>
-        <h2 style={{ margin: 0, fontSize: "var(--text-lg)" }}>Connections</h2>
-        <span className="grow" style={{ flex: 1 }} />
-        {diag && <span className="badge">WARP: {diag.warpMode}</span>}
-        {diag?.directIp && <span className="badge" title="Server's direct egress IP (no proxy)">server IP {diag.directIp}</span>}
-        <button className="btn btn-sm" onClick={run} disabled={testing}>{testing ? "Testing…" : "Test connections"}</button>
+    <section className="ph-section" aria-labelledby="conn-h">
+      <div className="ph-head">
+        <h2 id="conn-h" className="t-h2">Connections</h2>
+        <Button size="sm" variant="ghost" loading={isFetching} onClick={() => refetch()}>Check again</Button>
       </div>
       {!diag ? (
-        <div className="note">{testing ? "Probing FlareSolverr + WARP…" : "Click “Test connections”."}</div>
-      ) : (!diag.flaresolverr.length && !diag.warpSocks.length) ? (
-        <div className="note">No FlareSolverr or WARP configured (set <code>FLARESOLVERR_URL</code> / <code>WARP_*</code>).</div>
+        isError ? <StateMessage kind="error" title="Couldn't run the connection test." body="Check that the server is running, then check again." />
+          : <p className="set-desc" role="status">Testing FlareSolverr and WARP…</p>
+      ) : !nodes.length ? (
+        <p className="set-desc">No FlareSolverr or WARP is set up on this server (FLARESOLVERR_URL, WARP_*).</p>
       ) : (
-        <div className="conn-list">
-          {diag.flaresolverr.map((n) => <Node key={"fs" + n.host} n={n} kind="FlareSolverr" />)}
-          {diag.warpSocks.map((n) => <Node key={"warp" + n.host} n={n} kind="WARP socks" />)}
-          <div className="note" style={{ marginTop: "var(--space-2)" }}>
-            A green <b>✓WARP</b> IP (different from the server IP) means that solver/proxy is really egressing through Cloudflare WARP. A yellow <b>⚠direct</b> means it's using the server's own IP — WARP isn't taking effect for it.
+        <>
+          <p className="set-desc">WARP: {warp === "off" ? `${warpLabel(diag.warpMode)} (server default)` : `${warpLabel(warp)} on this device · server default ${warpLabel(diag.warpMode)}`}{diag.directIp && <> · server address <span className="mono">{diag.directIp}</span></>}</p>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead><tr><th>Host</th><th>Type</th><th>Status</th><th>Latency</th><th>Version</th><th>Leaves through</th></tr></thead>
+              <tbody>
+                {nodes.map((n) => {
+                  const viaWarp = !!(diag.directIp && n.ip && n.ip !== diag.directIp);
+                  return (
+                    <tr key={n.kind + n.host}>
+                      <td className="mono">{n.host}</td>
+                      <td>{n.kind}</td>
+                      <td><span className="dot-text" title={n.error}><StatusDot tone={n.up ? "success" : "error"} />{n.up ? "Up" : n.error === "ECONNREFUSED" ? "Down (refused)" : "Down"}</span></td>
+                      <td className="mono">{n.up ? `${n.latencyMs} ms` : "–"}</td>
+                      <td className="mono">{n.version ?? "–"}</td>
+                      <td>{n.ip ? <span className="dot-text"><StatusDot tone={viaWarp ? "success" : "warning"} /><span className="mono">{n.ip}</span>&nbsp;{viaWarp ? "WARP" : "direct"}</span> : "–"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
+          <details className="flag-help">
+            <summary>What do these mean?</summary>
+            <p className="set-desc">“Leaves through WARP” means the address differs from the server's own, so that solver or proxy really goes out through Cloudflare WARP. “Direct” means it uses the server's address and WARP isn't taking effect for it.</p>
+          </details>
+        </>
       )}
-    </div>
+    </section>
   );
 }
 
 type SortKey = "name" | "kind" | "host" | "status" | "latency" | "rate" | "priority";
-const DESC_DEFAULT: SortKey[] = ["rate", "priority"]; // higher-is-better → first click sorts desc
+const DESC_FIRST: SortKey[] = ["rate", "priority"];   // higher is better → first click sorts descending
 
+function Th({ k, sort, onSort, children }: { k: SortKey; sort: { key: SortKey; dir: "asc" | "desc" }; onSort: (k: SortKey) => void; children: React.ReactNode }) {
+  const on = sort.key === k;
+  return (
+    <th aria-sort={on ? (sort.dir === "asc" ? "ascending" : "descending") : "none"}>
+      <button type="button" className="th-sort" onClick={() => onSort(k)}>{children}<span aria-hidden="true">{on ? (sort.dir === "asc" ? " ↑" : " ↓") : ""}</span></button>
+    </th>
+  );
+}
+
+/** Settings › Server › Provider health (/settings/providers). For the server owner. */
 export default function Providers() {
-  const { torrentMode } = useSettings();
-  // TanStack Query handles fetch/cache/cancellation (no more hand-rolled `mounted` refs).
+  useDocTitle("Provider health");
   const providersQ = useProviders();
   const healthQ = useProvidersHealth();
   const providers = providersQ.data ?? [];
-  const loading = providersQ.isPending;
-  const checking = healthQ.isFetching;
-  const health = useMemo<Record<string, ProviderHealth>>(
-    () => Object.fromEntries((healthQ.data ?? []).map((h) => [h.id, h])),
-    [healthQ.data],
-  );
-  const runHealth = () => healthQ.refetch();
-  // default: status → latency → name
-  const [sortKey, setSortKey] = useState<SortKey>("status");
-  const [dir, setDir] = useState<"asc" | "desc">("asc");
-
-  function sortBy(key: SortKey) {
-    if (key === sortKey) setDir((d) => (d === "asc" ? "desc" : "asc"));
-    else { setSortKey(key); setDir(DESC_DEFAULT.includes(key) ? "desc" : "asc"); }
-  }
+  const health = useMemo<Record<string, ProviderHealth>>(() => Object.fromEntries((healthQ.data ?? []).map((h) => [h.id, h])), [healthQ.data]);
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "status", dir: "asc" });
+  const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: DESC_FIRST.includes(key) ? "desc" : "asc" }));
 
   const statusRank = (p: ProviderInfo) => { const h = health[p.id]; return !h ? 2 : h.status === "up" ? 0 : 1; };
-  const latency = (p: ProviderInfo) => { const h = health[p.id]; return h && h.status === "up" ? h.latencyMs : Infinity; };
-
+  const latency = (p: ProviderInfo) => { const h = health[p.id]; return h?.status === "up" ? h.latencyMs : Infinity; };
   const sorted = [...providers].sort((a, b) => {
     let r = 0;
-    switch (sortKey) {
+    switch (sort.key) {
       case "name": r = a.name.localeCompare(b.name); break;
       case "kind": r = a.kind.localeCompare(b.kind); break;
       case "host": r = a.host.localeCompare(b.host); break;
@@ -99,90 +104,61 @@ export default function Providers() {
       case "rate": r = (a.stats.successRate || 0) - (b.stats.successRate || 0); break;
       case "priority": r = a.priorityScore - b.priorityScore; break;
     }
-    if (r === 0) r = a.name.localeCompare(b.name); // stable tiebreak by name
-    return dir === "asc" ? r : -r;
+    return (sort.dir === "asc" ? r : -r) || a.name.localeCompare(b.name);
   });
-
-  const upCount = Object.values(health).filter((h) => h.status === "up").length;
-
-  const Th = ({ k, children, style }: { k: SortKey; children: React.ReactNode; style?: React.CSSProperties }) => (
-    <th className={`sortable ${sortKey === k ? "sorted" : ""}`} onClick={() => sortBy(k)} style={style}>
-      {children}<span className="sort-ind">{sortKey === k ? (dir === "asc" ? "↑" : "↓") : ""}</span>
-    </th>
-  );
+  const up = Object.values(health).filter((h) => h.status === "up").length;
+  const p = { sort, onSort };
 
   return (
-    <div className="container">
-      <div className="toolbar">
-        <h1 className="page-title" style={{ margin: 0 }}>Providers</h1>
-        <span className="grow" style={{ flex: 1 }} />
-        <span className="badge"><Activity size={13} /> {providers.length} registered</span>
-        {Object.keys(health).length > 0 && <span className="badge badge-success">{upCount} reachable</span>}
-        <button
-          className={`btn btn-sm ${torrentMode ? "btn-primary" : ""}`}
-          onClick={() => updateSettings({ torrentMode: !torrentMode })}
-          title="Resolve via torrents (anime: AnimeTosho/Nyaa · movies: YTS/TPB · TV: EZTV/TPB) streamed through WebTorrent, instead of the scraper providers. This device only."
-        ><Zap size={14} /> Torrent mode: {torrentMode ? "ON" : "OFF"}</button>
-        <button className="btn btn-sm" onClick={runHealth} disabled={checking}>{checking ? "Pinging…" : "Re-check health"}</button>
+    <div className="container provider-health">
+      <div className="settings-head">
+        <Button className="ph-back" variant="ghost" size="sm" to="/settings/server" icon={<ChevronLeft size={20} />}>Server settings</Button>
+        <h1 className="t-h1">Provider health</h1>
       </div>
+      <p className="ph-summary" role="status">
+        {healthQ.data ? <>{up} of {providers.length} providers reachable · checked {ago(healthQ.dataUpdatedAt)}</>
+          : healthQ.isError ? "Couldn't check the providers." : "Checking every provider…"}
+        <Button size="sm" variant="ghost" loading={healthQ.isFetching} onClick={() => healthQ.refetch()}>Check again</Button>
+      </p>
 
-      {torrentMode && (
-        <div className="note" style={{ borderColor: "var(--accent)" }}>
-          <b>Torrent mode is ON</b> (this device only). Everything resolves via torrents streamed through WebTorrent —
-          anime from AnimeTosho/Nyaa, movies from YTS/The Pirate Bay, TV from EZTV/The Pirate Bay. The scraper
-          providers below are <b>hidden</b> while this is on. Needs peers, so playback starts after a short buffer.
-          Turn it off to use the normal providers.
-        </div>
-      )}
+      <Connections />
 
-      <ConnectionsPanel />
-
-      <div className="note">
-        Health is determined by <b>pinging each provider's host</b> for reachability and latency. Click any column
-        header to sort — the table defaults to <b>status → latency → name</b>.
-      </div>
-
-      <div className="table-wrap">
-        <table className="tbl">
-          <thead>
-            <tr>
-              <Th k="name">Provider</Th>
-              <Th k="kind">Kind</Th>
-              <Th k="host">Host</Th>
-              <Th k="status">Status</Th>
-              <Th k="latency">Latency</Th>
-              <Th k="rate">Success rate</Th>
-              <Th k="priority">Priority</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={7} className="subtle" style={{ padding: "var(--space-6)" }}>Loading…</td></tr>
-            ) : sorted.map((p) => {
-              const h = health[p.id];
-              const rate = Math.round((p.stats.successRate || 0) * 100);
-              return (
-                <tr key={p.id}>
-                  <td>{p.name}{p.needsToken ? <span className="badge" style={{ marginLeft: 8 }}>token</span> : null}</td>
-                  <td><span className="badge">{p.kind}</span></td>
-                  <td className="mono">{p.host.replace(/^https?:\/\//, "")}</td>
-                  <td>
-                    {!h ? <span className="subtle">—</span> : (
-                      <span className="statusdot"><span className={`dot ${h.status === "up" ? "found" : "failed"}`} />{h.status}</span>
-                    )}
-                  </td>
-                  <td className="mono">{h && h.status === "up" ? `${h.latencyMs}ms` : "—"}</td>
-                  <td>
-                    <span className="bar-meter"><span style={{ width: `${rate}%` }} /></span>
-                    <span className="subtle" style={{ marginLeft: 8 }}>{p.stats.successCount + p.stats.failureCount > 0 ? `${rate}%` : "n/a"}</span>
-                  </td>
-                  <td className="mono">{p.stats.isCircuitBroken ? <span className="badge badge-error">broken</span> : Math.round(p.priorityScore)}</td>
+      <section className="ph-section" aria-labelledby="prov-h">
+        <h2 id="prov-h" className="t-h2">Providers</h2>
+        <p className="set-desc">Reachable means the provider's site answered a ping. It doesn't promise every title plays.</p>
+        {providersQ.isError ? (
+          <StateMessage kind="error" title="Couldn't load the provider list." body="Check that the server is running, then try again." actions={<Button variant="solid" onClick={() => providersQ.refetch()}>Try again</Button>} />
+        ) : (
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <Th k="name" {...p}>Provider</Th><Th k="kind" {...p}>Kind</Th><Th k="host" {...p}>Host</Th><Th k="status" {...p}>Status</Th>
+                  <Th k="latency" {...p}>Latency</Th><Th k="rate" {...p}>Success</Th><Th k="priority" {...p}>Priority</Th>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody aria-busy={providersQ.isPending || undefined}>
+                {providersQ.isPending ? Array.from({ length: 8 }, (_, i) => <tr key={i}><td colSpan={7}><div className="skeleton skeleton-text" /></td></tr>)
+                  : sorted.map((pr) => {
+                    const h = health[pr.id];
+                    const tries = pr.stats.successCount + pr.stats.failureCount;
+                    return (
+                      <tr key={pr.id}>
+                        <td>{pr.name}{pr.needsToken && <span className="subtle"> (needs token)</span>}</td>
+                        <td>{pr.kind}</td>
+                        <td className="mono">{pr.host.replace(/^https?:\/\//, "")}</td>
+                        <td>{h ? <span className="dot-text"><StatusDot tone={h.status === "up" ? "success" : "error"} />{h.status === "up" ? "Up" : "Down"}</span> : <span className="subtle">–</span>}</td>
+                        <td className="mono">{h?.status === "up" ? `${h.latencyMs} ms` : "–"}</td>
+                        <td className="mono">{tries ? `${Math.round(pr.stats.successRate * 100)}%` : "–"}</td>
+                        <td className="mono">{pr.stats.isCircuitBroken ? <span className="dot-text"><StatusDot tone="error" />Paused</span> : Math.round(pr.priorityScore)}</td>
+                      </tr>
+                    );
+                  })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

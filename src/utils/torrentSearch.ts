@@ -1,5 +1,9 @@
 import axios from 'axios';
 import { getTorznab } from './serverConfig';
+import { pad2 } from './season';
+
+/** TorrentsDB — a Torrentio-protocol aggregator with different scrapers (1337x, knaben, …). */
+export const TORRENTSDB = 'https://torrentsdb.com';
 
 /**
  * Torrent indexers for the torrent-mode providers (movies / TV / anime).
@@ -48,7 +52,7 @@ export const TRACKERS = [
     'https://tracker.tamersunion.org:443/announce',
 ];
 export const magnetFromHash = (hash: string, name?: string): string =>
-    `magnet:?xt=urn:btih:${hash}&dn=${encodeURIComponent(name || '')}${TRACKERS.map((t) => `&tr=${encodeURIComponent(t)}`).join('')}`;
+    `magnet:?xt=urn:btih:${hash.toLowerCase()}&dn=${encodeURIComponent(name || '')}${TRACKERS.map((t) => `&tr=${encodeURIComponent(t)}`).join('')}`;
 
 /**
  * Debrid config for Torrentio. When any of these env keys is set, Torrentio resolves
@@ -67,7 +71,6 @@ export const debridConfig = (): string => {
     }
     return '';
 };
-export const debridEnabled = (): boolean => !!debridConfig();
 
 /** YTS — movies only. `imdbId` (ttXXXXXXX) gives the most precise match. */
 export async function searchYTS(imdbId?: string, title?: string): Promise<TRelease[]> {
@@ -187,7 +190,6 @@ export async function searchTorznab(query: string, cat: string): Promise<TReleas
         return out;
     } catch { return []; }
 }
-export const torznabEnabled = (): boolean => { const t = getTorznab(); return !!(t.url && t.apiKey); };
 
 /** EZTV — TV episodes by IMDb id (digits only). Carries season/episode fields. */
 export async function searchEztv(imdbId?: string): Promise<TRelease[]> {
@@ -214,13 +216,14 @@ export async function searchEztv(imdbId?: string): Promise<TRelease[]> {
  * them keyed by IMDb id, with seeder counts. One call ≈ a dozen indexers. Movies use
  * `movie/<imdb>`, TV uses `series/<imdb>:<season>:<episode>`.
  */
-export async function searchTorrentio(kind: 'movie' | 'series', imdbId?: string, season?: number, episode?: number): Promise<TRelease[]> {
+export async function searchTorrentio(kind: 'movie' | 'series', imdbId?: string, season?: number, episode?: number, addon?: string): Promise<TRelease[]> {
     if (!imdbId) return [];
     const id = kind === 'series' ? `${imdbId}:${season || 1}:${episode || 1}` : imdbId;
     // With a debrid key, Torrentio returns DIRECT cached http `url`s (instant playback);
-    // without one it returns `infoHash`es we stream over P2P.
+    // without one it returns `infoHash`es we stream over P2P. `addon` = another addon
+    // speaking the same protocol (TorrentsDB) — queried as-is, without the debrid config.
     const cfg = debridConfig();
-    const base = cfg ? `https://torrentio.strem.fun/${cfg}/stream` : 'https://torrentio.strem.fun/stream';
+    const base = addon ? `${addon}/stream` : cfg ? `https://torrentio.strem.fun/${cfg}/stream` : 'https://torrentio.strem.fun/stream';
     try {
         const { data } = await axios.get(`${base}/${kind}/${id}.json`, { timeout: 15000 });
         const streams: any[] = data?.streams || [];
@@ -240,8 +243,7 @@ export async function searchTorrentio(kind: 'movie' | 'series', imdbId?: string,
     } catch { return []; }
 }
 
-const p2 = (n: number) => String(n).padStart(2, '0');
-export const sxe = (s: number, e: number) => `S${p2(s)}E${p2(e)}`;
+export const sxe = (s: number, e: number) => `S${pad2(s)}E${pad2(e)}`;
 export const qualityOf = (t: string): string | undefined => (t.match(/\b(2160p|1080p|720p|480p)\b/i) || [])[1];
 
 /**

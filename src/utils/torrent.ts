@@ -23,6 +23,7 @@ import { spawn } from 'child_process';
 const DOWNLOAD_DIR = process.env.TORRENT_DIR || path.join(os.tmpdir(), 'streamplay-torrents');
 const IDLE_MS = Number(process.env.TORRENT_IDLE_MS) || 20 * 60 * 1000;   // evict a torrent unused for 20m
 const ADD_TIMEOUT_MS = Number(process.env.TORRENT_ADD_TIMEOUT_MS) || 90000;  // TCP-only peer discovery can be slow
+const MAX_ACTIVE = Number(process.env.TORRENT_MAX_ACTIVE) || 5;               // cap on concurrent torrents (disk/bandwidth)
 
 try { fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }); } catch { /* */ }
 
@@ -64,26 +65,49 @@ const torrents = new Map<string, Entry>();     // infoHash -> entry
 // `btih:` must map to ONE key, or dedup/eviction/getStatus see two entries.
 const magnetHash = (m: string): string => (m.match(/btih:([a-z0-9]{32,40})/i) || [])[1]?.toLowerCase() || m.toLowerCase();
 
+const inflight = new Map<string, Promise<any>>();   // infoHash -> pending add (concurrent requests share it)
+
+const drop = (hash: string, t: any) => {
+    torrents.delete(hash);
+    try { t.destroy({ destroyStore: true }); } catch { /* */ }
+};
+
 /** Add (or reuse) a magnet and resolve once its metadata (file list) is ready. */
 export async function addTorrent(magnetOrHash: string): Promise<any> {
-    const client = await getClient();
     const hash = magnetHash(magnetOrHash);
     const existing = torrents.get(hash);
     if (existing) { existing.lastUsed = Date.now(); return existing.torrent; }
-    // WebTorrent itself de-dupes by infoHash, but keep our own map for eviction.
-    const already = client.get(magnetOrHash);
-    if (already && already.ready) { torrents.set(hash, { torrent: already, lastUsed: Date.now() }); return already; }
+    let pending = inflight.get(hash);
+    if (!pending) {
+        if (inflight.size >= MAX_ACTIVE) throw new Error('too many torrents starting — try again shortly');
+        pending = startAdd(hash, magnetOrHash).finally(() => inflight.delete(hash));
+        inflight.set(hash, pending);
+    }
+    return pending;
+}
 
+async function startAdd(hash: string, magnetOrHash: string): Promise<any> {
+    const client = await getClient();
+    // Make room: evict least-recently-used torrents beyond the cap.
+    // ponytail: LRU by last request, so a long single-request remux can be evicted by
+    // MAX_ACTIVE newer adds; track open streams if that ever bites.
+    while (torrents.size + inflight.size > MAX_ACTIVE && torrents.size) {
+        const [k, e] = [...torrents].sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+        drop(k, e.torrent);
+    }
     const torrent: any = await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error('torrent add timeout (no peers/metadata)')), ADD_TIMEOUT_MS);
+        let t: any;
+        const fail = (e: any) => { clearTimeout(timer); if (t) drop(hash, t); reject(e); };
+        const timer = setTimeout(() => fail(new Error('torrent add timeout (no peers/metadata)')), ADD_TIMEOUT_MS);
         try {
-            const t = client.add(magnetOrHash, { path: DOWNLOAD_DIR }, (ready: any) => {
+            // deselect: download only the pieces a stream actually reads, never the whole torrent.
+            t = client.add(magnetOrHash, { path: DOWNLOAD_DIR, deselect: true }, (ready: any) => {
                 clearTimeout(timer);
                 console.log(`[torrent] ready: "${ready.name}" — ${ready.files?.length || 0} files, ${ready.numPeers} peers`);
                 resolve(ready);
             });
-            t.on('error', (e: any) => { clearTimeout(timer); reject(e); });
-        } catch (e) { clearTimeout(timer); reject(e); }
+            t.on('error', fail);
+        } catch (e) { fail(e); }
     });
     torrents.set(hash, { torrent, lastUsed: Date.now() });
     return torrent;
@@ -169,14 +193,11 @@ export function remuxToMp4(file: any): any {
 setInterval(() => {
     const now = Date.now();
     for (const [k, e] of torrents) {
-        if (now - e.lastUsed > IDLE_MS) {
-            try { e.torrent.destroy({ destroyStore: true }); } catch { /* */ }
-            torrents.delete(k);
-        }
+        if (now - e.lastUsed > IDLE_MS) drop(k, e.torrent);
     }
 }, 60_000).unref?.();
 
-export const torrentStats = () => ({ active: torrents.size, dir: DOWNLOAD_DIR });
+export const torrentStats = () => ({ active: torrents.size, max: MAX_ACTIVE, dir: DOWNLOAD_DIR });
 
 /** Live stats for one active torrent (for the player overlay), or null if not added. */
 export function getStatus(magnetOrHash: string): any | null {

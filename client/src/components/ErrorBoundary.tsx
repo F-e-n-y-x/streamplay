@@ -1,12 +1,21 @@
 import { Component, type ReactNode } from "react";
+import { Button, StateMessage } from "./ui";
+
+/** Shared error message (StateMessage): what failed + Try again. Raw error text goes in the
+ *  collapsed "Technical details", never in the body. */
+export function ErrorState({ title, detail, onRetry, busy, children }: { title: string; detail?: string; onRetry?: () => void; busy?: boolean; children?: ReactNode }) {
+  return (
+    <StateMessage kind="error" title={title} details={detail}
+      actions={(onRetry || children) && <>
+        {onRetry && <Button variant="solid" onClick={onRetry} loading={busy}>Try again</Button>}
+        {children}
+      </>} />
+  );
+}
 
 /**
- * Route-level error boundary. A malformed backend payload or a render throw in
- * one page used to unmount the whole app (blank screen). This scopes the failure
- * to a fallback card and offers a reload, keeping the header/nav usable.
- *
- * `resetKey` (the current path) clears the error when the user navigates away, so
- * a bad route doesn't wedge every subsequent one.
+ * Route-level error boundary: a render throw in one page shows a fallback instead of
+ * blanking the app. `resetKey` (the path) clears the error when the user navigates.
  */
 interface Props { children: ReactNode; resetKey?: string }
 interface State { error: Error | null }
@@ -21,7 +30,6 @@ export default class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: unknown) {
-    // eslint-disable-next-line no-console
     console.error("[ErrorBoundary]", error, info);
   }
 
@@ -29,13 +37,9 @@ export default class ErrorBoundary extends Component<Props, State> {
     if (this.state.error) {
       return (
         <div className="container">
-          <div className="empty" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "var(--space-4)" }}>
-            <div>
-              <div style={{ fontWeight: 600, color: "var(--foreground)", marginBottom: "var(--space-2)" }}>Something went wrong on this page.</div>
-              <div className="subtle" style={{ fontSize: "var(--text-sm)" }}>{this.state.error.message}</div>
-            </div>
-            <button className="btn btn-primary" onClick={() => this.setState({ error: null })}>Try again</button>
-          </div>
+          <StateMessage kind="error" title="Something went wrong on this page." body="Reload to try again. If it keeps happening, go back home."
+            details={this.state.error.message}
+            actions={<><Button variant="solid" onClick={() => location.reload()}>Reload</Button><Button variant="ghost" onClick={() => { location.href = "/"; }}>Go home</Button></>} />
         </div>
       );
     }

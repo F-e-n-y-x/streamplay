@@ -2,7 +2,8 @@ import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
 import { flareSolverrGetHtml } from '../utils/flaresolverr';
 import { app, safeGet } from '../utils/http';
-import { loadExtractor, getPacked, getAndUnpack } from '../utils/hostextractors';
+import { loadExtractor, findMediaUrl } from '../utils/hostextractors';
+import { norm } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 
 /**
@@ -21,10 +22,8 @@ async function resolveAWSource(url: string, base: string, ua: string): Promise<{
         } catch (e: any) { if (process.env.ANIME_DEBUG) console.error('[AW] hop', i, cur.slice(0, 45), 'ERR', e?.message); break; }
         html = res.text || '';
         if (process.env.ANIME_DEBUG) console.error('[AW] hop', i, cur.slice(0, 45), 'status', res.status, 'len', html.length, 'loc', (res.responseHeaders && res.responseHeaders.location) || '');
-        const packed = getPacked(html);
-        const body = packed ? getAndUnpack(packed) : html;
-        const m = /(https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)/i.exec(body) || /(https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*)/i.exec(body);
-        if (m) return { link: m[1], type: /\.m3u8/i.test(m[1]) ? 'm3u8' : 'mp4' };
+        const media = findMediaUrl(html, ['m3u8', 'mp4']);
+        if (media) return { link: media, type: /\.m3u8/i.test(media) ? 'm3u8' : 'mp4' };
         // No media yet — follow a client-side redirect / embed to the next hop.
         const next = (html.match(/http-equiv=["']refresh["'][^>]*url=([^"'>\s]+)/i) || [])[1]
             || (html.match(/(?:window\.location(?:\.href)?\s*=|location\.replace\(|location\.href\s*=)\s*["']([^"']+)["']/) || [])[1]
@@ -49,9 +48,19 @@ async function resolveAWSource(url: string, base: string, ua: string): Promise<{
  */
 
 const BASE = (process.env.ANIMEWORLD_BASE_URL || 'https://watchanimeworld.net').replace(/\/+$/, '');
-const ZEPHYR = 'https://play.zephyrflick.top';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+const stripSeason = (t: string) => t.replace(/\s*[:\-–]?\s*(the\s+)?(final\s+season|season\s*\S+|\d+(?:st|nd|rd|th)\s+season|part\s*\d+|cour\s*\d+)\s*$/i, '').trim();
+
+export interface AWHit { slug: string; title: string; movie: boolean }
+/** Pick the search hit of the right medium whose title (or slug) matches a wanted title. */
+export function pickAWHit(hits: AWHit[], titles: string[], movie: boolean): AWHit | undefined {
+    const wants = titles.map(norm).filter((w) => w.length >= 3);
+    const pool = hits.filter((h) => h.movie === movie);
+    const names = (h: AWHit) => [norm(h.title), norm(h.slug.replace(/-/g, ' '))].filter(Boolean);
+    return pool.find((h) => names(h).some((n) => wants.includes(n)))
+        || pool.find((h) => names(h).some((n) => n.length >= 4 && wants.some((w) => n.includes(w) || w.includes(n))));
+}
 
 export const AnimeWorldProvider: Provider = {
     id: 'animeworld',
@@ -67,37 +76,40 @@ export const AnimeWorldProvider: Provider = {
         // so try any title — the search simply returns nothing for titles it doesn't have.
         if (!data.title) return { streams, subtitles };
 
-        const season = (data.type === 'movie' || data.seasonResolved) ? undefined : (data.season ?? 1);
-        const episode = data.type === 'movie' ? undefined : (data.episode ?? 1);
+        // TV always uses the /episode/<slug>-<S>x<E>/ page — also when `seasonResolved`
+        // (season is still the selected season number; only the title is per-cour).
+        const isMovie = data.type === 'movie';
+        const season = isMovie ? undefined : (data.season ?? 1);
+        const episode = isMovie ? undefined : (data.episode ?? 1);
+        // AnimeWorld lists ONE series entry (seasons live in the episode URL), so also try
+        // the cour titles with their "Season N"/"Part N" suffix stripped.
+        const titles = animeSearchTitles(data);
+        const queries = [...new Set([...titles, ...titles.map(stripSeason).filter(Boolean)])];
 
         // 1) search → best-matching slug (Cloudflare-gated → FlareSolverr). Try each
         //    title variant (TMDB name, original, AniList romaji/synonyms) until one hits.
-        let results: { slug: string; title: string }[] = [];
-        for (const q of animeSearchTitles(data)) {
+        let results: AWHit[] = [];
+        for (const q of queries) {
             const searchHtml = await flareSolverrGetHtml(`${BASE}/?s=${encodeURIComponent(q)}`);
             if (!searchHtml) continue;
             const $s = cheerio.load(searchHtml);
-            const found: { slug: string; title: string }[] = [];
+            const found: AWHit[] = [];
             $s('a[href]').each((_i, el) => {
                 const href = $s(el).attr('href') || '';
-                const m = href.match(/\/(?:series|movies)\/([^/]+)\/?$/);
+                const m = href.match(/\/(series|movies)\/([^/]+)\/?$/);
                 if (!m) return;
-                const slug = m[1];
+                const slug = m[2];
                 const title = ($s(el).attr('title') || $s(el).text() || '').trim();
                 const existing = found.find((r) => r.slug === slug);
                 if (existing) { if (title && !existing.title) existing.title = title; }
-                else found.push({ slug, title });
+                else found.push({ slug, title, movie: m[1] === 'movies' });
             });
             if (process.env.ANIME_DEBUG) console.error(`[AW] search "${q}":`, found.length);
             if (found.length) { results = found; break; }
         }
-        if (!results.length) return { streams, subtitles };
-        // Match on the title, falling back to the slug (posters often have no title text).
-        const want = norm(data.title);
-        const nameOf = (r: { slug: string; title: string }) => norm(r.title || r.slug.replace(/-/g, ' '));
-        const best = results.find((r) => nameOf(r) === want)
-            || results.find((r) => nameOf(r).includes(want) || want.includes(nameOf(r)))
-            || results[0];
+        // Right medium + a real title match against ANY variant — never a blind first hit.
+        const best = pickAWHit(results, queries, isMovie);
+        if (!best) return { streams, subtitles };
 
         // 2) episode/movie page → find the zephyrflick embed among the server iframes
         const epUrl = (season != null && episode != null)
@@ -113,7 +125,7 @@ export const AnimeWorldProvider: Provider = {
         $e('iframe').each((_i, el) => {
             const src = $e(el).attr('src') || $e(el).attr('data-src') || '';
             if (src) iframeSrcs.push(src);
-            if (!zf && /zephyrflick/i.test(src)) zf = src.startsWith('http') ? src : `${BASE}${src}`;
+            if (!zf && /zephyr(?:flick|ix)/i.test(src)) zf = new URL(src, `${BASE}/`).href;   // host rotates (.top → zephyrix.org)
         });
         const vid = (zf.match(/\/video\/([a-f0-9]+)/) || [])[1];
         if (process.env.ANIME_DEBUG) console.error('[AW] epUrl:', epUrl, 'htmlLen:', epHtml.length, 'iframes:', iframeSrcs.map((s) => s.slice(0, 70)), 'zf:', zf.slice(0, 50), 'vid:', vid);
@@ -156,6 +168,7 @@ export const AnimeWorldProvider: Provider = {
 
         // 3) solve zephyrflick's Cloudflare challenge once (primes the cookie jar for
         //    this host), which also gives us the iframe page for subtitle scraping.
+        const ZEPHYR = new URL(zf).origin;
         const iframePage = await safeGet(zf, { cloudflare: true, headers: { 'User-Agent': UA } });
 
         // 3a) master m3u8 via the getVideo XHR (now carries the primed cf_clearance)

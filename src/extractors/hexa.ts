@@ -1,4 +1,4 @@
-import axios from 'axios';
+import net from '../utils/net';
 import crypto from 'crypto';
 import { Provider, LinkData, ExtractorResult } from '../types';
 import { encDecGet, encDecPost, USER_AGENT } from '../utils/encdec';
@@ -45,7 +45,7 @@ export const HexaProvider: Provider = {
                 ? `${HEXA_API}/api/tmdb/movie/${data.id}/images`
                 : `${HEXA_API}/api/tmdb/tv/${data.id}/season/${data.season}/episode/${data.episode}/images`;
 
-            const encrypted = (await axios.get(url, { headers, timeout: 15000 })).data;
+            const encrypted = (await net.get(url, { headers, timeout: 15000 })).data;
             if (!encrypted) return result;
 
             // Step 4: decrypt

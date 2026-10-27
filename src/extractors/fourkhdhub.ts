@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { pad2 } from '../utils/season';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -15,7 +16,6 @@ import { getRedirectLinks } from '../utils/common';
  *      tv:    `div.episode-download-item` matching "Sxx"(+"Exx") ->
  *             `div.episode-links > a` href -> getRedirectLinks() -> loadExtractor.
  */
-const pad2 = (n?: number): string => (n != null && n < 10 ? `0${n}` : `${n}`);
 
 export const FourKHdHubProvider: Provider = {
     id: 'fourkhdhub',

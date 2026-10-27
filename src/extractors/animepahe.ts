@@ -2,8 +2,8 @@ import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult, Stream } from '../types';
 import { app } from '../utils/http';
 import { flareSolverrGetHtml } from '../utils/flaresolverr';
-import { getPacked, getAndUnpack } from '../utils/hostextractors';
-import { seasonScore } from '../utils/season';
+import { findMediaUrl } from '../utils/hostextractors';
+import { seasonScore, norm } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 
 /**
@@ -20,7 +20,6 @@ import { animeSearchTitles } from '../anime';
  */
 
 const BASE = (process.env.ANIMEPAHE_BASE_URL || 'https://animepahe.pw').replace(/\/+$/, '');
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 function extractJson(html: string): any {
     const m = html.match(/>(\{[\s\S]*\}|\[[\s\S]*\])<\/pre>/) || html.match(/>(\{[\s\S]*\})<\/body>/);
@@ -39,11 +38,7 @@ const KWIK_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (K
 
 // Pull the .m3u8 out of a kwik embed page (Dean-Edwards packed `source='...m3u8'`).
 const parseKwik = (html: string | null | undefined): string | null => {
-    if (!html) return null;
-    const packed = getPacked(html);
-    const src = packed ? getAndUnpack(packed) : html;
-    const m = /source\s*=\s*['"]([^'"]+\.m3u8[^'"]*)['"]/.exec(src) || /(https?:\/\/[^'"\s]+\.m3u8[^'"\s]*)/.exec(src);
-    return m ? (m[1] || m[0]) : null;
+    return html ? findMediaUrl(html) ?? null : null;
 };
 
 async function resolveKwik(kwikUrl: string, referer: string): Promise<string | null> {

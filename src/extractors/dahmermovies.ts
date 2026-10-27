@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { pad2 } from '../utils/season';
 import { app } from '../utils/http';
 import { getIndexQuality, qualityLabel } from '../utils/common';
 
@@ -10,7 +11,6 @@ const getIndexQualityTags = (str?: string): string => {
     return m?.[1]?.replace(/\./g, ' ').trim() || (str ?? '');
 };
 
-const pad2 = (n?: number): string => (n != null && n < 10 ? `0${n}` : `${n}`);
 
 /**
  * DahmerMovies — ported from invokeDahmerMovies (StreamPlayExtractor.kt).
@@ -41,7 +41,7 @@ export const DahmerMoviesProvider: Provider = {
             const $ = req.document;
             const epRegex = season == null
                 ? /(1080p|2160p)/i
-                : new RegExp(`S${pad2(season)}E${pad2(episode)}`, 'i');
+                : new RegExp(`S${pad2(season)}E${pad2(episode)}(?!\\d)`, 'i');
 
             $('a').each((_, el) => {
                 const text = $(el).text();

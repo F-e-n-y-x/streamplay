@@ -1,159 +1,135 @@
 /* =============================================================================
-   Design Tokens — Geist / Vercel-neutral system
-   -----------------------------------------------------------------------------
-   The single source of truth for color, type, space, radius, elevation, motion.
-   Components must reference these tokens — never raw hex / px values.
+   Design tokens: StreamPlay v2 "Lights down"
+   Source of truth: styles/design-system.md (§ numbers below refer to it).
+   Components reference these names, never raw hex/px.
 
-   Layers (in order):
-     1. Primitive scales   — raw values, per theme (gray-1..12, accent, status)
-     2. Semantic tokens    — role-based aliases (--background, --foreground, …)
-     3. System scales       — spacing / type / radius / shadow / motion (theme-agnostic)
-     4. Compatibility       — legacy names kept alive for older markup
-
-   Theme is controlled by the `data-theme` attribute on <html>:
-     <html data-theme="dark">  (default)   |   <html data-theme="light">
+   Layers:
+     1. Theme colors (dark default, light opt-in via <html data-theme="light">)
+     2. System scales: type, space, radius, elevation, motion, layout
+     3. .media-dark scope (hero, title backdrop, player): dark in both themes
+     4. Legacy aliases: old names mapped onto the new ones (delete when unused)
    ========================================================================== */
 
-/* ── 1 + 2. DARK THEME (default) ─────────────────────────────────────────── */
+/* ── 1. DARK (default for everyone; prefers-color-scheme is ignored) ──────── */
 :root,
 :root[data-theme="dark"] {
-    /* Make native controls (select popups, scrollbars, date pickers) render dark */
     color-scheme: dark;
 
-    /* Neutral ramp: 1 = app background → 12 = highest-contrast text */
-    --gray-1:  #121212;
-    --gray-2:  #181818;
-    --gray-3:  #1f1f1f;
-    --gray-4:  #262626;
-    --gray-5:  #2d2d2d;
-    --gray-6:  #353535;
-    --gray-7:  #404040;
-    --gray-8:  #4f4f4f;
-    --gray-9:  #636363;
-    --gray-10: #909090;
-    --gray-11: #a8a8a8;
-    --gray-12: #fafafa;
+    --background:        #0a0a0c;
+    --surface:           #141418;   /* panels, sheets, menus */
+    --surface-2:         #1e1e23;   /* raised rows, inputs, tonal button, selected row */
+    --surface-3:         #2a2a31;   /* hover on surface-2, pressed, slider track */
+    --surface-hover:     var(--surface-3);
 
-    /* Accent (single hue — use sparingly for focus / links / key emphasis) */
-    --accent-soft:    rgba(56, 139, 253, 0.15);
-    --accent:         #3b82f6;
-    --accent-strong:  #60a5fa;
+    --border:            rgba(255, 255, 255, 0.09);   /* hairlines, dividers */
+    --border-strong:     rgba(255, 255, 255, 0.18);   /* chip off-state, input outline */
+
+    --foreground:        #f4f4f5;   /* 18.0 on bg */
+    --muted-foreground:  #ababb4;   /* 8.7 on bg, 6.3 on surface-3 */
+    --subtle-foreground: #92929c;   /* 6.4 on bg, 4.6 on surface-3. Never below 12px */
+
+    --accent:            #d92632;   /* action red: THE primary action + progress. White on it 4.9 */
+    --accent-hover:      #c01f2a;
+    --accent-strong:     #ff6b6b;   /* red as text/icon on dark */
+    --accent-soft:       rgba(217, 38, 50, 0.16);   /* current-episode row tint */
     --accent-foreground: #ffffff;
 
-    /* Status (semantic — never decorative) */
-    --success: #3fb950;  --success-soft: rgba(63, 185, 80, 0.15);
-    --warning: #d29922;  --warning-soft: rgba(210, 153, 34, 0.15);
-    --error:   #f85149;  --error-soft:   rgba(248, 81, 73, 0.15);
-    --info:    var(--accent);  --info-soft: var(--accent-soft);
+    --primary:            #f4f4f5;  /* neutral-solid button (dialog confirm, 404 "Go home") */
+    --primary-hover:      #dcdcdf;
+    --primary-foreground: #0a0a0c;
 
-    /* Semantic surfaces & text */
-    --background:      var(--gray-1);
-    --surface:         var(--gray-2);
-    --surface-2:       var(--gray-3);
-    --surface-hover:   var(--gray-4);
-    --overlay:         rgba(0, 0, 0, 0.6);
+    --success: #3dd68c;
+    --warning: #f5b83d;
+    --error:   #ff6b6b;
+    --success-soft: rgba(61, 214, 140, 0.14);
+    --warning-soft: rgba(245, 184, 61, 0.14);
+    --error-soft:   rgba(255, 107, 107, 0.14);
 
-    --border:          var(--gray-6);
-    --border-strong:   var(--gray-7);
+    --overlay:      rgba(0, 0, 0, 0.6);    /* scrim behind Panel / Dialog */
+    --focus-ring:   #f4f4f5;
+    --ring:         var(--focus-ring);
 
-    --foreground:        var(--gray-12);
-    --muted-foreground:  var(--gray-11);
-    --subtle-foreground: var(--gray-10);
+    /* Text over artwork (hero, title backdrop). Player chrome has its own pair. */
+    --scrim-media: linear-gradient(to top, rgba(10, 10, 12, 1) 0%, rgba(10, 10, 12, 0.85) 30%, rgba(10, 10, 12, 0) 70%);
+    --player-scrim-top: linear-gradient(rgba(0, 0, 0, 0.7), transparent 120px);
+    --player-scrim-bottom: linear-gradient(transparent, rgba(0, 0, 0, 0.8) 160px);
 
-    /* Primary action — Geist signature: solid white on dark */
-    --primary:            #fafafa;
-    --primary-hover:      #e3e3e3;
-    --primary-foreground: #0a0a0a;
+    /* Elevation: dark relies on surface steps; shadows only from level 2 up */
+    --elevation-2: 0 8px 24px rgba(0, 0, 0, 0.5);    /* menus, popovers, toast */
+    --elevation-3: 0 24px 64px rgba(0, 0, 0, 0.6);   /* dialog */
 
-    --ring: var(--accent);
-
-    /* Elevation — dark leans on borders; shadows are deep + quiet */
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.30);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.40);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
-    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
+    /* neutral ramp, kept for scrollbars / status dots and older rules */
+    --gray-1: #0a0a0c;  --gray-2: #141418;  --gray-3: #1e1e23;  --gray-4: #2a2a31;
+    --gray-5: #32323a;  --gray-6: #3a3a43;  --gray-7: #45454f;  --gray-8: #55555f;
+    --gray-9: #6e6e78;  --gray-10: #92929c; --gray-11: #ababb4; --gray-12: #f4f4f5;
 }
 
-/* ── 1 + 2. LIGHT THEME ──────────────────────────────────────────────────── */
+/* ── 1. LIGHT (opt-in in Settings). Page + chrome only; media stays dark ──── */
 :root[data-theme="light"] {
     color-scheme: light;
 
-    --gray-1:  #ffffff;
-    --gray-2:  #fafafa;
-    --gray-3:  #f5f5f5;
-    --gray-4:  #ededed;
-    --gray-5:  #e6e6e6;
-    --gray-6:  #e3e3e3;
-    --gray-7:  #d4d4d4;
-    --gray-8:  #bdbdbd;
-    --gray-9:  #999999;
-    --gray-10: #7d7d7d;
-    --gray-11: #5c5c5c;
-    --gray-12: #171717;
+    --background:        #f5f5f3;
+    --surface:           #ffffff;
+    --surface-2:         #ededea;
+    --surface-3:         #e2e2de;
+    --surface-hover:     var(--surface-3);
 
-    --accent-soft:    rgba(0, 112, 243, 0.10);
-    --accent:         #0070f3;
-    --accent-strong:  #0761d1;
-    --accent-foreground: #ffffff;
+    --border:            rgba(17, 17, 20, 0.10);
+    --border-strong:     rgba(17, 17, 20, 0.22);
 
-    --success: #1a7f37;  --success-soft: rgba(26, 127, 55, 0.10);
-    --warning: #9a6700;  --warning-soft: rgba(154, 103, 0, 0.10);
-    --error:   #cf222e;  --error-soft:   rgba(207, 34, 46, 0.10);
-    --info:    var(--accent);  --info-soft: var(--accent-soft);
+    --foreground:        #111114;
+    --muted-foreground:  #4d4d57;
+    --subtle-foreground: #6b6b75;
 
-    --background:      var(--gray-1);
-    --surface:         var(--gray-2);
-    --surface-2:       var(--gray-3);
-    --surface-hover:   var(--gray-4);
-    --overlay:         rgba(0, 0, 0, 0.4);
+    --accent:            #d92632;
+    --accent-hover:      #b91c26;
+    --accent-strong:     #b3141f;
+    --accent-soft:       rgba(217, 38, 50, 0.10);
 
-    --border:          var(--gray-6);
-    --border-strong:   var(--gray-7);
-
-    --foreground:        var(--gray-12);
-    --muted-foreground:  var(--gray-11);
-    --subtle-foreground: var(--gray-10);
-
-    --primary:            #171717;
-    --primary-hover:      #2f2f2f;
+    --primary:            #111114;
+    --primary-hover:      #2a2a30;
     --primary-foreground: #ffffff;
 
-    --ring: var(--accent);
+    --success: #166534;
+    --warning: #854d0e;
+    --error:   #b3141f;
+    --success-soft: rgba(22, 101, 52, 0.10);
+    --warning-soft: rgba(133, 77, 14, 0.10);
+    --error-soft:   rgba(179, 20, 31, 0.10);
 
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-    --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.12);
+    --overlay:    rgba(10, 10, 12, 0.45);
+    --focus-ring: #111114;
+
+    --elevation-2: 0 8px 24px rgba(17, 17, 20, 0.12);
+    --elevation-3: 0 24px 64px rgba(17, 17, 20, 0.18);
+
+    --gray-1: #f5f5f3;  --gray-2: #ffffff;  --gray-3: #ededea;  --gray-4: #e2e2de;
+    --gray-5: #d8d8d4;  --gray-6: #cdcdc8;  --gray-7: #bcbcb7;  --gray-8: #a1a19c;
+    --gray-9: #85857f;  --gray-10: #6b6b75; --gray-11: #4d4d57; --gray-12: #111114;
 }
 
-/* ── 3. SYSTEM SCALES (theme-agnostic) ───────────────────────────────────── */
+/* ── 2. SYSTEM SCALES (theme-agnostic) ───────────────────────────────────── */
 :root {
-    /* Type — 14px base, the Geist default */
-    --font-sans: 'Geist', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-    --font-mono: 'Geist Mono', 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+    --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;   /* codes/logs only */
 
-    --text-xs:   0.75rem;   /* 12 */
-    --text-sm:   0.8125rem; /* 13 */
-    --text-base: 0.875rem;  /* 14 */
-    --text-md:   0.9375rem; /* 15 */
-    --text-lg:   1rem;      /* 16 */
-    --text-xl:   1.125rem;  /* 18 */
-    --text-2xl:  1.375rem;  /* 22 */
-    --text-3xl:  1.75rem;   /* 28 */
-    --text-4xl:  2.25rem;   /* 36 */
+    /* Type roles (§3), as `font` shorthands: `font: var(--type-h2)`. Pair each with its
+       --track-* letter-spacing. rem-based so the ≥1800 / ≥2400 root scaling applies.
+       Phone values here; tablet/desktop overrides below. 12px floor, nothing smaller. */
+    --type-display: 700 2.125rem/2.375rem var(--font-sans);   /* 34/38 */
+    --type-h1:      600 1.625rem/2rem var(--font-sans);        /* 26/32 */
+    --type-h2:      600 1.125rem/1.5rem var(--font-sans);      /* 18/24 */
+    --type-title:   600 1rem/1.375rem var(--font-sans);        /* 16/22 */
+    --type-body:    400 0.9375rem/1.375rem var(--font-sans);   /* 15/22 */
+    --type-label:   500 0.9375rem/1.25rem var(--font-sans);    /* 15/20 */
+    --type-meta:    400 0.8125rem/1.125rem var(--font-sans);   /* 13/18 */
+    --type-caption: 500 0.75rem/1rem var(--font-sans);         /* 12/16 */
+    --track-display: -0.03em;
+    --track-h1:      -0.02em;
+    --track-h2:      -0.01em;
+    --track-caption: 0.01em;
 
-    --leading-tight: 1.2;
-    --leading-snug:  1.4;
-    --leading-base:  1.55;
-
-    --weight-normal:   400;
-    --weight-medium:   500;
-    --weight-semibold: 600;
-
-    --tracking-tight: -0.02em;
-    --tracking-snug:  -0.01em;
-
-    /* Spacing — 4px base grid */
+    /* Spacing (§4): 4px grid */
     --space-1:  0.25rem; /*  4 */
     --space-2:  0.5rem;  /*  8 */
     --space-3:  0.75rem; /* 12 */
@@ -164,33 +140,129 @@
     --space-10: 2.5rem;  /* 40 */
     --space-12: 3rem;    /* 48 */
     --space-16: 4rem;    /* 64 */
+    --space-20: 5rem;    /* 80 */
 
-    /* Radius */
-    --radius-sm:   4px;
-    --radius-md:   6px;
-    --radius-lg:   8px;
-    --radius-xl:   12px;
-    --radius-2xl:  16px;
-    --radius-full: 9999px;
-    --radius: var(--radius-md);
+    /* Radius (§4). Shape means something: rectangle = button, pill = filter chip,
+       circle = icon button / avatar / switch. */
+    --radius-xs:   4px;      /* badges, progress, seek track */
+    --radius-sm:   6px;      /* episode stills, menu-row hover fill */
+    --radius-md:   8px;      /* buttons, inputs, posters */
+    --radius-lg:   12px;     /* menus, dialog, panel free edge */
+    --radius-xl:   16px;     /* bottom sheet top, windowed player */
+    --radius-full: 9999px;   /* ONLY chips, icon buttons, avatars, switches, slider thumb */
 
-    /* Motion */
-    --ease-out:  cubic-bezier(0.16, 1, 0.3, 1);
+    /* Control heights (§8) */
+    --control-sm: 2rem;      /* 32 desktop dense */
+    --control-md: 2.5rem;    /* 40 default */
+    --control-lg: 3rem;      /* 48 hero/title actions */
+    --hit-min:    2.75rem;   /* 44 coarse-pointer floor */
+
+    /* Motion (§5): transform/opacity only. Enter on ease-out, exit faster on ease-in. */
+    --duration-1:    120ms;  /* hover/press, focus, chip toggle */
+    --duration-2:    200ms;  /* menu open, chrome fade, tab underline */
+    --duration-3:    280ms;  /* panel/sheet enter, dialog */
+    --duration-exit: 180ms;  /* every exit */
+    --duration-tint: 500ms;  /* ambient backdrop tint */
+    --ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in:     cubic-bezier(0.4, 0, 1, 1);
     --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-    --duration-1: 120ms;
-    --duration-2: 180ms;
-    --duration-3: 240ms;
 
     /* Layout */
-    --container-max: 1600px;
-    --header-height: 64px;
+    --container-max: 100rem;
+    --gutter: 1.5rem;
+    --header-height: 4rem;
+    --tabbar-height: 0px;      /* set on phones, see app.css SHELL */
+    --chips-height: 0px;
 }
 
-/* ── 4. COMPATIBILITY ALIASES ────────────────────────────────────────────── */
-/* Older markup / inline styles reference these legacy names. Mapped onto the
-   semantic layer so they stay correct across themes. Prefer the names above. */
+@media (min-width: 768px) {
+    :root {
+        --type-display: 700 2.75rem/3rem var(--font-sans);     /* 44/48 */
+        --type-h1:      600 1.75rem/2.125rem var(--font-sans); /* 28/34 */
+        --type-h2:      600 1.25rem/1.625rem var(--font-sans); /* 20/26 */
+        --type-label:   500 0.875rem/1.25rem var(--font-sans); /* 14/20 */
+    }
+}
+@media (min-width: 1100px) {
+    :root {
+        --type-display: 700 clamp(3rem, 4.4vw, 4.5rem)/1.02 var(--font-sans);
+        --type-h1:      600 2rem/2.375rem var(--font-sans);    /* 32/38 */
+        --type-body:    400 0.9375rem/1.4375rem var(--font-sans); /* 15/23 */
+    }
+}
+/* 10-foot / large monitors: everything is rem, so scale the root. */
+@media (min-width: 1800px) { :root { font-size: 18px; } }
+@media (min-width: 2400px) { :root { font-size: 22px; } }
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --duration-1: 0ms;
+        --duration-2: 0ms;
+        --duration-3: 0ms;
+        --duration-exit: 0ms;
+        --duration-tint: 0ms;
+    }
+}
+
+/* ── 3. MEDIA SURFACES: dark in both themes (hero, title backdrop, player) ── */
+.media-dark {
+    color-scheme: dark;
+    --background: #0a0a0c;
+    --surface: #141418;
+    --surface-2: rgba(255, 255, 255, 0.12);
+    --surface-3: rgba(255, 255, 255, 0.2);
+    --surface-hover: var(--surface-3);
+    --border: rgba(255, 255, 255, 0.14);
+    --border-strong: rgba(255, 255, 255, 0.28);
+    --foreground: #f4f4f5;
+    --muted-foreground: #d4d4d8;
+    --subtle-foreground: #ababb4;
+    --primary: #f4f4f5;
+    --primary-hover: #dcdcdf;
+    --primary-foreground: #0a0a0c;
+    --accent-strong: #ff6b6b;
+    --success: #3dd68c;
+    --warning: #f5b83d;
+    --error: #ff6b6b;
+    --focus-ring: #f4f4f5;
+    --overlay: rgba(0, 0, 0, 0.6);
+    --elevation-2: 0 8px 24px rgba(0, 0, 0, 0.5);
+    color: var(--foreground);
+}
+
+/* ── 4. LEGACY ALIASES: older markup still uses these. Prefer the names above. ── */
 :root {
-    --primary-color:    var(--accent);     /* legacy decorative "primary" = accent */
+    /* old size scale (pages migrate to --type-* roles) */
+    --text-xs:   0.75rem;   /* 12 */
+    --text-sm:   0.8125rem; /* 13 */
+    --text-base: 0.875rem;  /* 14 */
+    --text-md:   0.9375rem; /* 15 */
+    --text-lg:   1rem;      /* 16 */
+    --text-xl:   1.125rem;  /* 18 */
+    --text-2xl:  1.375rem;  /* 22 */
+    --text-3xl:  1.75rem;   /* 28 */
+    --text-4xl:  2.25rem;   /* 36 */
+    --text-display: clamp(2.25rem, 4.4vw, 4.5rem);
+    --leading-tight: 1.2;
+    --leading-snug:  1.4;
+    --leading-base:  1.5;
+    --weight-normal:   400;
+    --weight-medium:   500;
+    --weight-semibold: 600;
+    --weight-bold:     700;
+    --weight-light:    400;   /* 300 is dropped (§3) */
+    --weight-black:    700;   /* 800 is dropped (§3) */
+    --tracking-tight: -0.02em;
+    --tracking-snug:  -0.01em;
+    --radius-2xl: var(--radius-xl);   /* removed size; maps to xl */
+    --radius: var(--radius-md);
+    --shadow-xs: none;
+    --shadow-sm: none;
+    --shadow-md: var(--elevation-2);
+    --shadow-lg: var(--elevation-3);
+    --info: var(--foreground);
+    --info-soft: var(--surface-2);
+    --primary-color:    var(--accent);
     --text-main:        var(--foreground);
     --text-muted:       var(--muted-foreground);
     --danger:           var(--error);
@@ -203,11 +275,7 @@
     --transition-fast:  var(--duration-1) var(--ease-out);
     --transition-normal:var(--duration-2) var(--ease-out);
 }
-
-@media (prefers-reduced-motion: reduce) {
-    :root {
-        --duration-1: 0ms;
-        --duration-2: 0ms;
-        --duration-3: 0ms;
-    }
+/* Tablet at arm's length: legacy sizes one step up on touch tablets. */
+@media (pointer: coarse) and (min-width: 700px) {
+    :root { --text-xs: 0.8125rem; --text-sm: 0.875rem; --text-base: 0.9375rem; }
 }

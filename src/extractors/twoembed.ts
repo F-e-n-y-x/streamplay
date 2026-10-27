@@ -1,4 +1,4 @@
-import axios from 'axios';
+import net from '../utils/net';
 import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult } from '../types';
 
@@ -17,7 +17,7 @@ export const TwoEmbedProvider: Provider = {
                 ? `${TWOEMBED_API}/embed/${data.imdbId}` 
                 : `${TWOEMBED_API}/embedtv/${data.imdbId}?s=${data.season}&e=${data.episode}`;
 
-            const res = await axios.get(url, {
+            const res = await net.get(url, {
                 headers: {
                     'Referer': url,
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',

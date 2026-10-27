@@ -1,7 +1,8 @@
-import { Router } from 'express';
-import axios from 'axios';
+import { Router, Request, Response } from 'express';
+import { pipeline } from 'stream';
 import { addTorrent, pickVideoFile, remuxToMp4, remuxReadableToMp4, hasFfmpeg, touch, torrentStats, getStatus } from '../utils/torrent';
-import { guardUrl, ssrfAgents, guardRedirect } from '../utils/ssrf';
+import { guardUrl, guardedGet, pipeUpstream, setPassthroughSecurity } from '../utils/ssrf';
+import { unb64 } from './proxy';
 
 /**
  * Torrent streaming endpoints.
@@ -12,7 +13,28 @@ import { guardUrl, ssrfAgents, guardRedirect } from '../utils/ssrf';
  *   GET /api/torrent/stats               -> active torrents
  */
 const router = Router();
-const unb64 = (s: string) => Buffer.from(s, 'base64url').toString('utf-8');
+router.use((_req, res, next) => { setPassthroughSecurity(res); next(); });
+
+/** Pipe a remux's ffmpeg stdout to the client; SIGKILL ffmpeg the moment the client goes. */
+const sendRemux = (ff: any, res: Response): void => {
+    res.status(200).set('Content-Type', 'video/mp4').set('Cache-Control', 'no-store');
+    const kill = () => { try { ff.kill('SIGKILL'); } catch { /* */ } };
+    res.on('close', kill);
+    ff.on('error', () => { if (!res.headersSent) res.status(500); res.destroy(); });
+    pipeline(ff.stdout, res, kill);
+};
+
+/** Parse a single `bytes=` range (incl. suffix `bytes=-N`) against `total`.
+ *  null = no/unsupported range (serve 200), 'bad' = unsatisfiable (416). */
+export const parseRange = (range: string | undefined, total: number): { start: number; end: number } | null | 'bad' => {
+    const m = /^bytes=(\d*)-(\d*)$/.exec((range || '').trim());
+    if (!m || (!m[1] && !m[2])) return null;
+    const start = m[1] ? parseInt(m[1]) : Math.max(0, total - parseInt(m[2]));
+    const end = m[1] && m[2] ? Math.min(parseInt(m[2]), total - 1) : total - 1;
+    return start >= total || start > end ? 'bad' : { start, end };
+};
+
+const gone = (req: Request) => req.destroyed;
 
 const mimeOf = (name: string): string =>
     /\.webm$/i.test(name) ? 'video/webm' : /\.mkv$/i.test(name) ? 'video/x-matroska' : /\.avi$/i.test(name) ? 'video/x-msvideo' : 'video/mp4';
@@ -27,51 +49,27 @@ router.get('/stream', async (req, res) => {
 
     let torrent: any;
     try { torrent = await addTorrent(magnet); } catch (e: any) { console.error('[torrent] stream failed:', e?.message || e); return res.status(504).send('torrent: ' + (e?.message || e)); }
+    if (gone(req)) return;
     const file = pickVideoFile(torrent, fileIdx, wantEp);
     if (!file) return res.status(404).send('no video file in torrent');
     touch(magnet);
-    res.set('Access-Control-Allow-Origin', '*');
 
     // Browser path: remux mkv/HEVC -> fragmented MP4 (no seeking on a live remux, but
     // it plays inline). Falls back to raw if ffmpeg is missing.
     const wantRemux = req.query.remux === '1' && !/\.(mp4|webm)$/i.test(file.name) && (await hasFfmpeg());
-    if (wantRemux) {
-        res.status(200);
-        res.set('Content-Type', 'video/mp4');
-        res.set('Cache-Control', 'no-store');
-        const ff = remuxToMp4(file);
-        ff.stdout.pipe(res);
-        const kill = () => { try { ff.kill('SIGKILL'); } catch { /* */ } };
-        req.on('close', kill);
-        ff.on('error', () => { if (!res.headersSent) res.status(500).end(); });
-        return;
-    }
+    if (gone(req)) return;
+    if (wantRemux) return sendRemux(remuxToMp4(file), res);
 
     // Raw path: full Range support (seekable; great for VLC and mp4 in-browser).
     const total = file.length;
-    const range = req.headers.range as string | undefined;
+    const r = parseRange(req.headers.range, total);
     res.set('Accept-Ranges', 'bytes');
     res.set('Content-Type', mimeOf(file.name));
-    if (range) {
-        const m = /bytes=(\d+)-(\d*)/.exec(range);
-        const start = m ? parseInt(m[1]) : 0;
-        const end = m && m[2] ? Math.min(parseInt(m[2]), total - 1) : total - 1;
-        if (start >= total || start > end) return res.status(416).set('Content-Range', 'bytes */' + total).end();
-        res.status(206);
-        res.set('Content-Range', 'bytes ' + start + '-' + end + '/' + total);
-        res.set('Content-Length', String(end - start + 1));
-        const stream = file.createReadStream({ start, end });
-        stream.on('error', () => { try { res.destroy(); } catch { /* */ } });
-        req.on('close', () => { try { stream.destroy(); } catch { /* */ } });
-        stream.pipe(res);
-    } else {
-        res.status(200);
-        res.set('Content-Length', String(total));
-        const stream = file.createReadStream();
-        stream.on('error', () => { try { res.destroy(); } catch { /* */ } });
-        req.on('close', () => { try { stream.destroy(); } catch { /* */ } });
-        stream.pipe(res);
-    }
+    if (r === 'bad') return res.status(416).set('Content-Range', 'bytes */' + total).end();
+    if (r) res.status(206).set('Content-Range', `bytes ${r.start}-${r.end}/${total}`);
+    else res.status(200);
+    res.set('Content-Length', String(r ? r.end - r.start + 1 : total));
+    pipeline(file.createReadStream(r || undefined), res, () => { /* client gone / read error */ });
 });
 
 /**
@@ -88,10 +86,10 @@ router.get('/http', async (req, res) => {
     try { url = unb64(raw); } catch { return res.status(400).send('bad url'); }
     const blocked = guardUrl(url);
     if (blocked) return res.status(403).send(blocked);
-    res.set('Access-Control-Allow-Origin', '*');
 
     const isMp4Like = /\.(mp4|webm|m4v)(\?|$)/i.test(url);
     const wantRemux = req.query.remux === '1' && !isMp4Like && (await hasFfmpeg());
+    if (gone(req)) return;
 
     // Non-mp4 (mkv/…) → remux to fragmented MP4 (no seek on a live remux, but plays inline).
     // SECURITY: fetch through the SSRF-guarded agents + per-hop redirect guard and pipe
@@ -100,14 +98,9 @@ router.get('/http', async (req, res) => {
     // guard the passthrough branch below relies on.
     if (wantRemux) {
         try {
-            const upstream = await axios.get(url, { responseType: 'stream', timeout: 30000, maxRedirects: 5, validateStatus: () => true, beforeRedirect: guardRedirect, ...ssrfAgents() });
-            if (upstream.status >= 400) { upstream.data.destroy?.(); return res.status(502).send('debrid fetch failed: ' + upstream.status); }
-            res.status(200).set('Content-Type', 'video/mp4').set('Cache-Control', 'no-store');
-            const ff = remuxReadableToMp4(upstream.data);
-            ff.stdout.pipe(res);
-            const kill = () => { try { ff.kill('SIGKILL'); } catch { /* */ } };
-            req.on('close', kill);
-            ff.on('error', () => { if (!res.headersSent) res.status(502).end(); });
+            const upstream = await guardedGet(url, { responseType: 'stream', timeout: 30000, maxRedirects: 5, validateStatus: () => true });
+            if (gone(req) || upstream.status >= 400) { upstream.data.destroy?.(); return gone(req) ? undefined : res.status(502).send('debrid fetch failed: ' + upstream.status); }
+            sendRemux(remuxReadableToMp4(upstream.data), res);
         } catch (e: any) {
             if (!res.headersSent) res.status(502).send('debrid fetch failed: ' + (e?.message || e));
         }
@@ -116,17 +109,10 @@ router.get('/http', async (req, res) => {
 
     // mp4/webm (or ffmpeg missing) → passthrough with Range so seeking works.
     try {
-        const headers: Record<string, string> = {};
+        const headers: Record<string, string> = { 'Accept-Encoding': 'identity' };
         if (req.headers.range) headers['Range'] = req.headers.range as string;
-        const upstream = await axios.get(url, { headers, responseType: 'stream', timeout: 30000, validateStatus: () => true, maxRedirects: 5, ...ssrfAgents() });
-        res.status(upstream.status);
-        for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
-            const v = upstream.headers[k]; if (v) res.set(k, v as string);
-        }
-        if (!upstream.headers['accept-ranges']) res.set('Accept-Ranges', 'bytes');
-        req.on('close', () => { try { upstream.data.destroy(); } catch { /* */ } });
-        upstream.data.on('error', () => { try { res.destroy(); } catch { /* */ } });
-        upstream.data.pipe(res);
+        const upstream = await guardedGet(url, { headers, responseType: 'stream', decompress: false, timeout: 30000, validateStatus: () => true, maxRedirects: 5 });
+        pipeUpstream(upstream, req, res);
     } catch (e: any) {
         if (!res.headersSent) res.status(502).send('debrid fetch failed: ' + (e?.message || e));
     }

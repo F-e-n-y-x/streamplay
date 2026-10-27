@@ -14,6 +14,8 @@ export interface HistoryEntry {
   type: "movie" | "tv";
   title: string;
   posterUrl?: string;
+  /** Landscape art for the Continue Watching cards (entries from older builds lack it). */
+  backdropUrl?: string;
   season?: number;
   episode?: number;
   position: number;   // seconds watched
@@ -21,6 +23,8 @@ export interface HistoryEntry {
   provider?: string;  // source/provider name
   sourceType?: string;
   updatedAt: number;
+  /** Synthetic "next episode" entry from nextUp() — never stored. */
+  upNext?: boolean;
 }
 export interface FavEntry extends Card { key: string; updatedAt: number; }
 interface LocalData { history: Record<string, HistoryEntry>; favs: Record<string, FavEntry>; }
@@ -114,16 +118,52 @@ export function getHistoryEntry(type: string, id: number, season?: number, episo
 export function removeHistory(key: string) { delete data.history[key]; save(); emit(); pushRemove("history", key); }
 export function clearHistory() { for (const k of Object.keys(data.history)) pushRemove("history", k); data.history = {}; save(); emit(); }
 
-/** Resume list: partially-watched, newest first, one row per show. */
+const isComplete = (h: HistoryEntry) => h.duration > 0 && h.position >= h.duration * 0.97;
+
+/** Newest history entry for a show/movie (any episode) — the resume target. */
+export function latestFor(type: string, id: number): HistoryEntry | undefined {
+  let best: HistoryEntry | undefined;
+  for (const h of Object.values(data.history)) if (h.type === type && h.id === id && (!best || h.updatedAt > best.updatedAt)) best = h;
+  return best;
+}
+
+/**
+ * The episode to play after a finished one (position 0, `upNext: true`), else null.
+ * `seasons` (TitleDetail.seasons) lets it roll over into the next season; without it
+ * it assumes episode+1 exists in the same season.
+ */
+export function nextUp(h: HistoryEntry, seasons?: { seasonNumber: number; episodeCount: number }[]): HistoryEntry | null {
+  if (h.type !== "tv" || h.season == null || h.episode == null || !isComplete(h)) return null;
+  let season = h.season, episode = h.episode + 1;
+  const cur = seasons?.find((s) => s.seasonNumber === season);
+  if (cur && cur.episodeCount > 0 && episode > cur.episodeCount) {
+    const nxt = seasons!.filter((s) => s.seasonNumber > season && s.seasonNumber > 0).sort((a, b) => a.seasonNumber - b.seasonNumber)[0];
+    if (!nxt) return null;   // finished the show
+    season = nxt.seasonNumber; episode = 1;
+  }
+  return { ...h, key: histKey("tv", h.id, season, episode), season, episode, position: 0, duration: 0, upNext: true };
+}
+
+/** Resume list, newest first, one card per show: the in-progress entry, "Up next" when its
+ *  newest episode is finished, or a duration-0 "started" entry (embeds can't report progress). */
 export function continueWatching(): HistoryEntry[] {
-  const all = Object.values(data.history)
-    .filter((h) => h.duration > 0 && h.position > 5 && h.position < h.duration * 0.97)
-    .sort((a, b) => b.updatedAt - a.updatedAt);
   const seen = new Set<string>();
   const out: HistoryEntry[] = [];
-  for (const h of all) { const sk = `${h.type}-${h.id}`; if (seen.has(sk)) continue; seen.add(sk); out.push(h); }
+  for (const h of Object.values(data.history).sort((a, b) => b.updatedAt - a.updatedAt)) {
+    const sk = `${h.type}-${h.id}`;
+    if (seen.has(sk)) continue;
+    seen.add(sk);
+    if (h.duration <= 0) { out.push(h); continue; }   // embed ("started", no progress reported)
+    const next = nextUp(h);
+    if (next) out.push(next);
+    else if (h.position > 5 && !isComplete(h)) out.push(h);
+  }
   return out;
 }
+/** Watch-page URL for a history entry. */
+export const watchHref = (h: Pick<HistoryEntry, "type" | "id" | "season" | "episode">) =>
+  h.type === "tv" ? `/watch/tv/${h.id}/${h.season ?? 1}/${h.episode ?? 1}` : `/watch/movie/${h.id}`;
+
 export function recentHistory(): HistoryEntry[] { return Object.values(data.history).sort((a, b) => b.updatedAt - a.updatedAt); }
 
 // ── favourites ─────────────────────────────────────────────────────────────────
@@ -138,9 +178,11 @@ export function toggleFav(card: Card): boolean {
 }
 
 // ── sync ────────────────────────────────────────────────────────────────────────
-export async function checkCode(c: string): Promise<{ claimed: boolean; devices: number }> {
-  try { const res = await fetch(`/api/sync/${encodeURIComponent(c.trim())}/check`); return await res.json(); }
-  catch { return { claimed: false, devices: 0 }; }
+async function checkCode(c: string): Promise<{ claimed: boolean; devices: number }> {
+  const res = await fetch(`/api/sync/${encodeURIComponent(c)}/check`).catch(() => null);
+  const body = await res?.json().catch(() => ({}));
+  if (!res?.ok) throw new Error(body?.error || "Can't reach the sync server.");
+  return body;
 }
 /** Create a brand-new code (must be unique/unclaimed). Throws "taken" if already claimed. */
 export async function createSync(c: string): Promise<void> {
@@ -156,21 +198,25 @@ export async function joinSync(c: string): Promise<void> {
   if (!st.claimed) throw new Error("No device has created that code yet.");
   await linkDevice(code2);
 }
+/** POST local data to the room and adopt the merged result. Throws the server's error text. */
+async function seedRoom(c: string): Promise<void> {
+  const res = await fetch(`/api/sync/${encodeURIComponent(c)}/bulk`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ history: data.history, favs: data.favs, settings: getSettings() }),
+  });
+  const merged = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(merged.error || `Sync server said ${res.status}.`);
+  if (merged.history) data.history = merged.history;
+  if (merged.favs) data.favs = merged.favs;
+  save(); emit();
+  applyRemoteSettingsIfNewer(merged.settings);
+}
 async function linkDevice(c: string): Promise<void> {
+  syncState = "connecting"; emit();
+  try { await seedRoom(c); }
+  catch (e) { syncState = code ? "error" : "off"; emit(); throw e; }   // bad/weak code: don't adopt it
   code = c;
   lsSet(CODE_KEY, code);
-  syncState = "connecting"; emit();
-  try {
-    const res = await fetch(`/api/sync/${encodeURIComponent(code)}/bulk`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: data.history, favs: data.favs, settings: getSettings() }),
-    });
-    const merged = await res.json();
-    if (merged.history) data.history = merged.history;
-    if (merged.favs) data.favs = merged.favs;
-    save(); emit();
-    applyRemoteSettingsIfNewer(merged.settings);
-  } catch { syncState = "error"; emit(); }
   connectStream();
 }
 export function disableSync() {
@@ -236,29 +282,12 @@ function pushRemove(kind: "history" | "fav", key: string) {
   fetch(`/api/sync/${encodeURIComponent(code)}/remove`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, key, at: Date.now() }) }).catch(() => {});
 }
 
+/** 10 random [a-z0-9] chars (server requires >= 8 chars, >= 4 distinct for new codes). */
 export function randomCode(): string {
-  return (Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6)).toLowerCase();
+  const abc = "abcdefghijkmnpqrstuvwxyz23456789";   // no 0/o/1/l lookalikes
+  return Array.from(crypto.getRandomValues(new Uint8Array(10)), (b) => abc[b % abc.length]).join("");
 }
 
-/** Re-seed the server room from local data, then open the live stream.
- *  Used on page load so a device that changed things offline (or whose server
- *  room was reset) re-uploads its data and pulls back the merged result. */
-async function resumeSync() {
-  if (!code) return;
-  syncState = "connecting"; emit();
-  try {
-    const res = await fetch(`/api/sync/${encodeURIComponent(code)}/bulk`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ history: data.history, favs: data.favs, settings: getSettings() }),
-    });
-    const merged = await res.json();
-    if (merged.history) data.history = merged.history;
-    if (merged.favs) data.favs = merged.favs;
-    save(); emit();
-    applyRemoteSettingsIfNewer(merged.settings);
-  } catch { /* offline — the stream will retry and snapshot-merge */ }
-  connectStream();
-}
-
-// auto-resume sync on load if a code is stored
-if (code) resumeSync();
+// Auto-resume on load: re-seed the room from local data (offline edits, reset server),
+// then open the live stream. Offline is fine — the stream retries and snapshot-merges.
+if (code) { syncState = "connecting"; seedRoom(code).catch(() => {}).finally(connectStream); }

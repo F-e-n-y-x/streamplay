@@ -1,4 +1,4 @@
-import axios from 'axios';
+import net from '../utils/net';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
 
 /**
@@ -21,13 +21,13 @@ const PROVIDERS = () => (process.env.CONSUMET_PROVIDERS || 'zoro,animepahe,anime
 
 async function tryProvider(base: string, provider: string, anilistId: number, episode: number, dub: boolean): Promise<ExtractorResult | null> {
     try {
-        const info = await axios.get(`${base}/meta/anilist/info/${anilistId}`, { params: { provider, ...(dub ? { dub: 'true' } : {}) }, timeout: 15000 });
+        const info = await net.get(`${base}/meta/anilist/info/${anilistId}`, { params: { provider, ...(dub ? { dub: 'true' } : {}) }, timeout: 15000 });
         const eps: any[] = info.data?.episodes || [];
         if (!eps.length) return null;
-        const ep = eps.find((e) => Number(e.number) === episode) || (eps.length === 1 ? eps[0] : undefined);
+        const ep = eps.find((e) => Number(e.number) === episode) || (eps.length === 1 && episode === 1 ? eps[0] : undefined);
         if (!ep?.id) return null;
 
-        const watch = await axios.get(`${base}/meta/anilist/watch/${encodeURIComponent(ep.id)}`, { params: { provider }, timeout: 20000 });
+        const watch = await net.get(`${base}/meta/anilist/watch/${encodeURIComponent(ep.id)}`, { params: { provider }, timeout: 20000 });
         const srcs: any[] = watch.data?.sources || [];
         const headers = watch.data?.headers || {};
         const streams: Stream[] = srcs
@@ -56,14 +56,23 @@ export const ConsumetProvider: Provider = {
         if (!base || !data.isAnime) return { streams: [], subtitles: [] };
         const anilistId = data.animeIds?.anilistId;
         if (!anilistId) return { streams: [], subtitles: [] };
+        // `anilistId` is ONE AniList cour; episodes are numbered per cour. Unless the SSE
+        // route resolved this exact season's cour (seasonResolved), a TMDB S2+ episode
+        // number would land on the wrong cour's episode — so don't guess.
+        if (data.type === 'tv' && (data.season ?? 1) > 1 && !data.seasonResolved) return { streams: [], subtitles: [] };
         const episode = data.type === 'movie' ? 1 : (data.episode ?? 1);
 
-        // Walk providers in preference order; try sub then dub per provider; stop on first hit.
-        for (const provider of PROVIDERS()) {
-            for (const dub of [false, true]) {
-                const r = await tryProvider(base, provider, anilistId, episode, dub);
-                if (r && r.streams.length) return r;
-            }
+        // All back-ends × {sub, dub} in parallel (worst case ≈ one info+watch round-trip,
+        // not the sum of every back-end), then take the first back-end in preference
+        // order that resolved anything — with its SUB and DUB streams merged.
+        const results = await Promise.all(PROVIDERS().map((provider) =>
+            Promise.all([false, true].map((dub) => tryProvider(base, provider, anilistId, episode, dub)))));
+        for (const pair of results) {
+            const hits = pair.filter((r): r is ExtractorResult => !!r?.streams.length);
+            if (!hits.length) continue;
+            const subtitles: Subtitle[] = [];
+            for (const sub of hits.flatMap((h) => h.subtitles)) if (!subtitles.some((x) => x.url === sub.url)) subtitles.push(sub);
+            return { streams: hits.flatMap((h) => h.streams), subtitles };
         }
         return { streams: [], subtitles: [] };
     },

@@ -89,13 +89,9 @@ export const Hdmovie2Provider: Provider = {
                     });
                     for (const href of inner) {
                         if (!href.includes('GDFlix')) continue;
-                        // follow redirects to the real GDFlix url via location header
-                        let redirectedUrl = href;
-                        for (let i = 0; i < 10; i++) {
-                            const r = await app.get(href, { referer: anchor });
-                            const loc = r.responseHeaders['location'];
-                            if (loc) { redirectedUrl = loc; break; }
-                        }
+                        // The real GDFlix url is the 3xx Location — stop at it (auto-follow swallows the header).
+                        const r = await app.get(href, { referer: anchor, maxRedirects: 0 });
+                        const redirectedUrl = r.responseHeaders['location'] || href;
                         const hosted = await loadExtractor(redirectedUrl, '');
                         result.streams.push(...hosted.streams.map(s => ({ ...s, server: `Hdmovie2${type} ${s.server}` })));
                         result.subtitles.push(...hosted.subtitles);

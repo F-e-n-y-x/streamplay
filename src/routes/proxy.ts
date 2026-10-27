@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import { proxyWarpAgent } from '../utils/warp';
-import { guardUrl, ssrfAgents, guardRedirect, SSRF_BLOCKED } from '../utils/ssrf';
+import { USER_AGENT } from '../utils/encdec';
+import { guardUrl, guardedGet, guardRedirect, SSRF_BLOCKED, pipeUpstream, setPassthroughSecurity } from '../utils/ssrf';
 
 /**
  * Fetch an upstream URL for the proxy, retrying through WARP when the direct
@@ -9,14 +10,21 @@ import { guardUrl, ssrfAgents, guardRedirect, SSRF_BLOCKED } from '../utils/ssrf
  * host) are blocked/poisoned on the direct egress and only reachable via WARP —
  * the providers already egress through WARP, so playback must be able to as well.
  *
- * The direct path uses the SSRF-guarded agents: their DNS lookup rejects any
- * host that resolves to a private/loopback IP, so a redirect to (or a rebinding
- * of) an internal address is refused at connect time — not just at guardUrl.
- * The WARP fallback egresses through Cloudflare, which can't reach the LAN.
+ * The direct path uses the SSRF-guarded agents (private IPs refused at connect
+ * time, literal or resolved, on every redirect hop).
+ *
+ * The WARP fallback is NOT equally safe: its SOCKS agent resolves DNS remotely
+ * (socks5h) and WARP's default split-tunnel excludes RFC1918, so a name that
+ * resolves privately *at the WARP container* reaches that container's LAN.
+ * guardUrl + guardRedirect still stop literal private hosts; a DNS-rebinding name
+ * that fails direct but resolves privately at WARP is the residual risk.
+ * ponytail: mitigate at the WARP container (iptables-drop RFC1918 egress for the
+ * SOCKS user) — doing it here would need local DNS (socks5), which defeats WARP's
+ * purpose of getting around poisoned resolvers.
  */
-async function fetchUpstream(url: string, config: AxiosRequestConfig): Promise<AxiosResponse> {
+export async function fetchUpstream(url: string, config: AxiosRequestConfig): Promise<AxiosResponse> {
     try {
-        return await axios.get(url, { ...config, ...ssrfAgents(), beforeRedirect: guardRedirect });
+        return await guardedGet(url, config);
     } catch (e: any) {
         // NEVER fall back to WARP when the direct attempt was refused by the SSRF
         // guard: the WARP agent resolves DNS remotely (socks5h), so retrying there
@@ -52,9 +60,8 @@ const proxyErr = (e: any): string => {
  */
 
 const router = Router();
-
-const DEFAULT_UA =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
+// Every proxy response carries third-party bytes on our origin: nosniff + sandbox + ACAO.
+router.use((_req, res, next) => { setPassthroughSecurity(res); next(); });
 
 // The manifest/subtitle branches buffer the whole body into memory (responseType
 // 'text'). Cap it so a caller can't point the (unauthenticated) proxy at a multi-GB
@@ -62,7 +69,7 @@ const DEFAULT_UA =
 const TEXT_MAX_BYTES = 25 * 1024 * 1024;
 
 const b64 = (s: string) => Buffer.from(s, 'utf-8').toString('base64url');
-const unb64 = (s: string) => Buffer.from(s, 'base64url').toString('utf-8');
+export const unb64 = (s: string) => Buffer.from(s, 'base64url').toString('utf-8');
 
 const decodeHeaders = (h?: string): Record<string, string> => {
     if (!h) return {};
@@ -151,7 +158,10 @@ router.get('/', async (req, res) => {
     if (blocked) return res.status(403).send(blocked);
 
     const headers: Record<string, string> = {
-        'User-Agent': DEFAULT_UA,
+        'User-Agent': USER_AGENT,
+        // Ask for the raw bytes: the body is piped through untouched (decompress:false),
+        // so Content-Length/Content-Range must describe what we forward.
+        'Accept-Encoding': 'identity',
         ...decodeHeaders(req.query.h as string),
     };
     if (req.headers.range) headers['Range'] = req.headers.range as string;
@@ -162,28 +172,16 @@ router.get('/', async (req, res) => {
         if (isM3u8) {
             const upstream = await fetchUpstream(url, { headers, responseType: 'text', timeout: 20000, maxContentLength: TEXT_MAX_BYTES, transformResponse: r => r });
             const rewritten = rewriteManifest(String(upstream.data), url, (req.query.h as string) || '', req.query.audio as string | undefined);
-            res.set('Access-Control-Allow-Origin', '*');
             res.set('Content-Type', 'application/vnd.apple.mpegurl');
             res.set('Cache-Control', 'no-store');
             return res.send(rewritten);
         }
 
         // binary passthrough (segments, keys, mp4) with Range support
-        const upstream = await fetchUpstream(url, { headers, responseType: 'stream', timeout: 30000, validateStatus: () => true });
-        res.status(upstream.status);
-        res.set('Access-Control-Allow-Origin', '*');
-        for (const k of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'cache-control']) {
-            const v = upstream.headers[k];
-            if (v) res.set(k, v as string);
-        }
-        if (!upstream.headers['accept-ranges']) res.set('Accept-Ranges', 'bytes');
-        // Destroy the upstream socket if the client disconnects mid-stream, so an
-        // abandoned seek/tab doesn't leak an open connection to the provider CDN.
-        req.on('close', () => { try { upstream.data.destroy(); } catch { /* */ } });
-        upstream.data.on('error', () => { try { res.destroy(); } catch { /* */ } });
-        upstream.data.pipe(res);
+        const upstream = await fetchUpstream(url, { headers, responseType: 'stream', decompress: false, timeout: 30000, validateStatus: () => true });
+        pipeUpstream(upstream, req, res);
     } catch (e: any) {
-        res.status(502).send(proxyErr(e));
+        if (!res.headersSent) res.status(502).send(proxyErr(e));
     }
 });
 
@@ -232,7 +230,7 @@ router.get('/sub', async (req, res) => {
         try { origin = new URL(url).origin; } catch { /* */ }
         const upstream = await fetchUpstream(url, {
             // Referer = the sub's own origin avoids most CDN hotlink 403s.
-            headers: { 'User-Agent': DEFAULT_UA, ...(origin ? { Referer: origin + '/' } : {}), ...decodeHeaders(req.query.h as string) },
+            headers: { 'User-Agent': USER_AGENT, ...(origin ? { Referer: origin + '/' } : {}), ...decodeHeaders(req.query.h as string) },
             responseType: 'text', timeout: 15000, maxContentLength: TEXT_MAX_BYTES, transformResponse: r => r,
         });
         let body = String(upstream.data);
@@ -248,7 +246,6 @@ router.get('/sub', async (req, res) => {
                 .replace(/\{\\[^}]*\}/g, '')                                 // strip {\an8} style override tags
                 .replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');           // comma -> dot
         }
-        res.set('Access-Control-Allow-Origin', '*');
         res.set('Content-Type', 'text/vtt; charset=utf-8');
         res.send(body);
     } catch (e: any) {

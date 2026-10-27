@@ -2,8 +2,27 @@ import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult } from '../types';
 
 import { safeGet } from '../utils/http';
+import { seasonRe, episodeRe } from '../utils/season';
 
 const CINEMACITY_API = 'https://cinemacity.cc';
+// Logged-in DLE session (the player is members-only). Override via env when it expires;
+// the built-in default keeps existing deployments working.
+const COOKIE = process.env.CINEMACITY_COOKIE
+    || Buffer.from('ZGxlX3VzZXJfaWQ9MzI3Mjk7IGRsZV9wYXNzd29yZD04OTQxNzFjNmE4ZGFiMThlZTU5NGQ1YzY1MjAwOWEzNTs=', 'base64').toString('utf-8');
+
+interface PjItem { title?: string; file?: string; folder?: PjItem[] }
+
+/**
+ * Pick the playable entries from a Playerjs `file` list. Movies: every item with a
+ * `file`. Series: the list is [{title:"Season N", folder:[{title:"Episode M", file}]}] —
+ * return only that season's episode (never another season's / a movie's files).
+ */
+export function pickPlayerjsFiles(items: PjItem[], season?: number, episode?: number): PjItem[] {
+    if (season == null) return items.filter((f) => f.file);
+    const s = items.find((f) => Array.isArray(f.folder) && seasonRe(season).test(f.title || ''));
+    const eRe = episodeRe(episode ?? 1);
+    return (s?.folder || []).filter((e) => e.file && eRe.test(e.title || ''));
+}
 
 export const CineMacityProvider: Provider = {
     id: 'cinemacity',
@@ -14,10 +33,7 @@ export const CineMacityProvider: Provider = {
 
         try {
             const searchUrl = `${CINEMACITY_API}/?do=search&subaction=search&search_start=0&full_search=0&story=${data.imdbId}`;
-            const headers = {
-                "Cookie": Buffer.from("ZGxlX3VzZXJfaWQ9MzI3Mjk7IGRsZV9wYXNzd29yZD04OTQxNzFjNmE4ZGFiMThlZTU5NGQ1YzY1MjAwOWEzNTs=", 'base64').toString('utf-8'),
-                "User-Agent": "Mozilla/5.0"
-            };
+            const headers = { Cookie: COOKIE, 'User-Agent': 'Mozilla/5.0' };
 
             const searchRes = await safeGet(searchUrl, { headers, cloudflare: true });
             const $ = cheerio.load(searchRes.text);
@@ -60,29 +76,20 @@ export const CineMacityProvider: Provider = {
             const fileData = configJson.file;
 
             if (fileData) {
-                // fileData could be a string or array of arrays
-                let files = [];
-                try {
-                    files = JSON.parse(fileData);
-                } catch(e) {
-                    if (typeof fileData === 'string') {
-                        files = [{ file: fileData }];
-                    }
+                // `file` is a plain URL (movie), a JSON string, or an already-parsed array.
+                let files: PjItem[] = [];
+                if (Array.isArray(fileData)) files = fileData;
+                else if (typeof fileData === 'string') {
+                    try { files = JSON.parse(fileData); } catch { files = [{ file: fileData }]; }
                 }
-
-                if (Array.isArray(files)) {
-                    for (const f of files) {
-                        if (f.file) {
-                            const url = f.file;
-                            const isM3u8 = url.includes('.m3u8');
-                            result.streams.push({
-                                server: 'CineMacity',
-                                link: url,
-                                type: isM3u8 ? 'm3u8' : 'mp4',
-                                quality: f.title || 'Unknown'
-                            });
-                        }
-                    }
+                const season = data.type === 'tv' ? (data.season ?? 1) : undefined;
+                for (const f of Array.isArray(files) ? pickPlayerjsFiles(files, season, data.episode) : []) {
+                    result.streams.push({
+                        server: season != null ? `CineMacity · ${f.title}` : 'CineMacity',
+                        link: f.file!,
+                        type: f.file!.includes('.m3u8') ? 'm3u8' : 'mp4',
+                        quality: season != null ? undefined : f.title || undefined,
+                    });
                 }
             }
 

@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { pad2 } from '../utils/season';
 import { app, safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -32,7 +33,6 @@ const extractMdrive = async (url: string): Promise<string[]> => {
     }
 };
 
-const pad2 = (n?: number): string => (n != null && n < 10 ? `0${n}` : `${n}`);
 
 export const MoviesDriveProvider: Provider = {
     id: 'moviesdrive',

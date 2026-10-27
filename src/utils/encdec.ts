@@ -47,7 +47,9 @@ const gated = async <T>(fn: () => Promise<T>): Promise<T | null> => {
         for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
                 return await fn();
-            } catch {
+            } catch (e: any) {
+                // Cancelled (client went away) → give the gate slot back, don't retry.
+                if (e?.code === 'ERR_CANCELED') return null;
                 if (attempt < MAX_RETRIES) await sleep(300 * (attempt + 1));
             }
         }

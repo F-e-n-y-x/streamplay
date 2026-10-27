@@ -15,13 +15,33 @@ import { getDubSet } from './dublist';
 
 const ANILIST = 'https://graphql.anilist.co';
 
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+// One retry on a rate-limit / transient 5xx, honouring Retry-After (capped).
+async function anilistPost(query: string, variables: Record<string, any>): Promise<any> {
+    for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+            return await net.post(ANILIST, { query, variables },
+                { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
+        } catch (e: any) {
+            const st = e?.response?.status;
+            if (attempt === 0 && (st === 429 || st === 500 || st === 502 || st === 503 || st === 504)) {
+                const ra = Number(e?.response?.headers?.['retry-after']);
+                await sleep(Math.min(5000, (Number.isFinite(ra) && ra > 0 ? ra : 1.2) * 1000));
+                continue;
+            }
+            throw e;
+        }
+    }
+    return null;
+}
+
 // Mainline TV formats count as "seasons"; movies/OVAs/specials are franchise extras.
 const MAINLINE = new Set(['TV', 'TV_SHORT', 'ONA']);
 
 const RELATIONS_QUERY = `
 query ($id: Int) {
   Media(id: $id, type: ANIME) {
-    id idMal format episodes seasonYear status
+    id idMal format episodes duration seasonYear status
     startDate { year }
     nextAiringEpisode { episode }
     title { romaji english native }
@@ -29,7 +49,7 @@ query ($id: Int) {
       edges {
         relationType
         node {
-          id idMal type format episodes seasonYear status
+          id idMal type format episodes duration seasonYear status
           startDate { year }
           nextAiringEpisode { episode }
           title { romaji english native }
@@ -46,10 +66,11 @@ export interface AniSeason {
     titles: string[];
     episodeCount: number;
     year?: number;
+    runtime?: number;   // typical episode length (min)
 }
 
 interface AniNode {
-    id: number; idMal?: number; type?: string; format?: string; episodes?: number;
+    id: number; idMal?: number; type?: string; format?: string; episodes?: number; duration?: number;
     seasonYear?: number; status?: string; startDate?: { year?: number }; nextAiringEpisode?: { episode?: number };
     title?: { romaji?: string; english?: string; native?: string };
 }
@@ -73,15 +94,15 @@ const SEASONISH = /\b(season|part|cour|\d+(st|nd|rd|th)|2nd|3rd|final|ii|iii|iv|
 
 const cache = new Map<number, { at: number; seasons: AniSeason[] }>();
 const TTL = 6 * 60 * 60 * 1000;
+const CACHE_MAX = 2000;
 
+// null = AniList has no such id (it answers 404); network/429 errors THROW so a
+// franchise walk never mistakes a rate-limit for "end of chain".
 async function fetchMedia(id: number): Promise<{ node: AniNode; edges: { relationType: string; node: AniNode }[] } | null> {
-    try {
-        const res = await net.post(ANILIST, { query: RELATIONS_QUERY, variables: { id } },
-            { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
-        const m = res.data?.data?.Media;
-        if (!m) return null;
-        return { node: m, edges: (m.relations?.edges || []) as any[] };
-    } catch { return null; }
+    let res: any;
+    try { res = await anilistPost(RELATIONS_QUERY, { id }); } catch (e: any) { if (e?.response?.status === 404) return null; throw e; }
+    const m = res?.data?.data?.Media;
+    return m ? { node: m, edges: (m.relations?.edges || []) as any[] } : null;
 }
 
 const norm = (s: string): string => (s || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
@@ -99,11 +120,8 @@ query ($search: String) {
 }`;
 
 async function searchFranchise(title: string): Promise<AniNode[]> {
-    try {
-        const res = await net.post(ANILIST, { query: FRANCHISE_SEARCH, variables: { search: title } },
-            { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
-        return (res.data?.data?.Page?.media || []) as AniNode[];
-    } catch { return []; }
+    const res = await anilistPost(FRANCHISE_SEARCH, { search: title });
+    return (res?.data?.data?.Page?.media || []) as AniNode[];
 }
 
 /**
@@ -113,7 +131,9 @@ async function searchFranchise(title: string): Promise<AniNode[]> {
  * (e.g. "Slime" S1's only sequel edge points to a later OVA, not S2). So we UNION two
  * signals: (1) walk SEQUEL/PREQUEL through any bridging entry, collecting mainline TV
  * nodes; (2) a title search, keeping same-franchise TV entries (prefix-matched titles).
- * Then order by air year. Returns [] if AniList can't be reached (caller uses TMDB).
+ * Then order by air year. THROWS if any AniList call fails (429 after retry, network):
+ * a partial walk would silently drop a season and shift every later one, so the caller
+ * falls back to TMDB instead and nothing partial is cached.
  */
 export async function animeFranchise(rootAnilistId: number, baseTitle?: string): Promise<AniSeason[]> {
     const cached = cache.get(rootAnilistId);
@@ -191,7 +211,9 @@ export async function animeFranchise(rootAnilistId: number, baseTitle?: string):
         titles: titlesOf(n),
         episodeCount: epCountOf(n),
         year: yearOf(n),
+        runtime: n.duration || undefined,
     }));
+    if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
     cache.set(rootAnilistId, { at: Date.now(), seasons });
     return seasons;
 }
@@ -231,12 +253,19 @@ query ($page: Int, $perPage: Int, $genres: [String], $tags: [String], $format: [
       id idMal format seasonYear averageScore
       startDate { year }
       title { romaji english native }
-      coverImage { large }
+      coverImage { large extraLarge }
     }
   }
 }`;
 
-interface AniBrowseNode extends AniNode { averageScore?: number; coverImage?: { large?: string } }
+interface AniBrowseNode extends AniNode { averageScore?: number; coverImage?: { large?: string; extraLarge?: string } }
+const toBrowseItem = (n: AniBrowseNode): AniBrowseItem => ({
+    anilistId: n.id, malId: n.idMal,
+    title: displayTitle(n), titles: titlesOf(n),
+    type: n.format === 'MOVIE' ? 'movie' : 'tv',
+    year: yearOf(n), posterUrl: n.coverImage?.extraLarge ?? n.coverImage?.large,
+    score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
+});
 
 export interface AniBrowseItem {
     anilistId: number; malId?: number;
@@ -246,7 +275,7 @@ export interface AniBrowseItem {
 }
 
 export interface AniBrowseOpts {
-    page?: number; perPage?: number;
+    page?: number;
     cats?: string[];                                   // app category keys (OR/AND per AniList semantics)
     type?: 'all' | 'tv' | 'movie';
     cat?: string;                                      // popular | trending | newest | toprated | random
@@ -255,17 +284,18 @@ export interface AniBrowseOpts {
     audio?: string;                                    // 'dub' → only titles with a known dub (best-effort, see dublist.ts)
 }
 
-// range → FuzzyDateInt (yyyymmdd) for AniList's startDate_greater.
-const rangeToFuzzy = (range?: string): number | undefined => {
-    const d = new Date();
-    if (range === 'day') d.setDate(d.getDate() - 1);
-    else if (range === 'week') d.setDate(d.getDate() - 7);
-    else if (range === 'month') d.setMonth(d.getMonth() - 1);
-    else if (range === 'year') d.setFullYear(d.getFullYear() - 1);
+/** Start of a browse range as yyyy-mm-dd (UTC), undefined for all-time. Shared with the TMDB browse. */
+export const rangeStart = (range?: string, now = new Date()): string | undefined => {
+    const d = new Date(now);
+    if (range === 'day') d.setUTCDate(d.getUTCDate() - 1);
+    else if (range === 'week') d.setUTCDate(d.getUTCDate() - 7);
+    else if (range === 'month') d.setUTCMonth(d.getUTCMonth() - 1);
+    else if (range === 'year') d.setUTCFullYear(d.getUTCFullYear() - 1);
     else return undefined;
-    return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+    return d.toISOString().slice(0, 10);
 };
-const todayFuzzy = (): number => { const d = new Date(); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); };
+// yyyy-mm-dd → AniList FuzzyDateInt (yyyymmdd).
+export const toFuzzy = (iso?: string): number | undefined => (iso ? Number(iso.replace(/-/g, '')) : undefined);
 
 // Browse results are cached to survive AniList's aggressive rate limit (~30–90
 // req/min). Without this, every category click is a fresh AniList call, so rapid
@@ -274,26 +304,20 @@ const todayFuzzy = (): number => { const d = new Date(); return d.getFullYear() 
 const browseCache = new Map<string, { at: number; data: { items: AniBrowseItem[]; lastPage: number } }>();
 const BROWSE_TTL = 15 * 60 * 1000;
 const BROWSE_MAX = 500;
-
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-// One retry on a rate-limit / transient 5xx, honouring Retry-After (capped).
-async function anilistPost(query: string, variables: Record<string, any>): Promise<any> {
-    for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-            return await net.post(ANILIST, { query, variables },
-                { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
-        } catch (e: any) {
-            const st = e?.response?.status;
-            if (attempt === 0 && (st === 429 || st === 500 || st === 502 || st === 503 || st === 504)) {
-                const ra = Number(e?.response?.headers?.['retry-after']);
-                await sleep(Math.min(5000, (Number.isFinite(ra) && ra > 0 ? ra : 1.2) * 1000));
-                continue;
-            }
-            throw e;
-        }
-    }
-    return null;
-}
+type AniPage = { items: AniBrowseItem[]; lastPage: number };
+const cacheSet = (key: string, data: AniPage) => {
+    if (browseCache.size >= BROWSE_MAX) browseCache.delete(browseCache.keys().next().value!);
+    browseCache.set(key, { at: Date.now(), data });
+};
+// Raw AniList pages are cached individually so dub display page N reuses pages 1..N-1's
+// fetches instead of re-walking from AniList page 1 (that walk was what tripped 429s).
+const cachedPage = async (key: string, ttl: number, fetch: () => Promise<AniPage>): Promise<AniPage> => {
+    const c = browseCache.get(key);
+    if (c && Date.now() - c.at < ttl) return c.data;
+    const data = await fetch();
+    if (data.items.length) cacheSet(key, data);
+    return data;
+};
 
 // "Latest Episode" (the default anime view, like anikototv's home): the most recently
 // AIRED episodes across all currently-running anime, newest first — dedup'd to one card
@@ -308,7 +332,7 @@ query ($page: Int, $perPage: Int, $now: Int) {
         id idMal format seasonYear averageScore isAdult
         startDate { year }
         title { romaji english native }
-        coverImage { large }
+        coverImage { large extraLarge }
       }
     }
   }
@@ -320,10 +344,10 @@ query ($page: Int, $perPage: Int, $now: Int) {
  * out a FIXED-size display page — otherwise every page shows a different count.
  * `fetchAniPage(n)` returns one AniList page's mapped items + its lastPage.
  */
-async function paginateDubbed(
-    fetchAniPage: (aniPage: number) => Promise<{ items: AniBrowseItem[]; lastPage: number }>,
+export async function paginateDubbed(
+    fetchAniPage: (aniPage: number) => Promise<AniPage>,
     displayPage: number, pageSize: number, dubSet: Set<number> | null,
-): Promise<{ items: AniBrowseItem[]; lastPage: number }> {
+): Promise<AniPage> {
     const collected: AniBrowseItem[] = [];
     const seen = new Set<number>();
     let aniPage = 1, aniLast = 1;
@@ -340,7 +364,9 @@ async function paginateDubbed(
         aniPage++;
     }
     const items = collected.slice((displayPage - 1) * pageSize, displayPage * pageSize);
-    const lastPage = (collected.length > displayPage * pageSize || aniPage <= aniLast) ? displayPage + 1 : displayPage;
+    // Another page exists only if we actually collected past this one — "AniList has more
+    // pages" isn't enough once the 25-page cap is hit (that produced endless empty pages).
+    const lastPage = collected.length > displayPage * pageSize ? displayPage + 1 : Math.max(1, Math.ceil(collected.length / pageSize));
     return { items, lastPage };
 }
 
@@ -356,7 +382,7 @@ async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]
 
     // One AniList airing page → deduped, format/adult-filtered items (perPage 50: dedup
     // by show collapses many airings, so over-fetch to fill a page).
-    const fetchAniPage = async (aniPage: number): Promise<{ items: AniBrowseItem[]; lastPage: number }> => {
+    const fetchAniPage = (aniPage: number) => cachedPage(`latestraw:${!!o.adult}:${o.type || 'all'}:${aniPage}`, 5 * 60 * 1000, async () => {
         const res = await anilistPost(LATEST_QUERY, { page: aniPage, perPage: 50, now: Math.floor(Date.now() / 1000) });
         const scheds: { media: AniBrowseNode & { isAdult?: boolean } }[] = res?.data?.data?.Page?.airingSchedules || [];
         const seen = new Set<number>();
@@ -366,26 +392,20 @@ async function anilistLatest(o: AniBrowseOpts): Promise<{ items: AniBrowseItem[]
             if (!o.adult && n.isAdult) continue;
             if (wantFmt && !wantFmt.includes(n.format || '')) continue;
             seen.add(n.id);
-            items.push({
-                anilistId: n.id, malId: n.idMal,
-                title: displayTitle(n), titles: titlesOf(n),
-                type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
-                year: yearOf(n), posterUrl: n.coverImage?.large,
-                score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
-            });
+            items.push(toBrowseItem(n));
         }
         return { items, lastPage: Math.min(res?.data?.data?.Page?.pageInfo?.lastPage || 1, 50) };
-    };
+    });
 
     try {
-        let out: { items: AniBrowseItem[]; lastPage: number };
+        let out: AniPage;
         if (dubOnly) {
             out = await paginateDubbed(fetchAniPage, page, PAGE_SIZE, await getDubSet());
         } else {
             const r = await fetchAniPage(page);
             out = { items: r.items.slice(0, PAGE_SIZE), lastPage: r.lastPage };
         }
-        if (out.items.length) browseCache.set(key, { at: Date.now(), data: out });
+        if (out.items.length) cacheSet(key, out);
         return (!out.items.length && cached) ? cached.data : out;
     } catch { return cached ? cached.data : { items: [], lastPage: 1 }; }
 }
@@ -409,17 +429,20 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
     let page = o.page || 1;
     if (o.cat === 'random') page = 1 + Math.floor(Math.random() * 20);
     const dubOnly = o.audio === 'dub';
-    const PAGE = o.perPage || PAGE_SIZE;
+    // Trending is already "what's hot now" (TRENDING_DESC); a premiere-date window on top
+    // of it kept only shows that STARTED this week → a near-empty list. Range applies to
+    // Newest / Top-Rated only.
+    const ranged = o.cat === 'newest' || o.cat === 'toprated';
 
     const buildVars = (aniPage: number, perPage: number): Record<string, any> => ({
         page: aniPage, perPage,
         genres: genres.length ? genres : undefined,
         tags: tags.length ? tags : undefined,
         format, sort,
-        startGte: (o.cat === 'newest' || o.cat === 'trending' || o.cat === 'toprated') ? rangeToFuzzy(o.range) : undefined,
+        startGte: ranged ? toFuzzy(rangeStart(o.range)) : undefined,
         // Cap Newest/Trending/Top-Rated at today so unreleased/announced titles (which
         // AniList sorts to the very top by START_DATE_DESC) don't dominate the list.
-        startLte: (o.cat === 'newest' || o.cat === 'trending' || o.cat === 'toprated') ? todayFuzzy() : undefined,
+        startLte: ranged || o.cat === 'trending' ? toFuzzy(new Date().toISOString().slice(0, 10)) : undefined,
         // Top-Rated by raw score is dominated by tiny-sample outliers; require a real
         // popularity floor so it returns actual acclaimed titles.
         popGte: o.cat === 'toprated' ? 5000 : undefined,
@@ -428,42 +451,29 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
         isAdult: o.adult ? undefined : false,
     });
 
-    const mapNode = (n: AniBrowseNode): AniBrowseItem => ({
-        anilistId: n.id, malId: n.idMal,
-        title: displayTitle(n), titles: titlesOf(n),
-        type: (n.format === 'MOVIE' ? 'movie' : 'tv') as 'movie' | 'tv',
-        year: yearOf(n), posterUrl: n.coverImage?.large,
-        score: n.averageScore ? Math.round(n.averageScore) / 10 : undefined,
-    });
-    const fetchAniPage = async (aniPage: number): Promise<{ items: AniBrowseItem[]; lastPage: number }> => {
-        const res = await anilistPost(BROWSE_QUERY, buildVars(aniPage, 50));
+    const fetchAniPage = async (aniPage: number, perPage = 50): Promise<AniPage> => {
+        const res = await anilistPost(BROWSE_QUERY, buildVars(aniPage, perPage));
         const p = res?.data?.data?.Page;
-        return { items: ((p?.media || []) as AniBrowseNode[]).map(mapNode).filter((x) => x.anilistId && x.title), lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
+        return { items: ((p?.media || []) as AniBrowseNode[]).map(toBrowseItem).filter((x) => x.anilistId && x.title), lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
     };
 
     const useCache = o.cat !== 'random';
-    const key = JSON.stringify(buildVars(page, PAGE)) + (dubOnly ? '|dub' : '');
+    const key = JSON.stringify(buildVars(page, PAGE_SIZE)) + (dubOnly ? '|dub' : '');
     const cached = browseCache.get(key);
     if (useCache && cached && Date.now() - cached.at < BROWSE_TTL) return cached.data;
 
     try {
-        let out: { items: AniBrowseItem[]; lastPage: number };
+        let out: AniPage;
         if (dubOnly && useCache) {
             // Accumulate across AniList pages so each display page is a full 24.
-            out = await paginateDubbed(fetchAniPage, page, PAGE, await getDubSet());
+            out = await paginateDubbed((n) => cachedPage(JSON.stringify(buildVars(n, 50)), BROWSE_TTL, () => fetchAniPage(n)), page, PAGE_SIZE, await getDubSet());
         } else {
-            const res = await anilistPost(BROWSE_QUERY, buildVars(page, dubOnly ? 50 : PAGE));
-            const p = res?.data?.data?.Page;
-            let items = ((p?.media || []) as AniBrowseNode[]).map(mapNode).filter((x) => x.anilistId && x.title);
-            if (dubOnly) { const ds = await getDubSet(); if (ds.size) items = items.filter((x) => x.malId && ds.has(x.malId)); }
-            out = { items, lastPage: Math.min(p?.pageInfo?.lastPage || 1, 50) };
+            out = await fetchAniPage(page, dubOnly ? 50 : PAGE_SIZE);
+            if (dubOnly) { const ds = await getDubSet(); out.items = out.items.filter((x) => !ds.size || (x.malId && ds.has(x.malId))).slice(0, PAGE_SIZE); }
         }
         // Cache only a real result; never cache an empty (a rate-limited/blank response
         // must not stick). Serve stale on the next failure instead.
-        if (useCache && out.items.length) {
-            if (browseCache.size >= BROWSE_MAX) { const oldest = browseCache.keys().next().value; if (oldest) browseCache.delete(oldest); }
-            browseCache.set(key, { at: Date.now(), data: out });
-        }
+        if (useCache && out.items.length) cacheSet(key, out);
         if (!out.items.length && cached) return cached.data;
         return out;
     } catch {
@@ -474,7 +484,7 @@ export async function anilistBrowse(o: AniBrowseOpts): Promise<{ items: AniBrows
 
 /** Title variants + year + format for ONE AniList id — used to resolve a browsed
  *  cour back to a TMDB entry when the client didn't pass the titles. */
-export async function anilistTitleVariants(id: number): Promise<{ titles: string[]; year?: number; type: 'movie' | 'tv' } | null> {
+export async function anilistTitleVariants(id: number): Promise<{ titles: string[]; year?: number; type: 'movie' | 'tv' } | null> {   // throws on network error
     const m = await fetchMedia(id);
     if (!m) return null;
     return { titles: titlesOf(m.node), year: yearOf(m.node), type: m.node.format === 'MOVIE' ? 'movie' : 'tv' };
@@ -486,6 +496,7 @@ export interface AniEpisode {
     overview?: string;
     stillUrl?: string;
     airDate?: string;
+    runtime?: number;   // minutes
 }
 
 /**
@@ -511,6 +522,7 @@ async function jikanEpisodeTitles(malId: number): Promise<Map<number, string>> {
             if (!r.data?.pagination?.has_next_page) break;
         }
     } catch { /* best-effort enrichment */ }
+    if (jikanCache.size >= CACHE_MAX) jikanCache.delete(jikanCache.keys().next().value!);
     jikanCache.set(malId, { at: Date.now(), titles });
     return titles;
 }
@@ -535,6 +547,7 @@ export async function animeEpisodes(anilistId: number, count: number, malId?: nu
                 overview: e.overview || e.summary || undefined,
                 stillUrl: e.image || undefined,
                 airDate: e.airDate || e.airdate || undefined,
+                runtime: Number(e.runtime || e.length) || undefined,
             }))
             .sort((a, b) => a.episodeNumber - b.episodeNumber);
     } catch { /* fall through to Jikan / bare list */ }

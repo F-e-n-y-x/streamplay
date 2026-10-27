@@ -1,4 +1,6 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { seasonRe } from '../utils/season';
+import { fixUrl } from '../utils/bypass';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -31,6 +33,7 @@ export const HdHub4uProvider: Provider = {
 
         try {
             const baseUrl = await getDomain('hdhub4u');
+            if (!baseUrl) return result;   // relative permalinks need the base
 
             const searchUrl =
                 'https://search.pingora.fyi/collections/post/documents/search' +
@@ -46,7 +49,6 @@ export const HdHub4uProvider: Provider = {
             if (!hits.length) return result;
 
             const normalizedTitle = normAlphaNum(title);
-            const seasonText = data.season != null ? `season ${data.season}` : null;
 
             const posts: string[] = [];
             for (const hit of hits) {
@@ -54,13 +56,13 @@ export const HdHub4uProvider: Provider = {
                 if (!document) continue;
                 const postTitle = (document.post_title || '').toLowerCase();
                 const rawPermalink = document.permalink || '';
-                const permalink = /^http/i.test(rawPermalink) ? rawPermalink : (baseUrl || '') + rawPermalink;
+                const permalink = fixUrl(rawPermalink, baseUrl);
                 if (!postTitle || !permalink) continue;
 
                 const cleanTitle = normAlphaNum(postTitle);
                 let matches: boolean;
                 if (data.season != null) {
-                    matches = cleanTitle.includes(normalizedTitle) && postTitle.includes(seasonText!);
+                    matches = cleanTitle.includes(normalizedTitle) && seasonRe(data.season).test(postTitle);
                 } else if (data.year != null) {
                     matches = cleanTitle.includes(normalizedTitle) && postTitle.includes(data.year.toString());
                 } else {

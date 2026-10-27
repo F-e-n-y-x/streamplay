@@ -14,6 +14,8 @@ export interface Stream {
 export interface Subtitle {
     language: string;
     url: string;
+    /** Headers the subtitle host needs (e.g. a Referer) — sent by /api/proxy/sub. */
+    headers?: Record<string, string>;
 }
 
 export interface ExtractorResult {

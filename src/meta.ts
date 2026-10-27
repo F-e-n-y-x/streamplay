@@ -1,6 +1,6 @@
 import { resolveAnimeIds } from './anime';
 import { animeFranchise, animeEpisodes } from './anilist';
-import { tvdbEnabled, tvdbFindSeries, tvdbFromRemoteId, tvdbEpisodes, tvdbSeasons, TvdbOrder } from './utils/tvdb';
+import { tvdbEnabled, tvdbFindSeries, tvdbFromRemoteId, tvdbEpisodes, tvdbSeasons, TvdbOrder, TvdbEpisode } from './utils/tvdb';
 import { castleEpisodes } from './extractors/castle';
 
 /**
@@ -26,6 +26,7 @@ export interface PlanSeason {
     malId?: number;
     titles?: string[];
     year?: number;
+    runtime?: number;   // typical episode length (min) — fallback for episodes without their own
 }
 export interface PlanEpisode {
     episodeNumber: number;
@@ -34,6 +35,7 @@ export interface PlanEpisode {
     overview?: string;
     stillUrl?: string;
     airDate?: string;
+    runtime?: number;   // minutes
 }
 export interface SeasonPlan {
     source: 'anilist' | 'tvdb' | 'castle' | 'tmdb';
@@ -60,6 +62,11 @@ export interface MetaInput {
 }
 
 const cache = new Map<string, { at: number; plan: SeasonPlan }>();
+const CACHE_MAX = 2000;
+// One build per title at a time: /title, /season and the SSE resolver all ask for the
+// same plan within seconds — without this each raced its own AniList walk and could
+// land on DIFFERENT plans (one 429'd → TMDB numbering, another → AniList cours).
+const inflight = new Map<string, Promise<SeasonPlan>>();
 const TTL = 15 * 60 * 1000;
 // A 'tmdb' plan can mean "no better source EXISTS" or "AniList/TVDB was briefly down".
 // Cache it only briefly so a transient upstream failure doesn't pin a title to the
@@ -91,6 +98,7 @@ async function buildAnimePlan(i: MetaInput): Promise<SeasonPlan | null> {
         malId: s.malId,
         titles: s.titles,       // full cour titles kept for the source search
         year: s.year,
+        runtime: s.runtime,
     }));
     return { source: 'anilist', seasons };
 }
@@ -129,11 +137,23 @@ async function buildCastlePlan(i: MetaInput): Promise<SeasonPlan | null> {
     return { source: 'castle', seasons: [{ seasonNumber: 1, name: 'Episodes', episodeCount: eps.length }], episodes };
 }
 
+export const TMDB_PLAN: SeasonPlan = { source: 'tmdb', seasons: [] };
+
 /** Build (or reuse) the season plan for a title. Never throws — returns a tmdb plan on failure. */
-export async function seasonPlan(i: MetaInput): Promise<SeasonPlan> {
+export function seasonPlan(i: MetaInput): Promise<SeasonPlan> {
     const k = keyOf(i);
     const c = cache.get(k);
-    if (c && Date.now() - c.at < (c.plan.source === 'tmdb' ? NEG_TTL : TTL)) return c.plan;
+    if (c && Date.now() - c.at < (c.plan.source === 'tmdb' ? NEG_TTL : TTL)) return Promise.resolve(c.plan);
+    let p = inflight.get(k);
+    if (!p) {
+        p = buildPlan(i).finally(() => inflight.delete(k));
+        inflight.set(k, p);
+    }
+    return p;
+}
+
+async function buildPlan(i: MetaInput): Promise<SeasonPlan> {
+    const k = keyOf(i);
     let plan: SeasonPlan | null = null;
     try {
         if (i.isAnime) plan = await buildAnimePlan(i);
@@ -142,7 +162,8 @@ export async function seasonPlan(i: MetaInput): Promise<SeasonPlan> {
             if (!plan) plan = await buildCastlePlan(i);       // daily-soap fallback when TVDB is thin
         }
     } catch { plan = null; }
-    const finalPlan = plan || { source: 'tmdb', seasons: [] };   // short-TTL cached (see NEG_TTL)
+    const finalPlan = plan || TMDB_PLAN;   // short-TTL cached (see NEG_TTL)
+    if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value!);
     cache.set(k, { at: Date.now(), plan: finalPlan });
     return finalPlan;
 }
@@ -154,13 +175,13 @@ export async function planEpisodes(plan: SeasonPlan, seasonNumber: number): Prom
         const s = plan.seasons.find((x) => x.seasonNumber === seasonNumber);
         if (!s?.anilistId) return null;
         const eps = await animeEpisodes(s.anilistId, s.episodeCount, s.malId);
-        return eps.map((e) => ({ ...e, seasonNumber }));
+        return eps.map((e) => ({ ...e, seasonNumber, runtime: e.runtime ?? s.runtime }));
     }
     if (plan.source === 'tvdb' && plan.tvdbId) {
         try {
             const all = await tvdbEpisodes(plan.tvdbId, plan.tvdbOrder);
             return all.filter((e) => e.seasonNumber === seasonNumber)
-                .map((e) => ({ episodeNumber: e.episodeNumber, seasonNumber, name: e.name, overview: e.overview, stillUrl: e.still, airDate: e.aired }));
+                .map((e) => ({ episodeNumber: e.episodeNumber, seasonNumber, name: e.name, overview: e.overview, stillUrl: e.still, airDate: e.aired, runtime: e.runtime }));
         } catch {
             // A TVDB error (expired token, rate-limit) must NOT bubble to the caller:
             // for a tvdb plan `seasonNumber` is a production-order index, not a TMDB
@@ -171,4 +192,31 @@ export async function planEpisodes(plan: SeasonPlan, seasonNumber: number): Prom
         }
     }
     return null;
+}
+
+/** The aired-order episode matching plan-order `ep` — by title, else by a unique air date. */
+export function matchAired(ep: TvdbEpisode | undefined, aired: TvdbEpisode[]): TvdbEpisode | undefined {
+    if (!ep) return undefined;
+    const name = (ep.name || '').trim().toLowerCase();
+    const byName = name ? aired.find((a) => (a.name || '').trim().toLowerCase() === name) : undefined;
+    if (byName) return byName;
+    const byDate = ep.aired ? aired.filter((a) => a.aired === ep.aired) : [];
+    return byDate.length === 1 ? byDate[0] : undefined;
+}
+
+/**
+ * Providers number episodes the TMDB (aired) way. A TVDB 'official'/DVD-order plan's
+ * S/E (Ben 10 production order) must be mapped back before it reaches them; the TVDB
+ * 'default' order IS aired order. AniList cours are handled by the resolver itself, and
+ * a Castle plan is CastleTV's own single-season numbering (which castle.ts consumes).
+ */
+export async function planToAired(plan: SeasonPlan, season: number, episode: number): Promise<{ season: number; episode: number }> {
+    if (plan.source !== 'tvdb' || !plan.tvdbId || plan.tvdbOrder === 'default') return { season, episode };
+    try {
+        const [ord, aired] = await Promise.all([tvdbEpisodes(plan.tvdbId, plan.tvdbOrder), tvdbEpisodes(plan.tvdbId, 'default')]);
+        const hit = matchAired(ord.find((e) => e.seasonNumber === season && e.episodeNumber === episode), aired.filter((e) => e.seasonNumber >= 1));
+        if (hit) return { season: hit.seasonNumber, episode: hit.episodeNumber };
+    } catch { /* fall through */ }
+    // ponytail: unmatched → pass plan numbering through unchanged (may be off for that episode); add a TVDB-id→TMDB-episode lookup if this shows up.
+    return { season, episode };
 }

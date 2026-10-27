@@ -1,0 +1,114 @@
+/* =============================================================================
+   WATCH PAGE (pages.md §5.1)
+   D/T-landscape ≥1024: player + sticky Episodes rail (rail height = player height).
+   <1024 (tablet portrait, phone): no app header/tab bar, sticky player, then status,
+   title, next, episodes. Phone landscape / fullscreen: the player is the page.
+   ========================================================================== */
+
+.watch-page {
+  max-width: var(--container-max); margin: 0 auto;
+  padding: var(--space-4) calc(var(--gutter) + var(--safe-right)) var(--space-12) calc(var(--gutter) + var(--safe-left));
+}
+.watch-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-6); align-items: start; }
+.watch-main { min-width: 0; }
+
+.watch-stage-slot { position: relative; }
+.watch-stage { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--radius-xl); background: #000; color: #fff; }
+.watch-stage:fullscreen { border-radius: 0; aspect-ratio: auto; }
+.watch-stage > .vp, .watch-stage > iframe, .watch-stage > .stage-idle { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* idle stage: still dimmed + back/title + one centred message */
+.stage-idle { display: grid; place-items: center; background: #000; }
+.stage-idle > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.3; }
+.stage-idle::after { content: ""; position: absolute; inset: 0; background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.7)); }
+.stage-top {
+  position: absolute; inset: 0 0 auto 0; z-index: 2; display: flex; align-items: center; gap: var(--space-1);
+  padding: max(var(--space-2), env(safe-area-inset-top)) var(--space-2) var(--space-2) max(var(--space-2), env(safe-area-inset-left));
+}
+.stage-msg { position: relative; z-index: 1; width: 100%; max-width: 32rem; padding: var(--space-12) var(--space-4) var(--space-4); }
+.stage-msg .state-msg { padding: 0; }
+.stage-msg .state-msg-title { font: var(--type-h2); }
+.stage-finding { display: flex; flex-direction: column; align-items: center; gap: var(--space-4); text-align: center; }
+.stage-finding p { margin: 0; font: var(--type-label); color: rgba(255, 255, 255, 0.85); font-variant-numeric: tabular-nums; }
+.stage-pill {
+  position: absolute; z-index: 6; top: calc(var(--space-16) + env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+  max-width: calc(100% - 2 * var(--space-4)); padding: var(--space-2) var(--space-4); border-radius: var(--radius-md);
+  background: rgba(20, 20, 24, 0.92); font: var(--type-label); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  pointer-events: none; animation: pop-in var(--duration-3) var(--ease-out);
+}
+
+/* below the player: status · title · synopsis · actions */
+.watch-info { display: flex; flex-direction: column; gap: var(--space-3); padding-top: var(--space-2); }
+.watch-info .source-status { margin-bottom: var(--space-1); border-bottom: 1px solid var(--border); padding-bottom: var(--space-2); }
+.watch-head { display: flex; flex-direction: column; gap: var(--space-1); max-width: 72ch; }
+.watch-title { margin: 0; font: var(--type-h1); letter-spacing: var(--track-h1); }
+.watch-title a { text-decoration: none; }
+@media (hover: hover) { .watch-title a:hover { text-decoration: underline; text-underline-offset: 4px; text-decoration-thickness: 2px; } }
+.watch-ep { margin: 0; font: var(--type-title); color: var(--foreground); }
+.watch-synopsis { margin: var(--space-2) 0 0; font: var(--type-body); color: var(--muted-foreground); }
+.watch-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
+.watch-next { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.watch-more { margin-top: var(--space-10); }
+
+/* rail: Episodes (series) or More like this (movies) */
+.watch-rail { min-width: 0; display: flex; flex-direction: column; }
+.rail-head { display: flex; flex-direction: column; gap: var(--space-3); padding-bottom: var(--space-3); }
+.rail-head h2 { margin: 0; font: var(--type-h2); letter-spacing: var(--track-h2); }
+.rail-scroll { min-height: 0; }
+.rail-recs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.rec { display: grid; grid-template-columns: 8rem minmax(0, 1fr); gap: var(--space-3); align-items: center; padding: var(--space-2); border-radius: var(--radius-md); }
+.rec-art { aspect-ratio: 16 / 9; border-radius: var(--radius-sm); overflow: hidden; background: var(--surface-2); }
+.rec-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.rec-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rec-title { font: var(--type-title); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.rec-year { font: var(--type-meta); color: var(--muted-foreground); }
+@media (hover: hover) { .rec:hover { background: var(--surface-2); } }
+.rec:focus-visible { outline-offset: -2px; }
+
+/* ── two panes (desktop, tablet landscape) ── */
+/* hover-capable desktop: the rail shows each synopsis in full, no "More" (design-system §8) */
+@media (hover: hover) and (min-width: 1100px) {
+  .watch-rail .epi-synopsis { display: block; }
+  .watch-rail .epi-more { display: none; }
+}
+
+@media (min-width: 1024px) {
+  .watch-grid { grid-template-columns: minmax(0, 1fr) clamp(320px, 30vw, 420px); }
+  .watch-rail {
+    position: sticky; top: calc(var(--header-height) + var(--safe-top) + var(--space-4));
+    height: var(--stage-h, auto); max-height: calc(100dvh - var(--header-height) - var(--safe-top) - var(--space-8));
+  }
+  .rail-head { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  .rail-head .tabs { flex: 1 1 100%; }
+  .rail-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--surface-3) transparent; margin-right: calc(-1 * var(--space-2)); padding-right: var(--space-2); }
+}
+
+/* ── stacked: tablet portrait + phone. The player is the top of the page. ── */
+@media (max-width: 1023px) {
+  /* html[data-page="watch"] is set by Watch.tsx (not :has(): Firefox ESR drops the rule) */
+  /* keep the app bar (back to Home/Search); it scrolls away and the player sticks to the top */
+  html[data-page="watch"] .nav-chips, html[data-page="watch"] .tabbar { display: none; }
+  html[data-page="watch"] .header { position: relative; }
+  .watch-page { padding-top: var(--space-4); }   /* breathing room under the app bar */
+  .watch-stage-slot { position: sticky; top: 0; z-index: 120; padding-top: var(--safe-top); background: var(--background); }
+  .watch-grid { gap: var(--space-8); }
+}
+@media (max-width: 767px) {
+  .watch-page { padding-inline: calc(var(--space-4) + var(--safe-left)) calc(var(--space-4) + var(--safe-right)); }
+  .watch-stage-slot { margin-inline: calc(-1 * (var(--space-4) + var(--safe-left))) calc(-1 * (var(--space-4) + var(--safe-right))); background: #000; }
+  .watch-stage { border-radius: 0; }
+  .watch-title { font: var(--type-h2); }
+  .watch-synopsis { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; font: var(--type-meta); }
+  .watch-actions .watch-next { flex: 1 1 100%; justify-content: center; }
+  .stage-msg { padding-top: var(--space-10); }
+  .stage-msg .state-msg-body { font: var(--type-meta); }
+  .stage-msg .state-msg > svg { display: none; }
+}
+
+/* ── phone landscape: no page, only the player (100dvh, notch-safe) ── */
+@media (orientation: landscape) and (max-height: 500px) {
+  html[data-page="watch"] .header, html[data-page="watch"] .nav-chips, html[data-page="watch"] .tabbar { display: none; }
+  html[data-page="watch"] { overflow: hidden; }
+  .watch-page .watch-stage-slot { position: fixed; inset: 0; z-index: 300; margin: 0; padding: 0; background: #000; }
+  .watch-page .watch-stage { height: 100dvh; aspect-ratio: auto; border-radius: 0; }
+}

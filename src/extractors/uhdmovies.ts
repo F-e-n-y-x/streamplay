@@ -3,6 +3,7 @@ import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
 import { bypassHrefli, getBaseUrl } from '../utils/bypass';
+import { seasonRe, episodeRe, norm } from '../utils/season';
 
 const REDIRECT_RE = /window\.location\.replace\(["'](.*?)["']\)/;
 
@@ -27,7 +28,11 @@ export const UhdMoviesProvider: Provider = {
 
             const searchUrl = `${api}/search/${encodeURIComponent(`${query} ${data.year ?? ''}`.trim())}`;
             const searchDoc = (await safeGet(searchUrl, { cloudflare: true })).document;
-            const pageUrl = searchDoc('article div.entry-image a').first().attr('href');
+            // First result whose title/slug actually contains the wanted title (no blind first hit).
+            const want = norm(query);
+            const pageUrl = searchDoc('article div.entry-image a').toArray()
+                .map((a) => ({ href: searchDoc(a).attr('href') || '', t: norm(`${searchDoc(a).attr('title') || ''} ${searchDoc(a).attr('href') || ''}`) }))
+                .find((x) => x.href && x.t.includes(want))?.href;
             if (!pageUrl) return result;
 
             const doc = (await safeGet(pageUrl, { cloudflare: true })).document;
@@ -35,17 +40,17 @@ export const UhdMoviesProvider: Provider = {
             // p tags matching the season/year, whose NEXT sibling holds the download/episode link.
             const season = data.season;
             const episode = data.episode;
-            const seasonRe = season == null
+            const sRe = season == null
                 ? new RegExp(`${data.year ?? ''}`)
-                : new RegExp(`(S0?${season}|Season 0?${season})`, 'i');
+                : seasonRe(season);
             const epRe = season == null
                 ? /Download/i
-                : new RegExp(`Episode ${episode}`, 'i');
+                : episodeRe(episode ?? 1);
 
             const links: string[] = [];
             doc('div.entry-content p').each((_, el) => {
                 const text = doc(el).text();
-                if (!seasonRe.test(text)) return;
+                if (!sRe.test(text)) return;
                 const sib = doc(el).next();
                 if (!sib.length) return;
                 sib.find('a').each((__, a) => {

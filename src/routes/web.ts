@@ -1,19 +1,23 @@
 import { Router } from 'express';
+import { createHash } from 'node:crypto';
 import axios from 'axios';
-import { tmdbGet, tmdbImg, tmdbIsLive, getTMDBInfo } from '../tmdb';
+import { tmdbGet, tmdbImg, tmdbIsLive, getTMDBInfo, classify } from '../tmdb';
 import { getProviders, getProvidersForKind, torrentProviders } from '../extractors';
 import { providerDomains } from '../providersList';
 import { resolveAnimeIds } from '../anime';
-import { anilistBrowse, anilistTitleVariants } from '../anilist';
-import { seasonPlan, planEpisodes } from '../meta';
-import { tvdbEnabled } from '../utils/tvdb';
-import { LinkData, Stream, ContentKind } from '../types';
+import { anilistBrowse, anilistTitleVariants, rangeStart } from '../anilist';
+import { seasonPlan, planEpisodes, planToAired, TMDB_PLAN, MetaInput, SeasonPlan } from '../meta';
+import { LinkData, Stream, ContentKind, MetaData, Provider } from '../types';
 import { b64 } from './proxy';
 import { runWithWarp, normalizeWarpMode, warpConfigured, warpConfig, probeWarpSocks, WarpMode } from '../utils/warp';
 import { runWithSignal } from '../utils/reqctx';
 import { flareSolverrEndpoints, probeFlareSolverr, flareSolverrLoad } from '../utils/flaresolverr';
-import { recordProvider, providerShouldRun, providerStat, providerPriority } from '../utils/providerStats';
-import { torznabPublic, setTorznab } from '../utils/serverConfig';
+import { recordProvider, providerShouldRun, providerStat, providerPriority, recordPlayback, recordVerify, providerHidden, providerReliability } from '../utils/providerStats';
+import { probeStream, scoreSource, detectAudio, parseReport, webReadyOf, mbpsOf, ScorePrefs, GOOD_SCORE, audioTracks, failReason, FailReason } from '../utils/sourceProbe';
+import { rateLimit } from './sync';
+import { torznabPublic, setTorznab, addonPublic, setAddonUrls, AddonKind } from '../utils/serverConfig';
+import { reloadNuvio, nuvioStatus } from '../extractors/nuvio';
+import { reloadStremio } from '../extractors/stremio';
 import { searchTorznab } from '../utils/torrentSearch';
 
 /**
@@ -31,8 +35,24 @@ const adultOf = (req: any): boolean => req.query.adult === '1';
 // Indian-origin content — routed to TVDB (better coverage/order than TMDB) when a key is set.
 const INDIAN_LANGS = new Set(['hi', 'ta', 'te', 'ml', 'kn', 'bn', 'mr', 'pa', 'gu', 'or', 'as', 'ur']);
 const isIndian = (lang?: string, isBollywood?: boolean): boolean => !!isBollywood || INDIAN_LANGS.has((lang || '').toLowerCase());
-// TVDB drives season/episode data for cartoons + Indian TV series when a key is configured.
-const tvdbActiveFor = (info: any): boolean => tvdbEnabled() && !info?.isAnime && (info?.isCartoon || isIndian(info?.originalLanguage, info?.isBollywood));
+// Non-negative integer query/path param, else undefined (rejects '1/../x', 'NaN', '').
+const int = (v: unknown): number | undefined => (typeof v === 'string' && /^\d{1,9}$/.test(v) ? Number(v) : undefined);
+const pageOf = (req: any): number => Math.min(Math.max(int(req.query.page) || 1, 1), 500);   // TMDB caps at 500
+const metaInput = (id: number, info: MetaData): MetaInput => ({
+    id, type: info.type, title: info.title, year: info.year, imdbId: info.imdbId, orgTitle: info.originalTitle,
+    isAnime: info.isAnime, isCartoon: info.isCartoon, indian: isIndian(info.originalLanguage, info.isBollywood),
+});
+// The season plan the client is showing. /title reports `metaSource`; the client echoes it
+// as ?src= so /season, /skip-times and the SSE resolver number seasons the SAME way even
+// when /title had to time out to TMDB while the AniList plan was still building.
+// If the client numbered by AniList/TVDB but that plan just failed to rebuild, refuse
+// (503 → client retries) rather than silently mapping cour N onto TMDB season N.
+const planFor = async (req: any, id: number, info: MetaData): Promise<SeasonPlan> => {
+    if (req.query.src === 'tmdb' || info.type !== 'tv') return TMDB_PLAN;
+    const plan = await seasonPlan(metaInput(id, info));
+    if (req.query.src && plan.source === 'tmdb') throw Object.assign(new Error('season metadata temporarily unavailable, retry'), { status: 503 });
+    return plan;
+};
 
 // Belt-and-suspenders 18+ filter: TMDB include_adult only blocks pornographic
 // titles, so also drop obvious adult markers when adult content is disabled.
@@ -91,13 +111,6 @@ const toCard = (item: any, forced?: 'movie' | 'tv'): Card => {
     };
 };
 
-/**
- * Dub heuristic: TMDB has no dub-availability data, so we approximate by
- * popularity — established/popular anime are almost always dubbed, while
- * new/niche seasonal titles are sub-only. Tunable.
- */
-const DUB_VOTE_THRESHOLD = 500;
-
 const qualityNum = (s: Stream): number => {
     const t = `${s.quality || ''} ${s.server || ''}`;
     if (/\b(2160|4k|uhd)\b/i.test(t)) return 2160;
@@ -123,7 +136,7 @@ const proxify = (s: Stream, episode?: number): string => {
     const a = s.audioName ? `&audio=${encodeURIComponent(s.audioName)}` : '';
     return `/api/proxy?url=${u}${h}${a}${s.type === 'm3u8' ? '&m3u8=1' : ''}`;
 };
-const subProxy = (url: string): string => `/api/proxy/sub?url=${b64(url)}`;
+const subProxy = (url: string, headers?: Record<string, string>): string => `/api/proxy/sub?url=${b64(url)}${headers ? `&h=${b64(JSON.stringify(headers))}` : ''}`;
 const hostOf = (url: string): string => { try { return new URL(url).hostname; } catch { return ''; } };
 
 // ── AniList → TMDB bridge (for the AniList-powered anime browse) ───────────────
@@ -139,9 +152,12 @@ async function resolveAnimeToTmdb(anilistId: number, titles: string[], year?: nu
     if (anilistId && aniTmdb.has(anilistId)) return aniTmdb.get(anilistId)!;
     let list = (titles || []).filter(Boolean);
     let ty = type, yr = year;
+    let errored = false;   // a network failure must not be cached as "no TMDB match"
     if (!list.length && anilistId) {
-        const info = await anilistTitleVariants(anilistId);
-        if (info) { list = info.titles; ty = ty || info.type; yr = yr ?? info.year; }
+        try {
+            const info = await anilistTitleVariants(anilistId);
+            if (info) { list = info.titles; ty = ty || info.type; yr = yr ?? info.year; }
+        } catch { errored = true; }
     }
     // TMDB indexes the ROOT series ("Skeleton Knight in Another World"), not the cour
     // ("… Season 2"), so strip season/part markers and search the base name too — else a
@@ -161,7 +177,7 @@ async function resolveAnimeToTmdb(anilistId: number, titles: string[], year?: nu
     for (const t of queries) {
         for (const st of searchTypes) {
             let d: any;
-            try { d = await tmdbGet(`/search/${st}`, { query: t }); } catch { continue; }
+            try { d = await tmdbGet(`/search/${st}`, { query: t }); } catch { errored = true; continue; }
             for (const it of (d.results || [])) {
                 const cand = normTitle(it.title || it.name || ''), want = normTitle(t);
                 if (!cand || !want) continue;
@@ -178,7 +194,7 @@ async function resolveAnimeToTmdb(anilistId: number, titles: string[], year?: nu
         }
         if (best && bestScore >= 6) break;   // strong exact+ja+anim match — stop early
     }
-    if (anilistId) { if (aniTmdb.size >= ANI_TMDB_MAX) aniTmdb.clear(); aniTmdb.set(anilistId, best); }
+    if (anilistId && (best || !errored)) { if (aniTmdb.size >= ANI_TMDB_MAX) aniTmdb.clear(); aniTmdb.set(anilistId, best); }
     return best;
 }
 
@@ -228,19 +244,150 @@ router.get('/home', async (req, res) => {
 });
 
 // ── /search ──────────────────────────────────────────────────────────────────
-router.get('/search', async (req, res) => {
-    const q = (req.query.q as string) || '';
-    const page = parseInt((req.query.page as string) || '1');
-    if (!q.trim()) return res.json({ items: [], page: 1, totalPages: 0 });
+// Typo tolerance: TMDB search is exact-ish ("naurto" → 0 hits). When a page-1 search
+// is thin we also try Wikipedia's spelling suggestion and shortened-prefix queries,
+// then rank the merged hits by bigram similarity to what was typed.
+const bigrams = (s: string) => {
+    const t = ` ${s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()} `;
+    const out = new Map<string, number>();
+    for (let i = 0; i < t.length - 1; i++) out.set(t.slice(i, i + 2), (out.get(t.slice(i, i + 2)) || 0) + 1);
+    return out;
+};
+export const similarity = (a: string, b: string) => {   // Dice coefficient, 0..1
+    const A = bigrams(a), B = bigrams(b);
+    let hit = 0, total = 0;
+    for (const [k, n] of A) { hit += Math.min(n, B.get(k) || 0); total += n; }
+    for (const n of B.values()) total += n;
+    return total ? (2 * hit) / total : 0;
+};
+const spellCache = new Map<string, string[]>();
+const spellCooldown: Record<string, number> = {};
+// Search-engine autocomplete knows show/actor names that dictionaries don't
+// ("the kardshin" → "the kardashians"). Both are asked; either may be blocked.
+const SPELLERS: [string, (q: string) => string][] = [
+    ['ddg', q => `https://duckduckgo.com/ac/?type=list&kl=us-en&q=${encodeURIComponent(q)}`],
+    ['google', q => `https://suggestqueries.google.com/complete/search?client=firefox&hl=en&q=${encodeURIComponent(q)}`],
+];
+// "joker movie" / "titanic 1997" / "friends cast" → the title part
+const SUGGEST_NOISE = /\s+(movie|movies|film|series|show|tv|cast|meme|memes|wallpaper|wallpapers|song|songs|full|full movie|trailer|release date|season \d+|part \d+|ott|imdb|images?|(19|20)\d\d)$/i;
+const coreOf = (x: string) => { let y = x.trim(); for (let i = 0; i < 3; i++) y = y.replace(SUGGEST_NOISE, ''); return y.toLowerCase(); };
+async function askSpeller(name: string, url: string): Promise<string[]> {
+    if (Date.now() < (spellCooldown[name] || 0)) return [];
     try {
-        const showAdult = adultOf(req);
-        const data = await tmdbGet('/search/multi', { query: q, language: langOf(req), include_adult: showAdult, page });
-        const items = (data.results || [])
-            .filter((it: any) => (it.media_type === 'movie' || it.media_type === 'tv') && (showAdult || !isAdultItem(it)))
-            .map((it: any) => toCard(it));
-        res.json({ items, page: data.page || 1, totalPages: data.total_pages || 1 });
+        const { data } = await axios.get(url, { timeout: 3000, headers: { 'User-Agent': 'Mozilla/5.0 (StreamPlay)' } });
+        return Array.isArray(data?.[1]) ? data[1] : [];
+    } catch (e: any) {
+        // only a real block/rate-limit benches a speller; a slow reply just skips this query
+        if ([403, 429].includes(e?.response?.status)) spellCooldown[name] = Date.now() + 60_000;
+        return [];
+    }
+}
+async function spellSuggest(q: string): Promise<string[]> {
+    const key = q.toLowerCase().trim();
+    const hit = spellCache.get(key);
+    if (hit) return hit;
+    const lists = await Promise.all(SPELLERS.map(([n, u]) => askSpeller(n, u(q))));
+    // interleave so each speller's best guesses come first
+    const merged: string[] = [];
+    for (let i = 0; i < 8; i++) for (const l of lists) if (l[i]) merged.push(coreOf(l[i]));
+    // suggestion order varies by region; keep the ones closest to what was typed
+    const fixes = [...new Set(merged)].filter(x => x.length > 1 && x !== key)
+        .sort((a, b) => similarity(key, b) - similarity(key, a)).slice(0, 5);
+    if (lists.some(l => l.length)) {   // don't cache a total failure
+        if (spellCache.size > 2000) spellCache.clear();
+        spellCache.set(key, fixes);
+    }
+    return fixes;
+}
+// "interstaler" → ["interstal", "interst"]: drop the tail of the longest word.
+const prefixVariants = (q: string) => {
+    const words = q.trim().split(/\s+/);
+    const i = words.reduce((m, w, j) => (w.length > words[m].length ? j : m), 0);
+    const w = words[i];
+    if (w.length < 5) return [];
+    return [...new Set([Math.ceil(w.length * 0.8), Math.ceil(w.length * 0.6), Math.max(4, Math.ceil(w.length * 0.5))])]
+        .map(n => [...words.slice(0, i), w.slice(0, n)].join(' '));
+};
+
+async function searchCards(q: string, req: any, page: number) {
+    const showAdult = adultOf(req);
+    const data = await tmdbGet('/search/multi', { query: q, language: langOf(req), include_adult: showAdult, page });
+    const items: Card[] = (data.results || [])
+        .filter((it: any) => (it.media_type === 'movie' || it.media_type === 'tv') && (showAdult || !isAdultItem(it)))
+        .map((it: any) => toCard(it));
+    return { items, page: data.page || 1, totalPages: data.total_pages || 1 };
+}
+
+// TMDB "found something" isn't enough: "the kardshin" matches junk like "Kingdom of the
+// Silver Lion". Only trust it when a top hit actually resembles what was typed.
+const goodMatch = (q: string, items: Card[]) => items.slice(0, 5).some(c => similarity(q, c.title) >= 0.9);
+
+// Rank = closeness to what was typed, closeness to a spelling fix, popularity
+// (Joker beats "Jokes"; Titanic beats "Buffet Titanic").
+const rankScore = (q: string, fixes: string[], c: Card) =>
+    0.5 * similarity(q, c.title) + 0.3 * Math.max(0, ...fixes.map(f => similarity(f, c.title)))
+    + 0.2 * Math.min(1, Math.log10(1 + (c.voteCount || 0)) / 4.5);
+
+// TMDB's own order puts obscure near-matches first ("ExoMars: Europe's Imposible Mission"
+// above Mission: Impossible) — re-sort by closeness + popularity.
+const rerank = (q: string, items: Card[]) =>
+    items.map(c => ({ c, s: rankScore(q, [], c) })).sort((a, b) => b.s - a.s).map(x => x.c);
+
+const fuzzyCache = new Map<string, { at: number; v: { items: Card[]; didYouMean?: string } }>();
+async function fuzzySearch(q: string, req: any, base: Card[]) {
+    const key = `${q.toLowerCase()}|${langOf(req)}|${adultOf(req)}`;
+    const c = fuzzyCache.get(key);
+    if (c && Date.now() - c.at < 10 * 60_000) return c.v;
+    const fixes = await spellSuggest(q);
+    const queries = [...new Set([...fixes, ...prefixVariants(q)])].slice(0, 8);
+    let partial = false;   // a failed lookup must not be cached as the answer
+    const batches = await Promise.all(queries.map(v => searchCards(v, req, 1).then(r => r.items).catch(() => { partial = true; return [] as Card[]; })));
+    const seen = new Set<string>();
+    const ranked = [...base, ...batches.flat()]
+        .filter(c => !seen.has(`${c.type}:${c.id}`) && seen.add(`${c.type}:${c.id}`))
+        .map(c => ({ c, sq: similarity(q, c.title), sf: Math.max(0, ...fixes.map(f => similarity(f, c.title))) }))
+        .filter(x => Math.max(x.sq, x.sf) >= 0.35)
+        .map(x => ({ c: x.c, score: rankScore(q, fixes, x.c) }))
+        .sort((a, b) => b.score - a.score)
+        .map(x => x.c);
+    const top = ranked[0];
+    const fix = top && [...fixes].sort((a, b) => similarity(b, top.title) - similarity(a, top.title))[0];
+    // a correct prefix ("breaking" → Breaking Bad) is not a typo: no "Did you mean"
+    const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const isPrefix = ranked.slice(0, 3).some(c => norm(c.title).startsWith(norm(q)));
+    const v = { items: ranked.slice(0, 20), didYouMean: top && !isPrefix && similarity(q, top.title) < 0.9 ? (fix && similarity(fix, top.title) >= 0.7 ? fix : top.title) : undefined };
+    if (fuzzyCache.size > 1000) fuzzyCache.clear();
+    if (!partial) fuzzyCache.set(key, { at: Date.now(), v });
+    return v;
+}
+
+router.get('/search', async (req, res) => {
+    const q = String(req.query.q || '').trim().slice(0, 120);
+    const page = pageOf(req);
+    if (!q) return res.json({ items: [], page: 1, totalPages: 0 });
+    try {
+        const r = await searchCards(q, req, page);
+        if (page > 1) return res.json(r);
+        if (goodMatch(q, r.items)) return res.json({ ...r, items: rerank(q, r.items) });
+        const f = await fuzzySearch(q, req, r.items);
+        if (!f.items.length) return res.json(r);
+        res.json({ items: f.items, page: 1, totalPages: 1, didYouMean: f.didYouMean });
     } catch (e: any) {
         res.status(500).json({ items: [], page: 1, totalPages: 0, error: e?.message });
+    }
+});
+
+// As-you-type suggestions (header search dropdown): top 8, typo-tolerant.
+router.get('/suggest', async (req, res) => {
+    const q = String(req.query.q || '').trim().slice(0, 120);
+    if (q.length < 2) return res.json({ items: [] });
+    try {
+        const r = await searchCards(q, req, 1);
+        if (goodMatch(q, r.items)) return res.json({ items: rerank(q, r.items).slice(0, 8) });
+        const f = await fuzzySearch(q, req, r.items);
+        res.json({ items: (f.items.length ? f.items : r.items).slice(0, 8), didYouMean: f.didYouMean });
+    } catch {
+        res.json({ items: [] });
     }
 });
 
@@ -276,24 +423,6 @@ const CATEGORY_GENRES: Record<string, { movie?: number; tv?: number; kw?: string
     documentary: { movie: 99, tv: 99 },
 };
 
-// Anime categories (MAL/AniList-style). Genre where TMDB has one, else a keyword.
-const ANIME_CATEGORIES: Record<string, { movie?: number; tv?: number; kw?: string }> = {
-    action: { movie: 28, tv: 10759 }, adventure: { movie: 12, tv: 10759 }, cars: { kw: 'racing' },
-    comedy: { movie: 35, tv: 35 }, dementia: { kw: 'psychological' }, demons: { kw: 'demon' },
-    drama: { movie: 18, tv: 18 }, ecchi: { kw: 'ecchi' }, fantasy: { movie: 14, tv: 10765 },
-    game: { kw: 'video game' }, harem: { kw: 'harem' }, historical: { kw: 'historical' },
-    horror: { movie: 27, kw: 'horror' }, isekai: { kw: 'isekai' }, josei: { kw: 'josei' },
-    kids: { tv: 10762, kw: 'children' }, magic: { kw: 'magic' }, mahoushoujo: { kw: 'magical girl' },
-    martialarts: { kw: 'martial arts' }, mecha: { kw: 'mecha' }, military: { kw: 'military' },
-    music: { movie: 10402, kw: 'music' }, mystery: { movie: 9648, tv: 9648 }, parody: { kw: 'parody' },
-    police: { kw: 'police' }, psychological: { kw: 'psychological' }, romance: { movie: 10749, kw: 'romance' },
-    samurai: { kw: 'samurai' }, school: { kw: 'school life' }, scifi: { movie: 878, tv: 10765 },
-    seinen: { kw: 'seinen' }, shoujo: { kw: 'shoujo' }, shoujoai: { kw: 'yuri' }, shounen: { kw: 'shounen' },
-    shounenai: { kw: 'yaoi' }, sliceoflife: { kw: 'slice of life' }, space: { kw: 'space' },
-    sports: { kw: 'sports' }, superpower: { kw: 'superhero' }, supernatural: { kw: 'supernatural' },
-    suspense: { kw: 'suspense' }, thriller: { movie: 53, kw: 'thriller' }, vampire: { kw: 'vampire' },
-};
-
 // Resolve a TMDB keyword id by term (cached).
 const keywordCache = new Map<string, number | null>();
 const getKeywordId = async (term: string): Promise<number | null> => {
@@ -315,17 +444,7 @@ const getKeywordId = async (term: string): Promise<number | null> => {
     return id;
 };
 
-const rangeStart = (range: string): string | undefined => {
-    const d = new Date();
-    if (range === 'day') d.setDate(d.getDate() - 1);
-    else if (range === 'week') d.setDate(d.getDate() - 7);
-    else if (range === 'month') d.setMonth(d.getMonth() - 1);
-    else if (range === 'year') d.setFullYear(d.getFullYear() - 1);
-    else return undefined; // all-time
-    return d.toISOString().slice(0, 10);
-};
-
-const buildDiscover = (kind: 'tv' | 'movie', olang: string | undefined, cat: string, range: string, page: number, language: string, sec: SectionDef, audio?: string, adult = false, genreId?: number, withoutKeywords?: string, withKeyword?: number): Record<string, any> => {
+const buildDiscover = (kind: 'tv' | 'movie', olang: string | undefined, cat: string, range: string, page: number, language: string, sec: SectionDef, adult = false, genreId?: number, withoutKeywords?: string, withKeyword?: number): Record<string, any> => {
     // newest = by premiere/release date; window = "active in range" (TV uses episode air dates so
     // Trending This Week = currently-airing, not just series that *premiered* this week).
     const newestField = kind === 'movie' ? 'primary_release_date' : 'first_air_date';
@@ -351,11 +470,6 @@ const buildDiscover = (kind: 'tv' | 'movie', olang: string | undefined, cat: str
         default: // popular / all
             p.sort_by = 'popularity.desc'; break;
     }
-    // Anime Sub/Dub heuristic (popularity proxy — see DUB_VOTE_THRESHOLD).
-    if (sec.withGenres === ANIME_GENRE && audio) {
-        if (audio === 'dub') p['vote_count.gte'] = Math.max(p['vote_count.gte'] || 0, DUB_VOTE_THRESHOLD);
-        else if (audio === 'sub') p['vote_count.lte'] = DUB_VOTE_THRESHOLD;
-    }
     return p;
 };
 
@@ -367,7 +481,7 @@ router.get('/browse', async (req, res) => {
     const cat = (req.query.cat as string) || 'popular';
     const range = (req.query.range as string) || 'all';
     const audio = req.query.audio as string;
-    const page = parseInt((req.query.page as string) || '1');
+    const page = pageOf(req);
     const language = langOf(req);
 
     const reqType = req.query.type as string;
@@ -399,7 +513,9 @@ router.get('/browse', async (req, res) => {
                 cat, range, adult: adultOf(req), audio,
             });
             const items = r.items.map((m) => ({
-                id: m.anilistId, type: m.type, title: m.title,
+                // Negated AniList id: keeps the card's plain href (/title/tv/-<al>) resolvable on
+                // its own (new tab, refresh, share) without colliding with a TMDB id. See titleRef.
+                id: -m.anilistId, type: m.type, title: m.title,
                 posterUrl: m.posterUrl, year: m.year ? String(m.year) : undefined,
                 voteAverage: m.score, voteCount: 0,
                 needsResolve: true, anilistId: m.anilistId, resolveTitles: m.titles, resolveType: m.type,
@@ -417,9 +533,8 @@ router.get('/browse', async (req, res) => {
         const batches: { k: 'tv' | 'movie'; l: string | undefined; genreId?: number; keywordId?: number }[] = [];
         for (const k of kinds) for (const l of langs) {
             if (cats.length) {
-                const catMap = section === 'anime' ? ANIME_CATEGORIES : CATEGORY_GENRES;
                 for (const c of cats) {
-                    const def = catMap[c];
+                    const def = CATEGORY_GENRES[c];
                     if (!def) continue;
                     const gid = def[k];
                     if (gid) batches.push({ k, l, genreId: gid });
@@ -431,7 +546,7 @@ router.get('/browse', async (req, res) => {
         }
 
         const results = await Promise.all(batches.map(async ({ k, l, genreId, keywordId }) => {
-            const data = await tmdbGet(k === 'movie' ? '/discover/movie' : '/discover/tv', buildDiscover(k, l, cat, range, page, language, sec, audio, adultOf(req), genreId, withoutKeywords, keywordId));
+            const data = await tmdbGet(k === 'movie' ? '/discover/movie' : '/discover/tv', buildDiscover(k, l, cat, range, page, language, sec, adultOf(req), genreId, withoutKeywords, keywordId));
             return { results: data.results || [], total: data.total_pages || 1, kind: k };
         }));
 
@@ -450,7 +565,9 @@ router.get('/browse', async (req, res) => {
             : cat === 'toprated' ? (x: any) => x.vote_average || 0 : (x: any) => x.popularity || 0;
         merged.sort((a, b) => (key(a) < key(b) ? 1 : key(a) > key(b) ? -1 : 0));
 
-        const items = merged.slice(0, 24).map((it) => toCard(it, it.__kind));
+        // No slice: each TMDB batch is its own page N, so trimming the merge to 24 made the
+        // rest of every batch's page N unreachable (page N+1 starts at the batch's next page).
+        const items = merged.map((it) => toCard(it, it.__kind));
         const totalPages = Math.min(Math.max(...results.map((r) => r.total), 1), 50);
         res.json({ items, page, totalPages });
     } catch (e: any) {
@@ -463,10 +580,10 @@ router.get('/browse', async (req, res) => {
 // so playback can find the TMDB entry on click (`anilistId` is echoed back so the
 // title page can pre-select the exact season/cour that was clicked).
 router.get('/resolve/anime', async (req, res) => {
-    const al = parseInt(req.query.al as string) || 0;
+    const al = int(req.query.al) || 0;
     let titles: string[] = [];
     try { const raw = req.query.titles as string; if (raw) { const j = JSON.parse(raw); if (Array.isArray(j)) titles = j.map(String); } } catch { /* */ }
-    const year = req.query.year ? parseInt(req.query.year as string) : undefined;
+    const year = int(req.query.year);
     const type = req.query.type === 'movie' ? 'movie' : req.query.type === 'tv' ? 'tv' : undefined;
     if (!al && !titles.length) return res.status(400).json({ error: 'need al or titles' });
     const r = await resolveAnimeToTmdb(al, titles, year, type as any);
@@ -475,37 +592,54 @@ router.get('/resolve/anime', async (req, res) => {
 });
 
 // ── /title/:type/:id ─────────────────────────────────────────────────────────
+// User-safe title errors (the raw upstream message, e.g. axios "status code 404", never leaks).
+const TITLE_GONE = { error: "This title isn't available anymore.", code: 'not_found' };
+const TITLE_DOWN = { error: "Couldn't load this title. Check your connection and try again.", code: 'upstream' };
+const titleErr = (res: any, e: any, extra: object = {}) => (e?.response?.status === 404 || e?.status === 404
+    ? res.status(404).json({ ...TITLE_GONE, ...extra }) : res.status(502).json({ ...TITLE_DOWN, ...extra }));
+
+/** A title route id → TMDB {type,id}. A NEGATIVE id is an AniList id (anime browse cards,
+ *  see /browse) and is resolved to its TMDB entry, so a cold server serves any such link. */
+async function titleRef(type: 'movie' | 'tv', raw: string): Promise<{ type: 'movie' | 'tv'; id: number; anilistId?: number } | null> {
+    if (!/^-?\d{1,9}$/.test(raw) || Number(raw) === 0) return null;
+    const id = Number(raw);
+    if (id > 0) return { type, id };
+    const r = await resolveAnimeToTmdb(-id, [], undefined, type);
+    if (!r) throw Object.assign(new Error('no TMDB match'), { status: 404 });
+    return { ...r, anilistId: -id };
+}
+
 router.get('/title/:type/:id', async (req, res) => {
-    const type = req.params.type as 'movie' | 'tv';
-    const id = req.params.id;
-    if (type !== 'movie' && type !== 'tv') return res.status(400).json({ error: 'bad type' });
+    if (req.params.type !== 'movie' && req.params.type !== 'tv') return res.status(400).json({ error: 'bad type or id', code: 'bad_request' });
     try {
+        const ref = await titleRef(req.params.type, req.params.id);
+        if (!ref) return res.status(400).json({ error: 'bad type or id', code: 'bad_request' });
+        const { type, id } = ref;
         const d = await tmdbGet(`/${type}/${id}`, {
             language: langOf(req),
             append_to_response: 'credits,recommendations,videos,external_ids',
         });
-        const genres = (d.genres || []).map((g: any) => g.name);
+        const { genres, isAnime, isCartoon, isAsian, isBollywood } = classify(d);
         const lang = d.original_language;
-        const isAnime = genres.includes('Animation') && (lang === 'ja' || lang === 'zh');
-        const isCartoon = genres.includes('Animation') && !isAnime;
-        const isAsian = !isAnime && ['ko', 'zh', 'ja', 'th'].includes(lang);
-        const isBollywood = (d.production_countries || []).some((c: any) => c.iso_3166_1 === 'IN' || c.name === 'India');
 
         // Better season structure than TMDB for anime (AniList cours) and cartoons/
         // series (TheTVDB). Falls back to TMDB seasons when the plan is 'tmdb'.
         let seasons = (d.seasons || []).filter((s: any) => s.season_number > 0).map((s: any) => ({
             seasonNumber: s.season_number, name: s.name, episodeCount: s.episode_count,
         }));
-        let metaSource = 'tmdb';
+        let metaSource: SeasonPlan['source'] = 'tmdb';
         if (type === 'tv') {
             try {
-                // Bounded so a slow/rate-limited AniList never stalls the title page — degrade to TMDB.
+                // Bounded so a slow/rate-limited AniList never stalls the title page — degrade to
+                // TMDB. The build keeps going (deduped in seasonPlan); the client echoes the
+                // metaSource we report here as ?src= so /season + the SSE resolver agree with it.
                 const plan = await withTimeout(
                     seasonPlan({ id: d.id, type, title: d.name || d.title, year: parseInt((d.first_air_date || '').slice(0, 4)) || undefined, imdbId: d.external_ids?.imdb_id, orgTitle: d.original_name || d.original_title, isAnime, isCartoon, indian: isIndian(lang, isBollywood) }),
-                    9000, { source: 'tmdb' as const, seasons: [] },
+                    9000, TMDB_PLAN,
                 );
                 if (plan.source !== 'tmdb' && plan.seasons.length) {
-                    seasons = plan.seasons.map((s) => ({ seasonNumber: s.seasonNumber, name: s.name, episodeCount: s.episodeCount, anilistId: (s as any).anilistId }));
+                    // AniList cour names come lower-case sometimes ("restart") — sentence-case those, leave real casing alone
+                    seasons = plan.seasons.map((s) => ({ seasonNumber: s.seasonNumber, name: s.name && s.name === s.name.toLowerCase() ? s.name[0].toUpperCase() + s.name.slice(1) : s.name, episodeCount: s.episodeCount, anilistId: s.anilistId }));
                     metaSource = plan.source;
                 }
             } catch { /* keep TMDB seasons */ }
@@ -514,6 +648,7 @@ router.get('/title/:type/:id', async (req, res) => {
         res.json({
             id: d.id,
             type,
+            anilistId: ref.anilistId,   // set when the link was an AniList id: the cour to pre-select
             title: d.title || d.name,
             posterUrl: tmdbImg(d.poster_path, 'w500'),
             backdropUrl: tmdbImg(d.backdrop_path, 'w1280'),
@@ -529,51 +664,56 @@ router.get('/title/:type/:id', async (req, res) => {
             recommendations: (d.recommendations?.results || []).filter((r: any) => r.poster_path).slice(0, 18).map((r: any) => toCard(r)),
             trailerKeys: (d.videos?.results || []).filter((v: any) => v.site === 'YouTube' && /trailer|teaser/i.test(v.type)).map((v: any) => v.key),
             seasons,
+            originalLanguage: lang,
             metaSource,
             classification: { isAnime, isAsian, isBollywood, isCartoon },
         });
     } catch (e: any) {
-        res.status(404).json({ error: e?.message || 'not found' });
+        titleErr(res, e);
     }
 });
 
 // ── /title/tv/:id/season/:n ──────────────────────────────────────────────────
 router.get('/title/tv/:id/season/:n', async (req, res) => {
-    const id = Number(req.params.id);
-    const n = Number(req.params.n);
-    // Prefer the AniList/TVDB plan (matches the seasons /title returned); fall back to TMDB.
+    const n = int(req.params.n);
+    let id: number | undefined;
+    try { id = (await titleRef('tv', req.params.id))?.id; } catch (e) { return titleErr(res, e, { seasonNumber: n, episodes: [] }); }
+    if (!id || n === undefined) return res.status(400).json({ seasonNumber: n, episodes: [], error: 'bad id or season', code: 'bad_request' });
+    // Prefer the AniList/TVDB plan (matches the seasons /title returned, see planFor); fall back to TMDB.
     try {
-        const info = await getTMDBInfo(id, 'tv');
-        // Include the Indian branch even without TVDB — CastleTV can supply the episode
-        // list for daily soaps. Otherwise /title (Castle plan) and /season disagree.
-        if (info && (info.isAnime || info.isCartoon || tvdbActiveFor(info) || isIndian(info.originalLanguage, info.isBollywood))) {
-            const plan = await seasonPlan({ id, type: 'tv', title: info.title, year: info.year, imdbId: info.imdbId, orgTitle: info.originalTitle, isAnime: info.isAnime, isCartoon: info.isCartoon, indian: isIndian(info.originalLanguage, info.isBollywood) });
+        const info = req.query.src === 'tmdb' ? null : await getTMDBInfo(id, 'tv');
+        if (info) {
+            const plan = await planFor(req, id, info);
             if (plan.source !== 'tmdb') {
+                const ps = plan.seasons.find((s) => s.seasonNumber === n);
+                const runtime = ps?.runtime ?? info.episodeRuntime;   // per-episode length falls back to the cour's / series' typical one
                 const eps = await planEpisodes(plan, n);
                 if (eps && eps.length) {
-                    return res.json({ seasonNumber: n, episodes: eps.map((e) => ({ id: `${id}-${e.seasonNumber}-${e.episodeNumber}`, name: e.name, overview: e.overview, stillUrl: e.stillUrl, episodeNumber: e.episodeNumber, seasonNumber: e.seasonNumber, airDate: e.airDate })) });
+                    return res.json({ seasonNumber: n, episodes: eps.map((e) => ({ id: `${id}-${e.seasonNumber}-${e.episodeNumber}`, name: e.name, overview: e.overview, stillUrl: e.stillUrl, episodeNumber: e.episodeNumber, seasonNumber: e.seasonNumber, airDate: e.airDate, runtime: e.runtime ?? runtime })) });
                 }
                 // Plan exists but no per-episode detail: return a BARE numbered list from the
                 // plan's episodeCount. Do NOT fall back to tmdbGet(/season/n) — here `n` is the
                 // AniList cour / TVDB-order index, NOT a TMDB season number, so TMDB would
                 // return the wrong season entirely.
-                const ps = plan.seasons.find((s) => s.seasonNumber === n);
                 const count = ps?.episodeCount || 0;
-                const bare = Array.from({ length: count }, (_v, i) => ({ id: `${id}-${n}-${i + 1}`, episodeNumber: i + 1, seasonNumber: n }));
+                const bare = Array.from({ length: count }, (_v, i) => ({ id: `${id}-${n}-${i + 1}`, episodeNumber: i + 1, seasonNumber: n, runtime }));
                 return res.json({ seasonNumber: n, episodes: bare });
             }
         }
-    } catch { /* fall through to TMDB */ }
+    } catch (e: any) {
+        if (e?.status === 503) return res.status(503).json({ error: e.message });
+        /* else fall through to TMDB */
+    }
     try {
         const data = await tmdbGet(`/tv/${id}/season/${n}`, { language: langOf(req) });
         const episodes = (data.episodes || []).map((e: any) => ({
             id: e.id, name: e.name, overview: e.overview, stillUrl: tmdbImg(e.still_path, 'w300'),
             episodeNumber: e.episode_number, seasonNumber: e.season_number,
-            voteAverage: e.vote_average || undefined, airDate: e.air_date,
+            voteAverage: e.vote_average || undefined, airDate: e.air_date, runtime: e.runtime || undefined,
         }));
         res.json({ seasonNumber: n, episodes });
     } catch (e: any) {
-        res.status(404).json({ seasonNumber: n, episodes: [], error: e?.message });
+        titleErr(res, e, { seasonNumber: n, episodes: [] });
     }
 });
 
@@ -584,11 +724,11 @@ router.get('/title/tv/:id/season/:n', async (req, res) => {
 router.get('/skip-times', async (req, res) => {
     const empty = { opening: null as null | { start: number; end: number }, ending: null as null | { start: number; end: number } };
     try {
-        const id = parseInt(req.query.id as string);
+        const id = int(req.query.id);
         const type = req.query.type as 'movie' | 'tv';
-        const episode = parseInt(req.query.episode as string) || 1;
-        const season = req.query.season ? parseInt(req.query.season as string) : undefined;
-        const length = parseInt(req.query.length as string) || 0;
+        const episode = int(req.query.episode) || 1;
+        const season = int(req.query.season);
+        const length = int(req.query.length) || 0;
         if (!id || (type !== 'movie' && type !== 'tv')) return res.json(empty);
 
         const info = await getTMDBInfo(id, type);
@@ -601,7 +741,7 @@ router.get('/skip-times', async (req, res) => {
         let malId = ids.malId;
         if (type === 'tv' && season && season > 1 && ids.anilistId) {
             try {
-                const plan = await seasonPlan({ id, type, title: info.title, year: info.year, imdbId: info.imdbId, orgTitle: info.originalTitle, isAnime: true });
+                const plan = await planFor(req, id, info);
                 const cour = plan.source === 'anilist' ? plan.seasons.find((s) => s.seasonNumber === season) : undefined;
                 if (cour?.malId) malId = cour.malId;
             } catch { /* fall back to root MAL id */ }
@@ -655,20 +795,17 @@ router.get('/diag', async (_req, res) => {
 });
 
 // ── /providers + /providers/health ───────────────────────────────────────────
-const KIND_OF = (id: string): string => {
-    if (/sub|wyzie/i.test(id)) return 'subtitles';
-    if (/anime|hianime|pahe|kick|reanime|anizone|animeworld|tosho/i.test(id)) return 'anime';
-    if (/kisskh/i.test(id)) return 'asian';
-    if (/castle|bolly|rog|hdhub|4khdhub|vega|movies4u|uhd|moviesmod|topmovies|multimovies/i.test(id)) return 'multi';
-    return 'movie';
-};
+// From the provider's own `kinds` gating (extractors/index.ts): one kind → that kind,
+// several or none (= serves all) → multi. Subtitle providers carry no kind data.
+const KIND_OF = (p: Provider): string =>
+    /subtitle|subs$/i.test(p.id) ? 'subtitles' : p.kinds?.length === 1 ? p.kinds[0] : 'multi';
 const hostFor = (id: string): string => {
     const d = providerDomains.find((p) => p.id === id);
     return d ? d.url.replace(/^https?:\/\//, '') : '';
 };
 router.get('/providers', (_req, res) => {
     const list = getProviders().map((p) => ({
-        id: p.id, name: p.name, kind: KIND_OF(p.id), host: hostFor(p.id), needsToken: false,
+        id: p.id, name: p.name, kind: KIND_OF(p), host: hostFor(p.id), needsToken: false,
         stats: providerStat(p.id),                 // real success rate / latency / circuit state
         priorityScore: providerPriority(p.id),
     }));
@@ -694,11 +831,36 @@ router.get('/providers/health', async (_req, res) => {
 
 // ── /config — runtime server config set from the UI (Torrent indexer) ─────────
 // Writes are gated by ADMIN_TOKEN when it's set (lock down a public instance); open
-// otherwise (personal use). The API key is never returned to the client.
-const configAuthed = (req: any): boolean => !process.env.ADMIN_TOKEN || req.query.token === process.env.ADMIN_TOKEN || req.headers['x-admin-token'] === process.env.ADMIN_TOKEN;
-router.get('/config', (_req, res) => {
-    res.json({ torznab: torznabPublic(), adminLock: !!process.env.ADMIN_TOKEN });
+// otherwise (personal use). Header only (X-Admin-Token) — a ?token= lands in access logs.
+// The API key is never returned to the client.
+const configAuthed = (req: any): boolean => !process.env.ADMIN_TOKEN || req.get('x-admin-token') === process.env.ADMIN_TOKEN;
+// Addon URLs often embed secrets (Torrentio: /realdebrid=KEY/manifest.json), so full URLs
+// go only to a request carrying the real ADMIN_TOKEN; everyone else sees just the host.
+const maskUrl = (u: string) => { try { return `${new URL(u).origin}/…`; } catch { return '…'; } };
+router.get('/config', (req, res) => {
+    const full = !!process.env.ADMIN_TOKEN && req.get('x-admin-token') === process.env.ADMIN_TOKEN;
+    const view = <T extends { urls: string[] }>(l: T) => (full ? l : { ...l, urls: l.urls.map(maskUrl), redacted: true });
+    const status = nuvioStatus().map(st => (full ? st : { ...st, manifest: maskUrl(st.manifest) }));
+    res.json({
+        torznab: torznabPublic(), adminLock: !!process.env.ADMIN_TOKEN,
+        nuvio: { ...view(addonPublic('nuvio')), status }, stremio: view(addonPublic('stremio')),
+    });
 });
+// Nuvio plugin repos / Stremio addon manifests. Body: { urls: string[] } (replaces the UI
+// list) or { urls: null } (clear → fall back to the env var). Unlike Torznab these REQUIRE
+// ADMIN_TOKEN to be set: a Nuvio plugin is code the server executes, and both lists
+// allowlist their (possibly LAN) origins in the SSRF guard — never open to anonymous writes.
+const addonRoute = (kind: AddonKind, reload: () => Promise<void>) => async (req: any, res: any) => {
+    if (!process.env.ADMIN_TOKEN) return res.status(403).json({ ok: false, error: 'set ADMIN_TOKEN on the server to manage addons from the UI' });
+    if (!configAuthed(req)) return res.status(403).json({ ok: false, error: 'admin token required' });
+    const urls = req.body?.urls;
+    if (urls !== null && !(Array.isArray(urls) && urls.every((u: unknown) => typeof u === 'string'))) return res.status(400).json({ ok: false, error: 'urls must be a string[] or null' });
+    setAddonUrls(kind, urls);
+    await reload().catch(() => { /* per-manifest errors are reported in status */ });
+    res.json({ ok: true, [kind]: kind === 'nuvio' ? { ...addonPublic('nuvio'), status: nuvioStatus() } : addonPublic('stremio') });
+};
+router.post('/config/nuvio', addonRoute('nuvio', reloadNuvio));
+router.post('/config/stremio', addonRoute('stremio', reloadStremio));
 router.post('/config/torznab', (req, res) => {
     if (!configAuthed(req)) return res.status(403).json({ ok: false, error: 'admin token required' });
     const { kind, url, apiKey } = req.body || {};
@@ -722,11 +884,11 @@ router.get('/config/torznab/test', async (_req, res) => {
 // events for a few minutes and replay them instantly on a repeat open / rewatch /
 // SSE-reconnect / failover. `?fresh=1` bypasses. Sources with short-lived tokens are
 // covered by the modest TTL + the player's automatic failover to another source.
-interface SourceCacheEntry { at: number; events: { e: string; d: any }[] }
+interface SourceCacheEntry { at: number; isAnime?: boolean; originalLanguage?: string; events: { e: string; d: any }[] }
 const SOURCE_CACHE_TTL = 8 * 60 * 1000;   // 8 minutes
 const SOURCE_CACHE_MAX = 500;
 const sourceCache = new Map<string, SourceCacheEntry>();
-const sourceCacheKey = (type: string, id: number, season?: number, episode?: number) => `${type}:${id}:${season ?? ''}:${episode ?? ''}`;
+const sourceCacheKey = (type: string, id: number, season?: number, episode?: number, src?: unknown) => `${type}:${id}:${season ?? ''}:${episode ?? ''}${src === 'tmdb' ? ':tmdb' : ''}`;
 
 // ── console.error trace capture (concurrency-safe) ────────────────────────────
 // The debug endpoint needs the provider's ANIME_DEBUG breadcrumbs. Rather than
@@ -757,58 +919,227 @@ const endTrace = (buf: string[]) => {
     }
 };
 
+// ── LinkData for the resolver (shared by /sources/stream and /debug/provider) ──
+// `season`/`episode` arrive in the numbering of the plan the client is showing (see
+// planFor). Providers expect TMDB/aired numbering, so:
+//   • AniList cour (anime): `season` is the cour index. absoluteEpisode = prior cours'
+//     episodes + episode (from the PLAN, not TMDB); a DISTINCT renamed cour (Solo Leveling
+//     S2 = "Arise from the Shadow") is handed over as its exact title + per-cour episode with
+//     seasonResolved + that cour's AniList/MAL ids, so scrapers match by title and the id
+//     providers ask for the right cour (not S1's id with S2's episode number);
+//   • TVDB official/DVD order (cartoons): mapped back to aired S/E (planToAired);
+//   • TMDB plan: anime absoluteEpisode from TMDB season counts.
+async function buildLinkData(type: 'movie' | 'tv', id: number, season: number | undefined, episode: number | undefined, req: any): Promise<{ info: MetaData; linkData: LinkData } | null> {
+    const info = await getTMDBInfo(id, type);
+    if (!info) return null;
+    let animeIds = info.isAnime ? await resolveAnimeIds(id, type, info.title, info.year?.toString(), info.originalTitle) : undefined;
+    let title = info.title, orgTitle = info.originalTitle;
+    let absoluteEpisode: number | undefined, animeSeasonTitles: string[] | undefined, seasonYear: number | undefined;
+    let seasonResolved = false;
+    const tmdbSeasons = (info.seasons || []).filter((s) => s.seasonNumber >= 1);
+    if (type === 'tv' && season) {
+        const plan = await planFor(req, id, info);
+        if (plan.source === 'anilist') {
+            const sn = season;
+            const cour = plan.seasons.find((s) => s.seasonNumber === sn);
+            const s1 = plan.seasons.find((s) => s.seasonNumber === 1);
+            seasonYear = cour?.year;   // the cour's own year — TMDB season `season` is a different axis
+            if (episode) {
+                const prior = plan.seasons.filter((s) => s.seasonNumber < sn).reduce((sum, s) => sum + (s.episodeCount || 0), 0);
+                if (prior > 0) absoluteEpisode = prior + episode;
+            }
+            if (cour?.titles?.length && cour.anilistId !== s1?.anilistId) {
+                animeSeasonTitles = cour.titles;
+                title = cour.titles[0];
+                orgTitle = cour.titles[1] || orgTitle;
+                seasonResolved = true;
+                animeIds = { ...animeIds, titles: cour.titles, malId: cour.malId ?? animeIds?.malId, anilistId: cour.anilistId ?? animeIds?.anilistId };
+            }
+        } else {
+            if (episode) ({ season, episode } = await planToAired(plan, season, episode));
+            const sn = season;
+            if (info.isAnime && sn > 1 && episode) {
+                const prior = tmdbSeasons.filter((s) => s.seasonNumber < sn).reduce((sum, s) => sum + (s.episodeCount || 0), 0);
+                if (prior > 0) absoluteEpisode = prior + episode;
+            }
+        }
+        // Air year of the SELECTED season — lets per-season providers pick the right entry
+        // (a series' seasons are often separate entries on the upstream site).
+        const sn = season;
+        if (!seasonYear) seasonYear = parseInt((tmdbSeasons.find((s) => s.seasonNumber === sn)?.airDate || '').slice(0, 4)) || undefined;
+    }
+    const linkData: LinkData = {
+        id, imdbId: info.imdbId, type, season, episode, absoluteEpisode, animeSeasonTitles, seasonResolved,
+        title, year: info.year, seasonYear, orgTitle,
+        isAnime: info.isAnime, isCartoon: info.isCartoon, isAsian: info.isAsian, isBollywood: info.isBollywood, animeIds,
+    };
+    return { info, linkData };
+}
+
 // ── /debug/provider — run ONE provider and return its RAW output or error ─────
 // Diagnoses why a specific provider yields nothing behind FlareSolverr/WARP, which
-// the SSE stream can't show. Example:
-//   /api/debug/provider?provider=allanime&type=tv&id=1234&season=1&episode=1&warp=all
-// Optional: set DEBUG_TOKEN in the env to require ?token=… (locks this diagnostic
-// down on a public instance without affecting the normal client).
+// the SSE stream can't show. Disabled unless DEBUG_TOKEN is set; send it as the
+// X-Debug-Token header. Example:
+//   curl -H "X-Debug-Token: $DEBUG_TOKEN" '/api/debug/provider?provider=allanime&type=tv&id=1234&season=1&episode=1&warp=all'
 router.get('/debug/provider', async (req, res) => {
-    if (process.env.DEBUG_TOKEN && req.query.token !== process.env.DEBUG_TOKEN) return res.status(403).json({ error: 'forbidden' });
+    if (!process.env.DEBUG_TOKEN || req.get('x-debug-token') !== process.env.DEBUG_TOKEN) return res.status(403).json({ error: 'forbidden' });
     const pid = req.query.provider as string;
     const type = req.query.type as 'movie' | 'tv';
-    const id = parseInt(req.query.id as string);
-    const season = req.query.season ? parseInt(req.query.season as string) : undefined;
-    const episode = req.query.episode ? parseInt(req.query.episode as string) : undefined;
+    const id = int(req.query.id);
+    const season = int(req.query.season);
+    const episode = int(req.query.episode);
     const p = getProviders().find((x) => x.id === pid) || torrentProviders().find((x) => x.id === pid);
     if (!p) return res.status(404).json({ error: 'unknown provider', known: [...getProviders().map((x) => x.id), ...torrentProviders().map((x) => x.id)] });
     if ((type !== 'movie' && type !== 'tv') || !id) return res.status(400).json({ error: 'need type=movie|tv & id=<tmdbId>' });
 
     const trace: string[] = [];
     beginTrace(trace);
-    const restore = () => endTrace(trace);
-
     try {
-        const info = await getTMDBInfo(id, type);
-        if (!info) { restore(); return res.json({ error: 'metadata not found for that id/type', trace }); }
-        let animeIds;
-        if (info.isAnime) animeIds = await resolveAnimeIds(id, type, info.title, info.year?.toString(), info.originalTitle);
-        let seasonYear: number | undefined;
-        if (type === 'tv' && season) {
-            try { const sd = await tmdbGet(`/tv/${id}/season/${season}`, {}); const d = sd?.air_date || sd?.episodes?.[0]?.air_date; if (d) seasonYear = parseInt(String(d).slice(0, 4)) || undefined; } catch { /* */ }
-        }
-        const linkData: LinkData = { id, imdbId: info.imdbId, type, season, episode, title: info.title, year: info.year, seasonYear, orgTitle: info.originalTitle, isAnime: info.isAnime, isCartoon: info.isCartoon, isAsian: info.isAsian, isBollywood: info.isBollywood, animeIds };
+        const built = await buildLinkData(type, id, season, episode, req);
+        if (!built) return res.json({ error: 'metadata not found for that id/type', trace });
+        const { info, linkData } = built;
         const warpMode: WarpMode = normalizeWarpMode(req.query.warp as string);
         const t = Date.now();
         const r = await runWithWarp({ mode: warpMode, requiresWarp: p.requiresWarp }, () => p.invoke(linkData));
-        restore();
         res.json({
             provider: p.id, ms: Date.now() - t, warpMode, warpConfigured: warpConfigured(),
-            resolved: { title: info.title, orgTitle: info.originalTitle, isAnime: info.isAnime, animeIds },
+            resolved: { title: linkData.title, orgTitle: linkData.orgTitle, season: linkData.season, episode: linkData.episode, isAnime: info.isAnime, animeIds: linkData.animeIds },
             streamCount: (r.streams || []).length, streams: r.streams, subtitles: r.subtitles, trace,
         });
     } catch (e: any) {
-        restore();
         res.json({ provider: pid, error: String(e?.stack || e?.message || e).slice(0, 800), trace });
+    } finally {
+        endTrace(trace);
     }
 });
 
+// ── source ranking: probe → score → best ────────────────────────────────────
+const PROBES_PER_PROVIDER = 4;          // links beyond this per provider stay verified:"unknown"
+const BEST_GRACE_MS = 3500;             // wait this long after the first candidate for a better one
+const UPGRADE_DELTA = 15;               // a later verified source must beat `best` by this to send `upgrade`
+// URLs the client reported as failed (proxied URL → when): treated as verified:false for a
+// while so a cached replay doesn't hand the same dead source back as `best`.
+const BAD_URL_MS = 30 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+const badUrls = new Map<string, { at: number; count: number; reason: FailReason }>();   // at = last failed report
+const isBadUrl = (u: string) => Date.now() - (badUrls.get(u)?.at || 0) < BAD_URL_MS;
+/** failures{count24h,lastAt,lastReason}: client failure reports for this URL + a failed probe. */
+const failuresOf = (l: any) => {
+    const rep = badUrls.get(l.url);
+    const out: { count24h: number; lastAt?: number; lastReason?: FailReason } = { count24h: 0 };
+    if (rep && Date.now() - rep.at < DAY_MS) Object.assign(out, { count24h: rep.count, lastAt: rep.at, lastReason: rep.reason });
+    if (l.verifyError) {
+        out.count24h++;
+        if (!out.lastAt || (l.verifiedAt || 0) > out.lastAt) Object.assign(out, { lastAt: l.verifiedAt, lastReason: failReason(l.verifyError) });
+    }
+    return out;
+};
+
+// No audio preference sent → prefer the title's original language, then English, so an
+// English show doesn't auto-start on a German dub. (Anime is handled by sub/dub instead.)
+const langName = (code?: string) => { try { return code ? new Intl.DisplayNames(['en'], { type: 'language' }).of(code) : undefined; } catch { return undefined; } };
+const prefsOf = (req: any, isAnime?: boolean, originalLanguage?: string): ScorePrefs => {
+    const asked = String(req.query.audio || '').split(',').map((a) => a.trim()).filter((a) => /^[A-Za-z ]{2,20}$/.test(a)).slice(0, 10);
+    const fallback = isAnime ? [] : [...new Set([langName(originalLanguage), 'English'].filter((x): x is string => !!x))];
+    return {
+        audio: asked.length ? asked : fallback,
+        anime: isAnime && (req.query.anime === 'sub' || req.query.anime === 'dub') ? req.query.anime : undefined,
+    };
+};
+/** Attach live provider state (hidden, reliability, reported-bad) and the score. */
+const rescore = (l: any, prefs: ScorePrefs) => {
+    const verified = isBadUrl(l.url) ? false : l.verified;
+    const st = providerStat(l.providerId);
+    return {
+        ...l, verified, hidden: st.hidden, browserPlayable: l.webReady !== false,
+        startupMs: st.ttffMs || l.latencyMs,   // reported time-to-first-frame, else the probe's latency
+        failures: failuresOf(l),
+        score: scoreSource({ ...l, verified, hidden: st.hidden, reliability: st.reliability }, prefs),
+    };
+};
+// Failed verification last, then hidden providers, then score.
+const byRank = (a: any, b: any) => Number(a.verified === false) - Number(b.verified === false) || Number(a.hidden) - Number(b.hidden) || b.score - a.score;
+const isCandidate = (l: any) => l.type !== 'iframe' && l.verified !== false && !l.hidden && l.webReady !== false;
+const ranked = (links: any[]) => {
+    const sorted = [...links].sort(byRank), rec = sorted.find(isCandidate);
+    return { sources: sorted.map((l, i) => ({ url: l.url, providerId: l.providerId, score: l.score, rank: i + 1, verified: l.verified, hidden: l.hidden, recommended: l === rec })) };
+};
+
+/** Picks the auto-play source: `best` at once for a good verified source, else after a grace
+ *  window (or at the end); later `upgrade` for a markedly better verified one. */
+function bestPicker(send: (event: string, data: any) => void) {
+    const pool: any[] = [];
+    let sent: any, timer: NodeJS.Timeout | undefined, finished = false;
+    const top = () => pool.filter(isCandidate).sort(byRank)[0];
+    const emit = (reason: string) => {
+        const b = top();
+        if (sent || !b) return;
+        sent = b; send('best', { type: 'best', source: { ...b, recommended: true }, reason });
+    };
+    return {
+        pool,
+        add(links: any[]) {
+            pool.push(...links);
+            if (finished) return;
+            const b = top();
+            if (!b) return;
+            if (sent) {
+                if (b.verified === true && b.url !== sent.url && b.score >= sent.score + UPGRADE_DELTA) { sent = b; send('upgrade', { type: 'upgrade', source: { ...b, recommended: true } }); }
+                return;
+            }
+            if (b.verified === true && b.score >= GOOD_SCORE) return emit('good');
+            timer ??= setTimeout(() => emit('grace'), BEST_GRACE_MS);
+        },
+        finish() { clearTimeout(timer); emit('done'); finished = true; },
+    };
+}
+
+// Reports only count for streams this server actually handed out, once per client IP and
+// stream — otherwise anyone could POST four fake "failed" reports and hide a provider for
+// every user (provider ids are public).
+const EMITTED_TTL = 2 * 60 * 60 * 1000;
+const emitted = new Map<string, { provider: string; at: number }>();
+const noteEmitted = (l: any) => {
+    if (!l?.url || !l.providerId) return;
+    if (emitted.size >= 20000) for (const [k, v] of emitted) if (Date.now() - v.at > EMITTED_TTL || emitted.size >= 20000) emitted.delete(k); else break;
+    emitted.set(l.url, { provider: l.providerId, at: Date.now() });
+};
+const votes = new Map<string, number>();   // `${ip}|${url}` → at
+const firstVote = (ip: string, url: string) => {
+    const k = `${ip}|${url}`, now = Date.now();
+    if (votes.size >= 20000) votes.clear();   // ponytail: crude bound; worst case one extra vote each
+    const seen = votes.get(k);
+    votes.set(k, now);
+    return !seen || now - seen > EMITTED_TTL;
+};
+
+// Client playback feedback → provider playback reliability / hiding.
+router.post('/sources/report', rateLimit(Number(process.env.SOURCE_REPORT_PER_MIN) || 30), (req, res) => {
+    const known = new Set([...getProviders(), ...torrentProviders()].map((p) => p.id));
+    const r = parseReport(req.body, known);
+    if ('invalid' in r) return res.status(400).json({ ok: false, error: r.invalid });
+    const e = r.url ? emitted.get(r.url) : undefined;
+    if (!e || e.provider !== r.provider || Date.now() - e.at > EMITTED_TTL) return res.json({ ok: true, ignored: 'not a recently served stream' });
+    if (!firstVote(req.ip || '', r.url!)) return res.json({ ok: true, ignored: 'already reported', hidden: providerHidden(r.provider) });
+    recordPlayback(r.provider, r.outcome, r.ttffMs, r.error);
+    if (r.url && r.outcome === 'played') badUrls.delete(r.url);
+    else if (r.url && r.outcome === 'failed') {
+        if (badUrls.size >= 5000) badUrls.clear();   // ponytail: crude memory bound
+        const prev = badUrls.get(r.url), now = Date.now();
+        badUrls.set(r.url, { at: now, count: prev && now - prev.at < DAY_MS ? prev.count + 1 : 1, reason: failReason(r.error) });
+    }
+    res.json({ ok: true, hidden: providerHidden(r.provider) });
+});
+
 // ── /sources/stream (SSE) ────────────────────────────────────────────────────
+// Events: provider, link, subtitle, log, done + best / upgrade / ranked. Every link is
+// probed for playability and scored before it's emitted (see utils/sourceProbe.ts).
 router.get('/sources/stream', async (req, res) => {
     const type = req.query.type as 'movie' | 'tv';
-    const id = parseInt(req.query.id as string);
-    const season = req.query.season ? parseInt(req.query.season as string) : undefined;
-    const episode = req.query.episode ? parseInt(req.query.episode as string) : undefined;
+    const id = int(req.query.id);
+    const season = int(req.query.season);
+    const episode = int(req.query.episode);
+    if ((type !== 'movie' && type !== 'tv') || !id) return res.status(400).json({ error: 'need type=movie|tv & id' });
 
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
@@ -831,82 +1162,40 @@ router.get('/sources/stream', async (req, res) => {
     const torrentMode = req.query.torrent === '1';
 
     // Fast path: replay a recent resolve instead of re-running every provider.
-    const cacheKey = sourceCacheKey(type, id, season, episode) + (torrentMode ? ':t' : '');
+    const cacheKey = sourceCacheKey(type, id, season, episode, req.query.src) + (torrentMode ? ':t' : '');
     const cached = sourceCache.get(cacheKey);
     if (cached && Date.now() - cached.at < SOURCE_CACHE_TTL && req.query.fresh !== '1' && !onlyProviders.length) {
         send('log', { msg: 'Loaded cached sources.' });
-        for (const ev of cached.events) send(ev.e, ev.d);
+        // Re-score on replay: preferences and provider health may differ from when it was cached.
+        const prefs = prefsOf(req, cached.isAnime, cached.originalLanguage);
+        const links = cached.events.filter((ev) => ev.e === 'link').map((ev) => rescore(ev.d, prefs)).sort(byRank).map((l, i) => ({ ...l, rank: i + 1 }));
+        const best = links.find(isCandidate);
+        if (best) best.recommended = true;
+        for (const ev of cached.events) {
+            if (ev.e === 'provider') send('provider', { ...ev.d, hidden: ev.d.state === 'circuit-broken' || providerHidden(ev.d.id) });
+            else if (ev.e !== 'link' && ev.e !== 'done') send(ev.e, ev.d);
+        }
+        links.forEach((l) => { noteEmitted(l); send('link', l); });
+        const nProv = cached.events.filter((ev) => ev.e === 'provider').length;
+        send('progress', { total: nProv, settled: nProv, done: true });
+        if (best) send('best', { type: 'best', source: best, reason: 'cached' });
+        send('ranked', ranked(links));
+        send('done', {});
         return res.end();
     }
     // Record the resolvable events (everything but transient logs) so we can cache them.
     const recorded: { e: string; d: any }[] = [];
     const rsend = (event: string, data: any) => { if (event !== 'log') recorded.push({ e: event, d: data }); send(event, data); };
+    const picker = bestPicker(send);
 
     try {
         send('log', { msg: 'Resolving metadata…' });
-        const info = await getTMDBInfo(id, type);
-        if (!info) { send('log', { msg: 'Metadata not found.' }); send('done', {}); return res.end(); }
-
-        let animeIds;
-        if (info.isAnime) animeIds = await resolveAnimeIds(id, type, info.title, info.year?.toString(), info.originalTitle);
-
-        // Air year of the SELECTED season — lets per-season providers pick the right
-        // entry (a series' seasons are often separate entries on the upstream site).
-        let seasonYear: number | undefined;
-        if (type === 'tv' && season) {
-            try {
-                const sd = await tmdbGet(`/tv/${id}/season/${season}`, {});
-                const d = sd?.air_date || sd?.episodes?.[0]?.air_date;
-                if (d) seasonYear = parseInt(String(d).slice(0, 4)) || undefined;
-            } catch { /* fall back to no season year */ }
-        }
-
-        // Anime S2+ handling (one place). The `season` param is the AniList cour index the
-        // /title page returned — NOT a TMDB season number — so:
-        //   • absoluteEpisode (for series-wide-numbered batch releases) = sum of PRIOR cours'
-        //     episode counts + episode, taken from the AniList PLAN (not TMDB seasons);
-        //   • a DISTINCT renamed cour (Solo Leveling S2 = "Arise from the Shadow") is handed to
-        //     every anime provider as its exact title + per-cour episode, with seasonResolved
-        //     so scrapers match by title instead of guessing "season N" from text.
-        // Only when AniList is unavailable do we fall back to TMDB season counts (the /title
-        // page is then showing TMDB seasons too, so the axes match).
-        let absoluteEpisode: number | undefined;
-        let animeSeasonTitles: string[] | undefined;
-        let title = info.title;
-        let orgTitle = info.originalTitle;
-        let seasonResolved = false;
-        if (info.isAnime && type === 'tv' && season && season > 1 && episode) {
-            try {
-                const plan = animeIds?.anilistId
-                    ? await seasonPlan({ id, type, title: info.title, year: info.year, imdbId: info.imdbId, orgTitle: info.originalTitle, isAnime: true })
-                    : { source: 'tmdb' as const, seasons: [] };
-                if (plan.source === 'anilist') {
-                    const prior = plan.seasons.filter((s) => s.seasonNumber < season).reduce((sum, s) => sum + (s.episodeCount || 0), 0);
-                    if (prior > 0) absoluteEpisode = prior + episode;
-                    const cour = plan.seasons.find((s) => s.seasonNumber === season);
-                    const s1 = plan.seasons.find((s) => s.seasonNumber === 1);
-                    if (cour?.titles?.length && cour.anilistId !== s1?.anilistId) {
-                        animeSeasonTitles = cour.titles;
-                        title = cour.titles[0];
-                        orgTitle = cour.titles[1] || orgTitle;
-                        seasonResolved = true;
-                        animeIds = { ...animeIds, titles: cour.titles, malId: cour.malId ?? animeIds?.malId };
-                    }
-                } else {
-                    const det = await tmdbGet(`/tv/${id}`, {});
-                    const prior = (det?.seasons || [])
-                        .filter((s: any) => s.season_number >= 1 && s.season_number < season)
-                        .reduce((sum: number, s: any) => sum + (s.episode_count || 0), 0);
-                    if (prior > 0) absoluteEpisode = prior + episode;
-                }
-            } catch { /* fall back to base title + season-scoring */ }
-        }
-
-        const linkData: LinkData = {
-            id, imdbId: info.imdbId, type, season, episode, absoluteEpisode, animeSeasonTitles, seasonResolved,
-            title, year: info.year, seasonYear, orgTitle,
-            isAnime: info.isAnime, isCartoon: info.isCartoon, isAsian: info.isAsian, isBollywood: info.isBollywood, animeIds,
-        };
+        // Not under the tab's abort signal: the season plan build is SHARED (deduped with
+        // /title), so a closed tab must not abort it and cache a degraded TMDB plan.
+        const built = await buildLinkData(type, id, season, episode, req);
+        if (!built) { send('log', { msg: 'Metadata not found.' }); send('done', {}); return res.end(); }
+        const { info, linkData } = built;
+        const prefs = prefsOf(req, info.isAnime, info.originalLanguage);
 
         // Only run providers that serve THIS content kind — an anime title shouldn't
         // wake the Indian movie scrapers (each a slow FlareSolverr solve), and a movie
@@ -923,7 +1212,17 @@ router.get('/sources/stream', async (req, res) => {
         // targeted re-scan (onlyProviders, the "refresh failed" button) bypasses this so
         // the user can always force a retry. A half-open probe (in providerShouldRun)
         // auto-revives a recovered provider.
-        else providers = providers.filter((p) => providerShouldRun(p.id));
+        // Breaker-skipped providers are still announced (state circuit-broken, hidden) so the
+        // UI can count them under "N unavailable".
+        else {
+            const all = providers; providers = [];
+            for (const p of all) {
+                if (providerShouldRun(p.id)) { providers.push(p); continue; }
+                rsend('provider', { id: p.id, name: p.name, state: 'circuit-broken', durationMs: 0, links: [], priorityScore: 0, hidden: true, note: 'skipped: failing repeatedly, auto-retries after a cool-down' });
+            }
+        }
+        // Chronically unplayable (hidden) providers start last.
+        providers.sort((a, b) => Number(providerHidden(a.id)) - Number(providerHidden(b.id)));
         send('log', { msg: torrentMode ? 'Searching torrents…' : `Fanning out across ${providers.length} ${kind} providers…` });
 
         // WARP proxy mode for this request (Settings → falls back to server default).
@@ -931,11 +1230,19 @@ router.get('/sources/stream', async (req, res) => {
 
         const TIMEOUT = Number(process.env.PROVIDER_TIMEOUT_MS) || 45000;
         const TIMED_OUT = Symbol('timeout');
+        // Scan progress for "Still looking: checked 14 of 36" (breaker-skipped providers excluded).
+        let settled = 0;
+        send('progress', { total: providers.length, settled, done: false });
         await Promise.all(providers.map(async (p) => {
-            send('provider', { id: p.id, name: p.name, state: 'running', links: [], priorityScore: 0 });
+            send('provider', { id: p.id, name: p.name, state: 'running', links: [], priorityScore: 0, hidden: providerHidden(p.id) });
             const t = Date.now();
+            // Per-provider signal: aborted when the tab closes OR when this provider is done
+            // (incl. timed out) — otherwise a timed-out provider keeps holding its
+            // FlareSolverr/WARP slot until its own requests give up.
+            const pac = new AbortController();
+            const signal = AbortSignal.any([ac.signal, pac.signal]);
             try {
-                let r = await runWithSignal(ac.signal, () => runWithWarp(
+                let r = await runWithSignal(signal, () => runWithWarp(
                     { mode: warpMode, requiresWarp: p.requiresWarp },
                     () => withTimeout<any>(p.invoke(linkData), TIMEOUT, TIMED_OUT),
                 ));
@@ -945,35 +1252,67 @@ router.get('/sources/stream', async (req, res) => {
                 // it one more go routed through WARP (a clean egress often unblocks it).
                 if (warpMode === 'fallback' && warpConfigured() && !closed && !timedOut && !(r.streams || []).length) {
                     send('log', { msg: `${p.name}: retrying via WARP…` });
-                    r = await runWithSignal(ac.signal, () => runWithWarp(
+                    r = await runWithSignal(signal, () => runWithWarp(
                         { mode: warpMode, forceWarp: true },
                         () => withTimeout(p.invoke(linkData), TIMEOUT, { streams: [], subtitles: [] }),
                     ));
                 }
-                const links = (r.streams || [])
-                    .filter((s: Stream) => typeof s.link === 'string' && s.link)   // guard: a non-string link would crash proxify's Buffer.from
-                    .map((s: Stream) => ({
-                        providerId: p.id, name: s.server, url: proxify(s, (linkData.animeSeasonTitles?.length ? linkData.episode : linkData.absoluteEpisode) ?? linkData.episode), type: s.type,
-                        quality: qualityNum(s) || undefined, playable: s.type !== 'iframe', host: hostOf(s.link),
-                    }));
-                links.forEach((l: any) => rsend('link', l));
-                (r.subtitles || []).forEach((sub: any) => rsend('subtitle', { providerId: p.id, lang: sub.language, url: subProxy(sub.url) }));
-                const best = links.reduce((m: number, l: any) => Math.max(m, l.quality || 0), 0);
                 const durationMs = Date.now() - t;
+                // Probe each link (HLS master → variant → segment bytes; MP4 ranged GET) before
+                // emitting it, so every link carries verified/latencyMs/real quality + score.
+                let probed = false, anyOk = false;
+                const ep = (linkData.animeSeasonTitles?.length ? linkData.episode : linkData.absoluteEpisode) ?? linkData.episode;
+                const links = (await Promise.all((r.streams || [])
+                    .filter((s: Stream) => typeof s.link === 'string' && s.link)   // guard: a non-string link would crash proxify's Buffer.from
+                    .map(async (s: Stream, i: number) => {
+                        const label = `${s.server || ''} ${s.quality || ''} ${(s as any).description || ''}`;
+                        const url = proxify(s, ep);
+                        const audio = detectAudio(`${s.server || ''} ${s.audioName || ''}`);
+                        const l: any = {
+                            id: createHash('sha1').update(url).digest('hex').slice(0, 16), providerId: p.id, providerName: p.name, variant: s.server,
+                            name: s.server, url, type: s.type, external: /\bvlc\b/i.test(label),
+                            audioTracks: audioTracks(`${label} ${s.audioName || ''}`, audio, info.isAnime),
+                            quality: qualityNum(s) || undefined, playable: s.type !== 'iframe', host: hostOf(s.link),
+                            audio: audio || undefined, verified: 'unknown',
+                            // the URL path counts too: CDNs file HEVC under /h265/, names end .mkv
+                            webReady: webReadyOf(`${label} ${s.link.split('?')[0]}`, undefined, (s as any).notWebReady), mbps: mbpsOf(label),
+                        };
+                        if (!torrentMode && s.type !== 'iframe' && !s.link.startsWith('magnet:') && i < PROBES_PER_PROVIDER) {
+                            const pr = await probeStream(s.link, s.type, s.headers);
+                            if (!pr.inconclusive) { probed = true; anyOk ||= pr.ok; }
+                            l.verified = pr.inconclusive ? 'unknown' : pr.ok; l.latencyMs = pr.latencyMs; l.kbps = pr.kbps; l.verifiedAt = pr.at;
+                            if (pr.height) l.quality = pr.height;   // the playlist's advertised max beats the label
+                            if (!pr.ok) l.verifyError = pr.error;
+                            if (pr.format === 'mkv' || pr.hevc) l.webReady = false;
+                            if (pr.hevc) l.codec = 'hevc';
+                        }
+                        return rescore(l, prefs);
+                    }))).sort(byRank);
+                if (!closed && probed) recordVerify(p.id, anyOk);
+                links.forEach((l: any) => { noteEmitted(l); rsend('link', l); });
+                picker.add(links);
+                (r.subtitles || []).forEach((sub: any) => rsend('subtitle', { providerId: p.id, lang: sub.language, url: subProxy(sub.url, sub.headers) }));
+                const best = links.reduce((m: number, l: any) => Math.max(m, l.quality || 0), 0);
                 // A timeout is reported as `failed` with a reason so it's visible in the
                 // UI (previously indistinguishable from a genuine "no sources").
                 const state = links.length ? 'found' : timedOut ? 'failed' : 'empty';
                 const note = timedOut ? `timed out after ${Math.round(durationMs / 1000)}s` : undefined;
                 // Feed the health/circuit-breaker (skip aborted runs — a closed tab isn't a failure).
                 if (!closed && !torrentMode) recordProvider(p.id, state, durationMs);
-                rsend('provider', { id: p.id, name: p.name, state, durationMs, links, priorityScore: best, note });
+                rsend('provider', { id: p.id, name: p.name, state, durationMs, links, priorityScore: best, note, hidden: providerHidden(p.id), reliability: providerStat(p.id).reliability });
                 send('log', { msg: `${p.name}: ${timedOut ? 'timed out' : `${links.length} link${links.length === 1 ? '' : 's'}`} (${durationMs}ms)` });
             } catch (e: any) {
                 if (!closed && !torrentMode) recordProvider(p.id, 'failed', Date.now() - t);
-                rsend('provider', { id: p.id, name: p.name, state: 'failed', durationMs: Date.now() - t, links: [], priorityScore: 0, note: String(e?.message || e).slice(0, 80) });
+                rsend('provider', { id: p.id, name: p.name, state: 'failed', durationMs: Date.now() - t, links: [], priorityScore: 0, note: String(e?.message || e).slice(0, 80), hidden: providerHidden(p.id) });
+            } finally {
+                pac.abort();
+                send('progress', { total: providers.length, settled: ++settled, done: false });
             }
         }));
 
+        picker.finish();
+        send('progress', { total: providers.length, settled, done: true });
+        send('ranked', ranked(picker.pool));
         rsend('done', {});
         // Cache a COMPLETE resolve that actually produced sources (skip aborted /
         // all-empty runs, and subset re-scans, so we never serve a bad/partial result).
@@ -983,10 +1322,11 @@ router.get('/sources/stream', async (req, res) => {
                 for (const [k, v] of sourceCache) if (v.at < oldestAt) { oldestAt = v.at; oldestKey = k; }
                 if (oldestKey) sourceCache.delete(oldestKey);
             }
-            sourceCache.set(cacheKey, { at: Date.now(), events: recorded });
+            sourceCache.set(cacheKey, { at: Date.now(), isAnime: info.isAnime, originalLanguage: info.originalLanguage, events: recorded });
         }
         res.end();
     } catch (e: any) {
+        picker.finish();
         send('log', { msg: `Resolver error: ${e?.message || e}` });
         send('done', {});
         res.end();

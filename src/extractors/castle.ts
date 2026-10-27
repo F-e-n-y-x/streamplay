@@ -1,6 +1,7 @@
 import crypto from 'crypto';
-import axios from 'axios';
+import net from '../utils/net';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
+import { norm } from '../utils/season';
 
 /**
  * CastleTV (api.hlowb.com) — Indian streaming API with **multi-language** movies &
@@ -13,7 +14,6 @@ import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types'
 
 const API = 'https://api.hlowb.com';
 const HEADERS = { Referer: API, 'User-Agent': 'okhttp/4.9.2', 'Content-Type': 'application/json' };
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /**
  * CastleTV tags every catalogue entry with a `movieTypeName`
@@ -67,7 +67,7 @@ let keyCache: { value: string; exp: number } | null = null;
 async function securityKey(): Promise<string | null> {
     if (keyCache && keyCache.exp > Date.now()) return keyCache.value;
     try {
-        const r = await axios.get(`${API}/v0.1/system/getSecurityKey/1?channel=IndiaA&clientType=1&lang=en-US`, { headers: { Referer: API }, timeout: 12000 });
+        const r = await net.get(`${API}/v0.1/system/getSecurityKey/1?channel=IndiaA&clientType=1&lang=en-US`, { headers: { Referer: API }, timeout: 12000 });
         if (r.data?.code === 200 && r.data?.data) { keyCache = { value: r.data.data, exp: Date.now() + 3_600_000 }; return r.data.data; }
     } catch { /* */ }
     return null;
@@ -105,9 +105,42 @@ function unwrap(raw: string, key: string): any {
 }
 
 async function encGet(url: string, key: string): Promise<any> {
-    const r = await axios.get(url, { headers: HEADERS, timeout: 15000, transformResponse: (x) => x });
+    const r = await net.get(url, { headers: HEADERS, timeout: 15000, transformResponse: (x) => x });
     return unwrap(String(r.data), key);
 }
+
+/** publishTime may be ms-epoch, SECONDS-epoch, or an ISO string → year (0 = unknown).
+ *  A bare seconds value fed to new Date() reads as 1970 and collapsed the year tiebreak. */
+const yearOf = (pt: number | string): number => {
+    const y = new Date(typeof pt === 'number' && pt > 0 && pt < 1e12 ? pt * 1000 : pt).getFullYear();
+    return y > 1970 ? y : 0;
+};
+
+/**
+ * Search CastleTV and return the best row. A REAL title-token match is required first;
+ * medium/year only refine an already-matching candidate — they can never promote a
+ * zero-title row (CastleTV's fuzzy search returns unrelated same-genre shows otherwise).
+ */
+async function findTitle(key: string, titles: string[], year?: number, medium?: Medium): Promise<any | null> {
+    const sr = await encGet(`${API}/film-api/v1.1.0/movie/searchByKeyword?channel=IndiaA&clientType=1&keyword=${encodeURIComponent(titles[0])}&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=20`, key);
+    const rows: any[] = sr?.rows || sr?.list || [];
+    const wants = titles.map(norm);
+    const best = rows.map((m) => {
+        let s = Math.max(...wants.map((w) => titleMatch(w, m.title || '')));
+        if (s <= 0) return { m, s: 0 };
+        // Medium alignment (anime vs live-action vs film) — the decisive tiebreak when
+        // several mediums share the title; a wrong medium drops below the floor.
+        const med = mediumOf(m);
+        if (medium && med) s += med === medium ? 2 : -3;
+        const y = year && m.publishTime ? yearOf(m.publishTime) : 0;
+        if (y) s += y === year ? 3 : -Math.min(2, Math.abs(y - year!) * 0.5);
+        return { m, s };
+    }).sort((a, b) => b.s - a.s)[0];
+    return best && best.s > 0 ? best.m : null;
+}
+
+const details = (id: string, key: string) =>
+    encGet(`${API}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&lang=en-US&movieId=${id}&packageName=com.external.castle`, key);
 
 export interface CastleEp { number: number; title?: string }
 
@@ -122,26 +155,9 @@ export async function castleEpisodes(title: string, year?: number): Promise<Cast
     const key = await securityKey();
     if (!key) return [];
     try {
-        const sr = await encGet(`${API}/film-api/v1.1.0/movie/searchByKeyword?channel=IndiaA&clientType=1&keyword=${encodeURIComponent(title)}&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=20`, key);
-        const rows: any[] = sr?.rows || sr?.list || [];
-        if (!rows.length) return [];
-        const want = norm(title);
-        const best = rows.map((m) => {
-            let s = titleMatch(want, m.title || '');
-            if (s <= 0) return { m, s: 0 };
-            if (year && m.publishTime) {
-                try {
-                    let pt: number | string = m.publishTime;
-                    if (typeof pt === 'number' && pt > 0 && pt < 1e12) pt = pt * 1000;
-                    const y = new Date(pt).getFullYear();
-                    if (y > 1970) s += y === year ? 3 : -Math.min(2, Math.abs(y - year) * 0.5);
-                } catch { /* */ }
-            }
-            return { m, s };
-        }).sort((a, b) => b.s - a.s)[0];
-        if (!best || best.s <= 0) return [];
-        const det = await encGet(`${API}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&lang=en-US&movieId=${best.m.id}&packageName=com.external.castle`, key);
-        const eps: any[] = det?.episodes || [];
+        const best = await findTitle(key, [title], year);
+        if (!best) return [];
+        const eps: any[] = (await details(best.id, key))?.episodes || [];
         return eps
             .map((e) => ({ number: Number(e.number), title: e.title || e.name || undefined }))
             .filter((e) => Number.isFinite(e.number))
@@ -160,47 +176,21 @@ export const CastleProvider: Provider = {
         if (!key) return { streams, subtitles };
 
         try {
-        // 1) search → best title/year match
-        const sr = await encGet(`${API}/film-api/v1.1.0/movie/searchByKeyword?channel=IndiaA&clientType=1&keyword=${encodeURIComponent(data.title)}&lang=en-US&mode=1&packageName=com.external.castle&page=1&size=20`, key);
-        const rows: any[] = sr?.rows || sr?.list || [];
-        if (!rows.length) return { streams, subtitles };
-        const want = norm(data.title);
-        const wantOrg = data.orgTitle ? norm(data.orgTitle) : '';
-        const wantMedium = desiredMedium(data);
-        // CastleTV lists each SEASON of a show as its own entry, usually with the
-        // SAME title and only the year differing. Disambiguate by the selected
-        // season's air year (falling back to the series year) — this is what stops
-        // "S1E2" from landing on whichever same-titled entry happened to rank first.
-        const targetYear = data.seasonYear || data.year;
-        const best = rows.map((m) => {
-            // A REAL title-token match is required first. Medium/year only refine an
-            // already-matching candidate — they can never promote a zero-title row
-            // (CastleTV's fuzzy search returns unrelated same-genre shows otherwise).
-            let s = Math.max(titleMatch(want, m.title || ''), titleMatch(wantOrg, m.title || ''));
-            if (s <= 0) return { m, s: 0 };
-            // Medium alignment (anime vs live-action vs film) — the decisive tiebreak
-            // when several mediums share the title. A wrong medium is penalised hard
-            // so it drops below the `best.s <= 0` floor and is rejected rather than
-            // served as "the wrong anime".
-            const med = mediumOf(m);
-            if (med) s += med === wantMedium ? 2 : -3;
-            if (targetYear && m.publishTime) {
-                try {
-                    // publishTime may be ms-epoch, SECONDS-epoch, or an ISO string.
-                    // A bare seconds value (< ~1e12) fed to new Date() reads as 1970,
-                    // which collapsed the whole year tiebreak → wrong season picked.
-                    let pt: number | string = m.publishTime;
-                    if (typeof pt === 'number' && pt > 0 && pt < 1e12) pt = pt * 1000;
-                    const y = new Date(pt).getFullYear();
-                    if (y > 1970) s += y === targetYear ? 3 : -Math.min(2, Math.abs(y - targetYear) * 0.5);
-                } catch { /* */ }
-            }
-            return { m, s };
-        }).sort((a, b) => b.s - a.s)[0];
-        if (!best || best.s <= 0) return { streams, subtitles };
+        // 1) search → best title/medium/year match. CastleTV lists each SEASON of a show
+        //    as its own entry (same title, different year) — disambiguate by the selected
+        //    season's air year so "S1E2" doesn't land on whichever entry ranked first.
+        const best = await findTitle(key, [data.title, ...(data.orgTitle ? [data.orgTitle] : [])], data.seasonYear || data.year, desiredMedium(data));
+        if (!best) return { streams, subtitles };
 
-        // 2) details → the episode (movie = single episode; TV = match number)
-        const det = await encGet(`${API}/film-api/v1.9.9/movie?channel=IndiaA&clientType=1&lang=en-US&movieId=${best.m.id}&packageName=com.external.castle`, key);
+        // 2) details → the episode (movie = single episode; TV = match number).
+        //    A show is ONE search row whose details default to its LATEST season;
+        //    `seasons` lists each season's own movieId — without this, S7 played S4.
+        let det = await details(best.id, key);
+        if (data.type === 'tv' && Array.isArray(det?.seasons) && det.seasons.length) {
+            const s = det.seasons.find((x: any) => Number(x.number) === (data.season || 1));
+            if (!s) return { streams, subtitles };   // CastleTV doesn't carry this season
+            if (String(s.movieId) !== String(best.id)) { best.id = s.movieId; det = await details(s.movieId, key); }
+        }
         const eps: any[] = det?.episodes || [];
         if (!eps.length) return { streams, subtitles };
         let ep = eps[0];
@@ -227,13 +217,13 @@ export const CastleProvider: Provider = {
                 const body: any = {
                     mode: '1', appMarket: 'GuanWang', clientType: '1', woolUser: 'false',
                     apkSignKey: 'ED0955EB04E67A1D9F3305B95454FED485261475', androidVersion: '13',
-                    movieId: String(best.m.id), episodeId: String(ep.id), isNewUser: 'true',
+                    movieId: String(best.id), episodeId: String(ep.id), isNewUser: 'true',
                     resolution: String(res), packageName: 'com.external.castle',
                 };
                 if (rq.languageId != null) body.languageId = rq.languageId;
                 let vd: any;
                 try {
-                    const r = await axios.post(`${API}/film-api/v2.0.1/movie/getVideo2?clientType=1&packageName=com.external.castle&channel=IndiaA&lang=en-US`, JSON.stringify(body), { headers: HEADERS, timeout: 15000, transformResponse: (x) => x });
+                    const r = await net.post(`${API}/film-api/v2.0.1/movie/getVideo2?clientType=1&packageName=com.external.castle&channel=IndiaA&lang=en-US`, JSON.stringify(body), { headers: HEADERS, timeout: 15000, transformResponse: (x) => x });
                     vd = unwrap(String(r.data), key);
                 } catch { continue; }
                 if (vd?.videoUrl && vd.permissionDenied !== true) {

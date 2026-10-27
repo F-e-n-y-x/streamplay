@@ -1,5 +1,6 @@
-import axios from 'axios';
+import net from '../utils/net';
 import { Provider, LinkData, ExtractorResult, Stream } from '../types';
+import { pad2 } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 import { searchNyaa, searchTorznab } from '../utils/torrentSearch';
 
@@ -18,7 +19,6 @@ const FEED = 'https://feed.animetosho.org/json';
 // Fansub/encode groups that are reliably well-seeded and browser-friendly (h264).
 const GOOD_GROUPS = /\b(subsplease|erai-raws|horriblesubs|ember|judas|asw|cerberus|nandesu|commie|dkb|nep_blanc|yameii)\b/i;
 const DUB_RE = /\b(dual[\s._-]?audio|dual|dub|multi[\s._-]?audio|eng[\s._-]?dub)\b/i;
-const p2 = (n: number) => String(n).padStart(2, '0');
 
 interface Release { title: string; magnet: string; size: number; files: number; seeders?: number }
 
@@ -33,7 +33,7 @@ const magnetFrom = (r: any): string => {
 
 async function searchTosho(q: string): Promise<Release[]> {
     try {
-        const { data } = await axios.get(FEED, { params: { q, only_tor: 1 }, timeout: 15000 });
+        const { data } = await net.get(FEED, { params: { q, only_tor: 1 }, timeout: 15000 });
         const arr: any[] = Array.isArray(data) ? data : [];
         return arr.map((r) => ({ title: String(r.title || r.torrent_name || ''), magnet: magnetFrom(r), size: Number(r.total_size) || 0, files: Number(r.num_files) || 1, seeders: Number(r.seeders ?? r.num_seeders) || 0 }))
             .filter((r) => r.magnet && r.title);
@@ -65,8 +65,8 @@ async function releasesFor(titles: string[], episode: number, wantDub: boolean):
         // Multiple query shapes: padded + non-padded episode, and a bare-title query that
         // catches batches / season packs (the stream then file-picks the episode by &ep).
         const queries = wantDub
-            ? [`${base} ${p2(episode)} dual audio`, `${base} dual audio`, `${base} ${p2(episode)}`, `${base} ${episode}`, `${base}`]
-            : [`${base} ${p2(episode)}`, `${base} - ${p2(episode)}`, `${base} ${episode}`, `${base}`];
+            ? [`${base} ${pad2(episode)} dual audio`, `${base} dual audio`, `${base} ${pad2(episode)}`, `${base} ${episode}`, `${base}`]
+            : [`${base} ${pad2(episode)}`, `${base} - ${pad2(episode)}`, `${base} ${episode}`, `${base}`];
         for (const q of queries) {
             // Query AnimeTosho, Nyaa AND Torznab (Jackett/Prowlarr anime cat, if set) and merge.
             const [tosho, nyaa, torznab] = await Promise.all([searchTosho(q), searchNyaa(q), searchTorznab(q, '5070')]);

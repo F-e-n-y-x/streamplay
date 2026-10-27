@@ -1,17 +1,19 @@
-import axios from 'axios';
+import net from '../utils/net';
 import { Provider, LinkData, ExtractorResult } from '../types';
 import { encDecGet, encDecPost, USER_AGENT } from '../utils/encdec';
 
-const VIDFAST_API = 'https://vidfast.pro';
+const VIDFAST_API = 'https://vidfast.vc';   // vidfast.pro 301s here
 
 /**
  * VidFast — ported from invokeVidFast (StreamPlayExtractor.kt).
  *
  * Flow:
- *   1. GET the watch page, scrape the `\"en\":\"<token>\"` blob.
- *   2. enc-vidfast?text=<token>&version=1  -> { result: { servers, stream, token } }
- *   3. POST <servers> with X-CSRF-Token    -> encrypted servers blob
- *   4. POST dec-vidfast { text, version }   -> { result: [ { name, data } ] }
+ *   1. GET the watch page (WITHOUT X-Requested-With — that returns a 548-byte stub),
+ *      scrape the `\"en\":\"<token>\"` blob.
+ *   2. enc-vidfast?text=<token>&stage=1    -> { result: { stage1, token } }; POST stage1 (CSRF)
+ *   3. enc-vidfast?text=<that>&stage=2     -> { result: { servers, stream, token } }
+ *   4. POST <servers> (CSRF) -> dec-vidfast { text } -> { result: [ { name, data } ] }
+ *   (smy778/EncDecEndpoints samples/vidfast.py)
  *   5. For each server: POST <stream>/<data> -> encrypted, then dec-vidfast -> { result: { url, tracks } }
  */
 export const VidFastProvider: Provider = {
@@ -20,8 +22,6 @@ export const VidFastProvider: Provider = {
     invoke: async (data: LinkData): Promise<ExtractorResult> => {
         const result: ExtractorResult = { streams: [], subtitles: [] };
         if (!data.id) return result;
-
-        const version = '1';
 
         try {
             const requestUrl = data.season == null
@@ -35,37 +35,41 @@ export const VidFastProvider: Provider = {
             };
 
             // Step 1: page + token
-            const pageRes = await axios.get(requestUrl, { headers: baseHeaders, timeout: 15000 });
-            const encodedText = /\\"en\\":\\"(.*?)\\"/.exec(pageRes.data)?.[1];
+            const pageRes = await net.get(requestUrl, { headers: { 'User-Agent': USER_AGENT }, timeout: 15000 });
+            const encodedText = /\\"(?:en|token)\\":\\"(.*?)\\"/.exec(pageRes.data)?.[1];
             if (!encodedText) return result;
 
-            // Step 2: decrypt token -> servers/stream/csrf
-            const encJson = await encDecGet(`enc-vidfast?text=${encodedText}&version=${version}`);
-            const meta = encJson?.result;
+            // Step 2: stage 1 → POST → stage 2 → servers/stream/csrf
+            const s1 = (await encDecGet(`enc-vidfast?text=${encodeURIComponent(encodedText)}&stage=1`))?.result;
+            if (!s1?.stage1 || !s1?.token) return result;
+            const stage1Text = (await net.post(s1.stage1, undefined, { headers: { ...baseHeaders, 'X-CSRF-Token': s1.token }, timeout: 15000, responseType: 'text' })).data;
+            if (!stage1Text) return result;
+            const meta = (await encDecGet(`enc-vidfast?text=${encodeURIComponent(stage1Text)}&stage=2`))?.result;
             if (!meta?.servers || !meta?.stream || !meta?.token) return result;
 
             const { servers: serversUrl, stream: streamBase, token } = meta;
             const postHeaders = { ...baseHeaders, 'X-CSRF-Token': token };
 
             // Step 3 + 4: encrypted servers list -> decrypt
-            const serversEncrypted = (await axios.post(serversUrl, {}, { headers: postHeaders, timeout: 15000 })).data;
+            const serversEncrypted = (await net.post(serversUrl, undefined, { headers: postHeaders, timeout: 15000, responseType: 'text' })).data;
             if (!serversEncrypted) return result;
 
-            const serversRoot = await encDecPost('dec-vidfast', { text: serversEncrypted, version });
+            const serversRoot = await encDecPost('dec-vidfast', { text: serversEncrypted });
             const serversList: any[] = serversRoot?.result ?? [];
             if (serversList.length === 0) return result;
 
             // Step 5: each server's stream is itself encrypted; decrypt to get final URL + subs
-            await Promise.all(serversList.map(async (server: any, index: number) => {
+            // ponytail: first 6 servers — each costs 2 enc-dec round-trips through the shared gate
+            await Promise.all(serversList.slice(0, 6).map(async (server: any, index: number) => {
                 const name = server.name || `Server ${index + 1}`;
                 if (!server.data) return;
 
                 try {
                     const streamUrl = `${streamBase}/${server.data}`;
-                    const streamEncrypted = (await axios.post(streamUrl, {}, { headers: postHeaders, timeout: 15000 })).data;
+                    const streamEncrypted = (await net.post(streamUrl, undefined, { headers: postHeaders, timeout: 15000, responseType: 'text' })).data;
                     if (!streamEncrypted) return;
 
-                    const streamRoot = await encDecPost('dec-vidfast', { text: streamEncrypted, version });
+                    const streamRoot = await encDecPost('dec-vidfast', { text: streamEncrypted });
                     const finalUrl = streamRoot?.result?.url;
                     if (!finalUrl) return;
 
@@ -73,12 +77,11 @@ export const VidFastProvider: Provider = {
                         server: `VidFast [${name}]`,
                         link: finalUrl,
                         type: finalUrl.includes('.m3u8') ? 'm3u8' : 'mp4',
-                        quality: '1080p',
-                        headers: { 'Referer': `${VIDFAST_API}/` }
+                        headers: streamRoot.result.noReferrer ? {} : { 'Referer': `${VIDFAST_API}/`, Origin: VIDFAST_API }
                     });
 
                     for (const track of streamRoot?.result?.tracks ?? []) {
-                        if (track.file && track.label) {
+                        if (track.file && track.label && !result.subtitles.some((x) => x.url === track.file)) {
                             result.subtitles.push({ language: track.label, url: track.file });
                         }
                     }

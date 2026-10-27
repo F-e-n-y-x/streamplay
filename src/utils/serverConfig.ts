@@ -1,5 +1,4 @@
-import fs from 'fs';
-import path from 'path';
+import { dataFile, readJson, writeJsonAtomic } from './common';
 
 /**
  * Runtime server configuration set from the UI (Settings → Torrent indexer), persisted
@@ -9,12 +8,16 @@ import path from 'path';
  */
 interface Cfg {
     torznab?: { kind: 'jackett' | 'prowlarr' | 'torznab'; url: string; apiKey: string };
+    /** Manifest URLs set from the UI; absent = fall back to the env var. */
+    nuvio?: string[];
+    stremio?: string[];
+    /** Per-scraper on/off for Nuvio repos, keyed by provider id (`nuvio:<repo>:<scraper>`). Absent = manifest default. */
+    nuvioScrapers?: Record<string, boolean>;
 }
 
-const FILE = process.env.SERVER_CONFIG_FILE || path.join(path.dirname(process.env.SYNC_DATA_FILE || './x'), 'server-config.json');
-let cfg: Cfg = {};
-(function load() { try { cfg = JSON.parse(fs.readFileSync(FILE, 'utf-8')) || {}; } catch { cfg = {}; } })();
-const save = () => { try { fs.writeFile(FILE, JSON.stringify(cfg), () => { /* best effort */ }); } catch { /* */ } };
+const FILE = process.env.SERVER_CONFIG_FILE || dataFile('server-config.json');
+const cfg: Cfg = readJson(FILE) || {};
+const save = () => writeJsonAtomic(FILE, cfg);
 
 /** The active Torznab hookup: UI config first, then env vars. */
 export function getTorznab(): { url?: string; apiKey?: string } {
@@ -26,9 +29,10 @@ export function getTorznab(): { url?: string; apiKey?: string } {
     };
 }
 
-/** Save (or clear, when url/apiKey blank) the Torznab hookup. */
+/** Save the Torznab hookup; a blank key keeps the saved one ("leave blank to keep"), a blank url clears. */
 export function setTorznab(kind: 'jackett' | 'prowlarr' | 'torznab', url: string, apiKey: string): void {
-    cfg.torznab = (url && apiKey) ? { kind, url: url.trim(), apiKey: apiKey.trim() } : undefined;
+    const key = apiKey.trim() || cfg.torznab?.apiKey || '';
+    cfg.torznab = (url.trim() && key) ? { kind, url: url.trim(), apiKey: key } : undefined;
     save();
 }
 
@@ -42,4 +46,37 @@ export function torznabPublic(): { kind: string; url: string; hasKey: boolean; s
         return { kind, url: envUrl, hasKey: !!envKey, source: 'env' };
     }
     return null;
+}
+
+// ── Addon manifest lists: Nuvio plugin repos + Stremio addons ─────────────────
+export type AddonKind = 'nuvio' | 'stremio';
+const ADDON_ENV: Record<AddonKind, string> = { nuvio: 'NUVIO_PLUGINS', stremio: 'STREMIO_ADDONS' };
+const splitUrls = (v?: string): string[] => (v || '').split(',').map((x) => x.trim()).filter(Boolean);
+
+/** Active manifest URLs: the UI list when one was saved, else the env var. */
+export function getAddonUrls(k: AddonKind): string[] {
+    return cfg[k] ?? splitUrls(process.env[ADDON_ENV[k]]);
+}
+
+/** Save the UI list (validated http(s), max 20), or `null` to fall back to the env var. */
+export function setAddonUrls(k: AddonKind, urls: string[] | null): void {
+    cfg[k] = urls === null ? undefined : [...new Set(urls.map((u) => String(u).trim()).filter((u) => {
+        try { return /^https?:$/.test(new URL(u).protocol); } catch { return false; }
+    }))].slice(0, 20);
+    save();
+}
+
+export function addonPublic(k: AddonKind): { urls: string[]; source: 'ui' | 'env' | 'none' } {
+    const urls = getAddonUrls(k);
+    return { urls, source: cfg[k] ? 'ui' : urls.length ? 'env' : 'none' };
+}
+
+export const getScraperOverrides = (): Record<string, boolean> => cfg.nuvioScrapers || {};
+
+/** Merge overrides: `true`/`false` set one, `null` resets it to the manifest default. */
+export function setScraperOverrides(changes: Record<string, boolean | null>): void {
+    const m = { ...getScraperOverrides() };
+    for (const [id, v] of Object.entries(changes)) if (v === null) delete m[id]; else m[id] = v;
+    cfg.nuvioScrapers = Object.keys(m).length ? m : undefined;
+    save();
 }

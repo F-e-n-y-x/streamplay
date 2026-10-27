@@ -2,32 +2,35 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%233b82f6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolygon points='6 3 20 12 6 21 6 3'/%3E%3C/svg%3E" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>StreamPlay</title>
     <!-- PWA: installable + iOS add-to-home-screen -->
     <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
+    <!-- single theme-color: kept in step with the in-app theme (pre-paint script + lib/theme.ts) -->
+    <meta name="theme-color" content="#0a0a0c" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="StreamPlay" />
-    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <!-- Apply persisted theme before paint to avoid a flash -->
     <script>
       (function () {
         try {
           var t = localStorage.getItem("sp.theme");
-          if (!t) t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          if (t === "system") t = matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          if (t !== "light") t = "dark";   /* dark is the default for everyone; light / match device are opt-in */
           document.documentElement.setAttribute("data-theme", t);
+          document.querySelector('meta[name="theme-color"]').setAttribute("content", t === "light" ? "#f5f5f3" : "#0a0a0c");
         } catch (e) {}
       })();
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400;500&family=Geist:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
   </head>

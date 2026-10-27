@@ -1,10 +1,10 @@
 import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
 import { app } from '../utils/http';
-import { seasonScore } from '../utils/season';
+import { seasonScore, norm } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 import { getLanguage } from '../utils/common';
-import { loadExtractor, getPacked, getAndUnpack } from '../utils/hostextractors';
+import { loadExtractor, findMediaUrl } from '../utils/hostextractors';
 import { flareSolverrGetHtml } from '../utils/flaresolverr';
 
 /**
@@ -19,7 +19,6 @@ import { flareSolverrGetHtml } from '../utils/flaresolverr';
  */
 const BASE = (process.env.ANIMENOSUB_BASE_URL || 'https://animenosub.to').replace(/\/+$/, '');
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 interface Card { slug: string; url: string; title: string }
 
@@ -36,7 +35,7 @@ function parseSearch(html: string): Card[] {
         if (seen.has(slug)) return;
         const title = ($(a).attr('title') || $(a).find('img').attr('alt') || $(a).text() || slug).trim();
         seen.add(slug);
-        cards.push({ slug, url: url.startsWith('http') ? url : `${BASE}${url}`, title });
+        cards.push({ slug, url: new URL(url, `${BASE}/`).href, title });
     });
     return cards;
 }
@@ -109,7 +108,7 @@ export const AnimeNoSubProvider: Provider = {
                 $('a[href*="-episode-"]').each((_i, a) => {
                     const href = ($(a).attr('href') || '').split('#')[0];
                     const n = Number((href.match(/-episode-(\d+)/) || [])[1]);
-                    if (n === episode && !epUrl) epUrl = href.startsWith('http') ? href : `${BASE}${href}`;
+                    if (n === episode && !epUrl) epUrl = new URL(href, pick.url).href;
                 });
                 if (!epUrl) continue;   // this entry lacks the episode → try the next candidate
 
@@ -117,7 +116,7 @@ export const AnimeNoSubProvider: Provider = {
                 const epHtml = (await app.get(epUrl, { referer: pick.url, headers: { 'User-Agent': UA }, timeout: 15000 })).text;
                 const iframe = (epHtml.match(/<iframe[^>]+(?:data-src|src)="([^"]+)"/i) || [])[1];
                 if (!iframe) continue;
-                const embed = iframe.startsWith('http') ? iframe : `https:${iframe.replace(/^\/\//, '')}`;
+                const embed = new URL(iframe, epUrl).href;
 
                 if (/megaplay\./i.test(embed)) {
                     // megaplay → resolve SUB and DUB via the /sub↔/dub swap → direct m3u8.
@@ -125,11 +124,12 @@ export const AnimeNoSubProvider: Provider = {
                     const dubUrl = embed.replace(/\/(sub|dub)\/?$/, '/dub');
                     const variants: { url: string; dub: boolean }[] = [{ url: subUrl, dub: false }];
                     if (dubUrl !== subUrl) variants.push({ url: dubUrl, dub: true });
+                    const mp = new URL(embed).origin;   // megaplay mirror varies (.buzz/…): send ITS origin
                     await Promise.all(variants.map(async (v) => {
                         const { m3u8, subs } = await resolveMegaplay(v.url);
                         for (const sub of subs) if (!subtitles.find((x) => x.url === sub.url)) subtitles.push(sub);
                         if (m3u8 && !streams.find((s) => s.link === m3u8)) {
-                            streams.push({ server: `AnimeNoSub ${v.dub ? 'DUB' : 'SUB'}`, link: m3u8, type: 'm3u8', headers: { Referer: 'https://megaplay.buzz/', Origin: 'https://megaplay.buzz' } });
+                            streams.push({ server: `AnimeNoSub ${v.dub ? 'DUB' : 'SUB'}`, link: m3u8, type: 'm3u8', headers: { Referer: `${mp}/`, Origin: mp } });
                         }
                     }));
                 } else {
@@ -147,11 +147,7 @@ export const AnimeNoSubProvider: Provider = {
                     if (!res.streams.length) {
                         const rendered = await flareSolverrGetHtml(embed).catch(() => null);
                         if (rendered) {
-                            const packed = getPacked(rendered);
-                            const src = packed ? getAndUnpack(packed) : rendered;
-                            const m = src.match(/(?:file|source|src)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']/i)
-                                || src.match(/(https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)/i);
-                            const m3u8 = m ? (m[1] || m[0]) : undefined;
+                            const m3u8 = findMediaUrl(rendered, ['m3u8'], embed);
                             if (process.env.ANIME_DEBUG) console.error(`[AnimeNoSub] FS render ${host} => ${m3u8 ? m3u8.slice(0, 55) : 'NULL'}`);
                             if (m3u8 && !streams.find((s) => s.link === m3u8)) {
                                 streams.push({ server: `AnimeNoSub · ${host}`, link: m3u8, type: 'm3u8', headers: { Referer: `${origin}/`, Origin: origin } });
