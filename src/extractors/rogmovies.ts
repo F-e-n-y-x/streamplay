@@ -2,6 +2,8 @@ import { Provider, LinkData, ExtractorResult } from '../types';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
+import { seasonRe, episodeRe } from '../utils/season';
+import { VEGA_HEADERS } from './vegamovies';
 
 /**
  * RogMovies — ported from invokeRogmovies (StreamPlayExtractor.kt ~2482).
@@ -16,22 +18,6 @@ import { loadExtractor } from '../utils/hostextractors';
  *   5. loadExtractor each source.
  */
 
-const VEGA_HEADERS: Record<string, string> = {
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Cache-Control': 'no-cache',
-    'Pragma': 'no-cache',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
-    'sec-ch-ua': '"Not_A Brand";v="8", "Chromium";v="120", "Microsoft Edge";v="120"',
-    'sec-ch-ua-mobile': '?0',
-    'sec-ch-ua-platform': '"Linux"',
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-    'cookie': 'xla=s4t',
-};
 
 const normalizeAlphaNumSpace = (s: string): string => s.toLowerCase().replace(/[^a-z0-9 ]/g, '');
 
@@ -68,9 +54,8 @@ export const RogMoviesProvider: Provider = {
                 results.find(d => data.imdbId && (d.imdb_id || '').toLowerCase() === data.imdbId.toLowerCase()) ||
                 results.find(d => {
                     const t = normalizeAlphaNumSpace(d.post_title || '');
-                    return keywords.some(k => t.includes(k));
-                }) ||
-                results[0];
+                    return keywords.length > 0 && keywords.every(k => t.includes(k));
+                });   // no blind results[0] — a wrong title is worse than none
 
             const permalink: string = match?.permalink;
             if (!permalink) return result;
@@ -98,11 +83,11 @@ export const RogMoviesProvider: Provider = {
                     } catch { /* skip page */ }
                 }
             } else {
-                const seasonRe = new RegExp(`Season ${data.season}`, 'i');
-                const epText = `Episode ${data.episode}`;
+                const sRe = seasonRe(data.season);
+                const epRe = episodeRe(data.episode ?? 1);
 
                 // collect candidate (season-block) links
-                const headers = mainDoc('h3, h5').toArray().filter(el => seasonRe.test(mainDoc(el).text()));
+                const headers = mainDoc('h3, h5').toArray().filter(el => sRe.test(mainDoc(el).text()));
                 const pageLinks: string[] = [];
                 for (const h of headers) {
                     let sib = mainDoc(h).next();
@@ -120,7 +105,7 @@ export const RogMoviesProvider: Provider = {
                 for (const page of pageLinks) {
                     try {
                         const doc = (await safeGet(page, { referer: api, headers: VEGA_HEADERS, cloudflare: true })).document;
-                        const epNode = doc('h4').toArray().find(el => doc(el).text().toLowerCase().includes(epText.toLowerCase()));
+                        const epNode = doc('h4').toArray().find(el => epRe.test(doc(el).text()));
                         if (!epNode) continue;
                         doc(epNode).next().find('a').each((_, a) => {
                             if (/v-cloud|single|episode|g-direct/i.test(doc(a).text())) {

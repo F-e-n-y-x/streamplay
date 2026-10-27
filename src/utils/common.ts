@@ -1,3 +1,7 @@
+import fs from 'fs';
+import path from 'path';
+import { app } from './http';
+
 /**
  * Small helpers ported from StreamPlayUtils.kt, shared across providers.
  */
@@ -48,7 +52,6 @@ export const createSlug = (str?: string): string | undefined =>
         .toLowerCase();
 
 export const base64Decode = (s: string): string => Buffer.from(s, 'base64').toString('utf-8');
-export const base64Encode = (s: string): string => Buffer.from(s, 'utf-8').toString('base64');
 
 /** Map a language code/name to a display label (best-effort subset). */
 const languageMap: Record<string, string[]> = {
@@ -84,7 +87,6 @@ const rot13 = (value: string): string =>
  * original url on any failure.
  */
 export const getRedirectLinks = async (url: string): Promise<string> => {
-    const { app } = await import('./http');
     try {
         const doc = (await app.get(url)).text;
         const re = /s\('o','([A-Za-z0-9+/=]+)'|ck\('_wp_http_\d+','([^']+)'/g;
@@ -120,4 +122,39 @@ export const getLanguage = (code: string): string => {
         if (codes.includes(lower)) return name;
     }
     return code || 'Unknown';
+};
+
+// ── persisted JSON state (sync-data, provider-stats, server-config) ───────────
+/** Default location for a persisted JSON file: next to SYNC_DATA_FILE when set,
+ *  else the project root (anchored on this file, not the process cwd). */
+export const dataFile = (name: string): string =>
+    path.join(process.env.SYNC_DATA_FILE ? path.dirname(process.env.SYNC_DATA_FILE) : path.join(__dirname, '..', '..'), name);
+
+let tmpSeq = 0;
+/** Write JSON via a unique temp file + rename, so a crash or overlapping write can
+ *  never leave a half-written file. Best effort: errors are logged, not thrown. */
+export const writeJsonAtomic = (file: string, data: unknown, done?: () => void): void => {
+    const tmp = `${file}.${process.pid}.${++tmpSeq}.tmp`;
+    fs.writeFile(tmp, JSON.stringify(data), (err) => {
+        if (err) console.error(`[state] write ${file} failed:`, err.message);
+        else try { fs.renameSync(tmp, file); } catch (e: any) { console.error(`[state] rename ${file} failed:`, e?.message); }
+        done?.();
+    });
+};
+
+/** Read a JSON file. Missing → undefined. Unparseable → moved aside to
+ *  `<file>.corrupt-<ts>` (so the next save can't silently overwrite the only
+ *  copy of the data) and undefined. */
+export const readJson = (file: string): any => {
+    let raw: string;
+    try { raw = fs.readFileSync(file, 'utf-8'); } catch (e: any) {
+        if (e?.code !== 'ENOENT') console.error(`[state] read ${file} failed:`, e?.message);
+        return undefined;
+    }
+    try { return JSON.parse(raw); } catch {
+        const bad = `${file}.corrupt-${Date.now()}`;
+        try { fs.renameSync(file, bad); } catch { /* */ }
+        console.error(`[state] ${file} is corrupt — moved to ${bad}, starting empty`);
+        return undefined;
+    }
 };

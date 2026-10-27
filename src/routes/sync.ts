@@ -1,6 +1,5 @@
-import { Router, Response } from 'express';
-import fs from 'fs';
-import path from 'path';
+import { Router, Request, Response, NextFunction } from 'express';
+import { dataFile, readJson, writeJsonAtomic } from '../utils/common';
 
 /**
  * Multi-device sync for watch history + favourites, with a live device roster
@@ -32,7 +31,7 @@ interface Room {
 const rooms = new Map<string, Room>();          // keyed by ROOT code
 const parent: Record<string, string> = {};      // union-find: code -> parent code
 
-const DATA_FILE = process.env.SYNC_DATA_FILE || path.join(__dirname, '..', '..', 'sync-data.json');
+const DATA_FILE = process.env.SYNC_DATA_FILE || dataFile('sync-data.json');
 let saveTimer: NodeJS.Timeout | null = null;
 let writing = false;
 let dirty = false;
@@ -42,11 +41,7 @@ const doSave = () => {
     writing = true; dirty = false;
     const out: any = { rooms: {}, parent };
     for (const [root, r] of rooms) out.rooms[root] = { history: r.history, favs: r.favs, settings: r.settings, devices: r.devices, claimed: r.claimed, tomb: pruneTomb(r.tomb) };
-    // Write to a temp file then atomically rename, so a crash or an overlapping
-    // write can never leave a half-written (unparseable) sync-data.json.
-    const tmp = `${DATA_FILE}.tmp`;
-    fs.writeFile(tmp, JSON.stringify(out), (err) => {
-        if (!err) { try { fs.renameSync(tmp, DATA_FILE); } catch { /* best effort */ } }
+    writeJsonAtomic(DATA_FILE, out, () => {
         writing = false;
         if (dirty) scheduleSave();
     });
@@ -56,15 +51,18 @@ const scheduleSave = () => {
     saveTimer = setTimeout(doSave, 1200);
 };
 (function load() {
+    // readJson moves an unparseable file aside (.corrupt-<ts>) instead of letting the
+    // next save overwrite every library with an empty state.
+    const raw = readJson(DATA_FILE);
+    if (!raw) return;
     try {
-        const raw = JSON.parse(fs.readFileSync(DATA_FILE, 'utf-8'));
         const roomsObj = raw.rooms || raw; // tolerate the older flat format
         for (const code of Object.keys(roomsObj)) {
             const r = roomsObj[code];
             rooms.set(code, { history: r.history || {}, favs: r.favs || {}, settings: r.settings || null, devices: r.devices || {}, claimed: !!r.claimed, clients: new Map(), tomb: r.tomb || {} });
         }
         Object.assign(parent, raw.parent || {});
-    } catch { /* no file yet */ }
+    } catch (e: any) { console.error('[sync] bad sync-data shape:', e?.message); }
 })();
 
 // ── union-find over codes ─────────────────────────────────────────────────────
@@ -78,21 +76,54 @@ function find(code: string): string {
 const EMPTY_ROOM = (): Room => ({ history: {}, favs: {}, settings: null, devices: {}, claimed: false, clients: new Map(), tomb: {} });
 // Cap the number of distinct rooms held in memory/persisted so a flood of requests
 // with random codes can't grow the map (and sync-data.json) without bound. Only
-// UNCLAIMED, empty rooms are evicted, so real libraries are never dropped.
+// UNCLAIMED, empty rooms are evicted, so real libraries are never dropped; when none
+// is evictable, new rooms are refused (503 via the error handler).
 const MAX_ROOMS = 5000;
+const MAX_DEVICES = 50;     // roster entries per room
+const MAX_CLIENTS = 20;     // concurrent SSE streams per room
+const httpErr = (status: number, message: string) => Object.assign(new Error(message), { status });
 function getRoom(code: string): Room {
     const root = find(code);
     let r = rooms.get(root);
     if (!r) {
         if (rooms.size >= MAX_ROOMS) {
-            for (const [k, v] of rooms) {
-                if (!v.claimed && !v.clients.size && !Object.keys(v.history).length && !Object.keys(v.favs).length) { rooms.delete(k); break; }
-            }
+            const evictable = [...rooms].find(([, v]) => !v.claimed && !v.clients.size && !Object.keys(v.history).length && !Object.keys(v.favs).length);
+            if (!evictable) throw httpErr(503, 'sync is full');
+            rooms.delete(evictable[0]);
         }
         r = EMPTY_ROOM(); rooms.set(root, r);
     }
     return r;
 }
+
+/** Codes are the only credential. Existing rooms keep whatever code they have; a NEW
+ *  (unclaimed) room needs >= 8 chars and >= 4 distinct characters. */
+export const isWeakCode = (code: string): boolean => code.length < 8 || new Set(code).size < 4;
+const assertClaimable = (code: string): void => {
+    if (isWeakCode(code) && !peekRoom(code)?.claimed) throw httpErr(400, 'Sync code too weak: use at least 8 characters (e.g. the generated one).');
+};
+
+/** Client clocks are untrusted: a far-future timestamp would win LWW forever (or be a
+ *  permanent tombstone). Clamp to now + 60s. */
+const MAX_SKEW_MS = 60_000;
+export const clampTs = (t: unknown): number => Math.min(Number(t) || 0, Date.now() + MAX_SKEW_MS);
+
+/** Tiny per-IP token bucket (no dependency). `perMin` sustained, burst = perMin. */
+export const rateLimit = (perMin: number) => {
+    const buckets = new Map<string, { tokens: number; at: number }>();
+    return (req: Request<any>, res: Response, next: NextFunction) => {
+        const now = Date.now(), ip = req.ip || req.socket.remoteAddress || '?';
+        const b = buckets.get(ip) || { tokens: perMin, at: now };
+        b.tokens = Math.min(perMin, b.tokens + ((now - b.at) / 60_000) * perMin); b.at = now;
+        if (buckets.size > 10_000) buckets.clear();   // ponytail: crude memory bound, fine at home scale
+        if (b.tokens < 1) { buckets.set(ip, b); return res.status(429).json({ ok: false, error: 'Too many attempts — wait a minute.' }); }
+        b.tokens -= 1; buckets.set(ip, b);
+        next();
+    };
+};
+// Endpoints that reveal whether a code exists / hand out its library: strict budget
+// so codes can't be enumerated. Plain upserts return nothing and stay unlimited.
+const probeLimit = rateLimit(Number(process.env.SYNC_PROBE_PER_MIN) || 60);
 /** Read a room WITHOUT creating one — for GET endpoints, so merely querying an
  *  unknown code can't spawn (and persist) an empty room. */
 const peekRoom = (code: string): Room | undefined => rooms.get(find(code));
@@ -116,7 +147,8 @@ const MAX_ENTRIES_PER_MAP = 10000;
 
 /** LWW upsert that also respects the tombstone (won't resurrect a more-recently-deleted key). */
 const upsert = (room: Room, kind: 'history' | 'fav', entry: Entry): boolean => {
-    if (!entry || !entry.key) return false;
+    if (!entry || typeof entry !== 'object' || !entry.key) return false;
+    entry.updatedAt = clampTs(entry.updatedAt);
     const map = kind === 'fav' ? room.favs : room.history;
     if ((entry.updatedAt || 0) <= (room.tomb[tkey(kind, entry.key)] || 0)) return false; // deleted more recently
     const cur = map[entry.key];
@@ -147,6 +179,7 @@ const tombstone = (room: Room, kind: 'history' | 'fav', key: string, at: number)
 /** Merge an incoming settings object LWW. Returns true if it became the room's. */
 const mergeSettings = (room: Room, s: Settings | undefined | null): boolean => {
     if (!s || typeof s.updatedAt !== 'number') return false;
+    s.updatedAt = clampTs(s.updatedAt);
     if (!room.settings || s.updatedAt >= room.settings.updatedAt) { room.settings = s; return true; }
     return false;
 };
@@ -159,12 +192,6 @@ const rosterOf = (room: Room) => {
 const broadcast = (room: Room, event: string, data: any) => {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     for (const c of room.clients.keys()) { try { c.write(payload); } catch { /* drop */ } }
-};
-const mergeEntry = (map: Record<string, Entry>, entry: Entry): boolean => {
-    if (!entry || !entry.key) return false;
-    const cur = map[entry.key];
-    if (!cur || (entry.updatedAt || 0) >= (cur.updatedAt || 0)) { map[entry.key] = entry; return true; }
-    return false;
 };
 
 /** Merge code b's component into code a's component. */
@@ -192,23 +219,26 @@ function bridge(a: string, b: string): Room {
 }
 
 // ── code availability ─────────────────────────────────────────────────────────
-router.get('/:code/check', (req, res) => {
+router.get('/:code/check', probeLimit, (req, res) => {
     const r = rooms.get(find(req.params.code));
     res.json({ claimed: !!(r && r.claimed), devices: r ? Object.keys(r.devices).length : 0 });
 });
 
 // ── full state (read-only: never creates/persists a room) ─────────────────────
-router.get('/:code', (req, res) => {
+router.get('/:code', probeLimit, (req, res) => {
     const r = peekRoom(req.params.code);
     if (!r) return res.json({ history: {}, favs: {}, devices: [] });
     res.json({ history: r.history, favs: r.favs, devices: rosterOf(r) });
 });
 
 // ── real-time stream (registers the device) ──────────────────────────────────
-router.get('/:code/stream', (req, res) => {
+router.get('/:code/stream', probeLimit, (req, res) => {
+    assertClaimable(req.params.code);
     const r = getRoom(req.params.code);
-    const deviceId = (req.query.device as string) || 'unknown';
-    const name = (req.query.name as string) || 'Device';
+    const deviceId = String(req.query.device || 'unknown').slice(0, 100);
+    const name = String(req.query.name || 'Device').slice(0, 100);
+    if (r.clients.size >= MAX_CLIENTS) return res.status(429).json({ error: 'Too many live devices on this code.' });
+    if (!r.devices[deviceId] && Object.keys(r.devices).length >= MAX_DEVICES) return res.status(429).json({ error: 'Too many devices on this code — forget some first.' });
     r.claimed = true;
     r.devices[deviceId] = { name };
 
@@ -224,17 +254,21 @@ router.get('/:code/stream', (req, res) => {
     broadcast(r, 'roster', rosterOf(r));
 
     const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { /* */ } }, 25000);
-    req.on('close', () => {
+    res.on('close', () => {
         clearInterval(ping);
-        const room = getRoom(req.params.code);
+        const room = peekRoom(req.params.code);   // never getRoom here: it can throw (room cap)
+        if (!room) return;
         room.clients.delete(res);
         broadcast(room, 'roster', rosterOf(room));
     });
 });
 
 // ── bridge two codes (transitive merge) ──────────────────────────────────────
-router.post('/:code/bridge', (req, res) => {
-    const other = ((req.body && req.body.other) || '').trim();
+// No extra confirmation step: the request already has to name BOTH codes, and each
+// code is the full credential for its room — whoever knows both could already read
+// and write both libraries. The probe limit stops guessing `other`.
+router.post('/:code/bridge', probeLimit, (req, res) => {
+    const other = String((req.body && req.body.other) || '').trim();
     if (!other) return res.json({ ok: false, error: 'No code given.' });
     const target = rooms.get(find(other));
     const targetKnown = target && (target.claimed || Object.keys(target.devices).length > 0);
@@ -245,7 +279,8 @@ router.post('/:code/bridge', (req, res) => {
 });
 
 // ── bulk seed/merge ──────────────────────────────────────────────────────────
-router.post('/:code/bulk', (req, res) => {
+router.post('/:code/bulk', probeLimit, (req, res) => {
+    assertClaimable(req.params.code);
     const r = getRoom(req.params.code);
     const { history = {}, favs = {}, settings } = req.body || {};
     for (const e of Object.values(history) as Entry[]) upsert(r, 'history', e);
@@ -257,25 +292,32 @@ router.post('/:code/bulk', (req, res) => {
 });
 
 // ── upserts ──────────────────────────────────────────────────────────────────
+// Writes never create rooms (only the rate-limited /bulk and /stream do), otherwise a
+// flood of POSTs to random codes would fill MAX_ROOMS with un-evictable rooms.
+const existingRoom = (code: string, res: any): Room | undefined => {
+    const r = peekRoom(code);
+    if (!r) res.status(404).json({ ok: false, error: 'unknown sync code' });
+    return r;
+};
 router.post('/:code/history', (req, res) => {
-    const r = getRoom(req.params.code);
+    const r = existingRoom(req.params.code, res); if (!r) return;
     if (upsert(r, 'history', req.body)) { scheduleSave(); broadcast(r, 'history', r.history[req.body.key]); }
     res.json({ ok: true });
 });
 router.post('/:code/fav', (req, res) => {
-    const r = getRoom(req.params.code);
+    const r = existingRoom(req.params.code, res); if (!r) return;
     if (upsert(r, 'fav', req.body)) { scheduleSave(); broadcast(r, 'fav', r.favs[req.body.key]); }
     res.json({ ok: true });
 });
 router.post('/:code/settings', (req, res) => {
-    const r = getRoom(req.params.code);
+    const r = existingRoom(req.params.code, res); if (!r) return;
     if (mergeSettings(r, req.body)) { scheduleSave(); broadcast(r, 'settings', r.settings); }
     res.json({ ok: true });
 });
 router.post('/:code/remove', (req, res) => {
-    const r = getRoom(req.params.code);
+    const r = existingRoom(req.params.code, res); if (!r) return;
     const { kind, key } = req.body || {};
-    const at = Number(req.body?.at) || Date.now();
+    const at = clampTs(req.body?.at) || Date.now();
     if (key && tombstone(r, kind === 'fav' ? 'fav' : 'history', key, at)) {
         scheduleSave();
         broadcast(r, 'remove', { kind, key, at });
@@ -285,13 +327,13 @@ router.post('/:code/remove', (req, res) => {
 
 // ── device roster ────────────────────────────────────────────────────────────
 router.post('/:code/device', (req, res) => {
-    const r = getRoom(req.params.code);
+    const r = existingRoom(req.params.code, res); if (!r) return;
     const { device, name } = req.body || {};
-    if (device && name) { r.devices[device] = { name }; scheduleSave(); broadcast(r, 'roster', rosterOf(r)); }
+    if (device && name && (r.devices[device] || Object.keys(r.devices).length < MAX_DEVICES)) { r.devices[device] = { name: String(name).slice(0, 100) }; scheduleSave(); broadcast(r, 'roster', rosterOf(r)); }
     res.json({ ok: true });
 });
 router.post('/:code/device/forget', (req, res) => {
-    const r = getRoom(req.params.code);
+    const r = existingRoom(req.params.code, res); if (!r) return;
     const { device } = req.body || {};
     if (device && r.devices[device]) { delete r.devices[device]; scheduleSave(); broadcast(r, 'roster', rosterOf(r)); }
     res.json({ ok: true });

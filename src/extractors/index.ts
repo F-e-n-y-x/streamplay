@@ -4,6 +4,8 @@ import { Provider, ContentKind } from '../types';
 import { KissKhProvider } from './kisskh';
 import { TwoEmbedProvider } from './twoembed';
 import { VidFastProvider } from './vidfast';
+import { VidlinkProvider } from './vidlink';       // enc-dec.app → /api/b (mp4 qualities + captions)
+import { VidEasyProvider } from './videasy';       // api.wecollege.net seed flow + enc-dec dec-videasy
 import { VidrockProvider } from './vidrock';
 import { HexaProvider } from './hexa';
 import { RiveStreamProvider } from './rivestream';
@@ -37,6 +39,13 @@ import { AnimeNoSubProvider } from './animenosub';  // animenosub.to: English SU
 import { AnimeWorldProvider } from './animeworld';
 import { ConsumetProvider } from './consumet';   // multi-backend aggregator (opt-in via CONSUMET_URL)
 import { AnimePaheProvider } from './animepahe';
+import { AnikageProvider } from './anikage';        // AniList-id JSON API: sub+dub HLS (og.bakayaro.live)
+import { Just4AnimeProvider } from './just4anime';  // AniList-id JSON API: sub/dub/hsub HLS + subtitles
+import { AnimekizzProvider } from './animekizz';    // AniList-id JSON API: sub/dub/softsub HLS + subtitles
+
+// --- Admin-configured addons (NUVIO_PLUGINS / STREMIO_ADDONS), registered at runtime ---
+import { nuvioProviders } from './nuvio';
+import { stremioProviders, stremioTorrentProviders } from './stremio';
 
 // --- CastleTV: Indian multi-language (Hindi/Tamil/…) movies + series via api.hlowb.com ---
 import { CastleProvider } from './castle';
@@ -52,10 +61,8 @@ import { TorrentMovieProvider, TorrentTvProvider } from './torrentVideo';  // mo
 // --- Disabled: faithful ports whose upstreams are currently dead/changed/gated.
 //     Kept in the tree so they can be re-enabled when the upstream recovers
 //     (e.g. a rotated key/domain is updated). See each file for the evidence. ---
-import { VidlinkProvider } from './vidlink';       // upstream /api/b returns empty body
-import { VidEasyProvider } from './videasy';       // api.videasy.net endpoints 404
+import { MovieBoxProvider } from './moviebox';     // H5 API resolves, but its bcdnw/bcdnxw CDN 429s this egress (VidLink serves the same catalog via bcdn)
 import { VidzeeProvider } from './vidzee';         // rotated AES key (stale secret)
-import { MovieBoxProvider } from './moviebox';     // /play-info 406, datacenter-IP gated
 import { MappleProvider } from './mapple';         // /api/stream-token routes removed (Turnstile)
 import { VidSrcXyzProvider } from './vidsrcxyz';   // prorcp now Cloudflare-Turnstile gated
 import { PeachifyProvider } from './peachify';     // rotated AES-GCM key
@@ -64,11 +71,12 @@ import { MoviesDriveProvider } from './moviesdrive'; // upstream files removed (
 import { Hdmovie2Provider } from './hdmovie2';     // hdmo2.com domain degraded (404s)
 
 /**
- * Providers served by /api/streams (run concurrently per request).
+ * Built-in scrapers. OFF by default since 2.0 — sources come from the Nuvio/Stremio
+ * addons (NUVIO_PLUGINS / STREMIO_ADDONS). Set BUILTIN_PROVIDERS=on to serve them again.
  * Cloudflare-gated providers (UHDMovies, MoviesMod, TopMovies, MultiMovies,
  * CineMacity, ...) rely on FLARESOLVERR_URL being set in `.env`.
  */
-export const providers: Provider[] = [
+export const builtinProviders: Provider[] = [
     // === Anime first ===
     // Dedicated anime providers run (and rank) ahead of the generic movie/TV
     // sources for anime titles. Each early-returns for non-anime content, so this
@@ -78,11 +86,16 @@ export const providers: Provider[] = [
     AniNekoProvider,      // anineko.to — SUB/HardSub/DUB (FlareSolverr-solved, packed embeds)
     AnimeNoSubProvider,   // animenosub.to — English SUB+DUB, plain HTTP → megaplay direct m3u8
     AnimeWorldProvider,   // Indian dubs (Hindi/Tamil/Telugu) + Eng/Jap via zephyrflick
+    AnikageProvider,      // AniList-id API: sub+dub HLS, 8 servers
+    Just4AnimeProvider,   // AniList-id API: sub/dub/hsub HLS + subtitles
+    AnimekizzProvider,    // AniList-id API: sub/dub/softsub HLS + subtitles
     ConsumetProvider,     // aggregator: Zoro/AnimePahe/Gogo/AnimeKai fallback (needs CONSUMET_URL)
 
     // direct-API (fast, reliable)
     TwoEmbedProvider,
     VidFastProvider,
+    VidlinkProvider,
+    VidEasyProvider,
     VidrockProvider,
     HexaProvider,
     RiveStreamProvider,
@@ -107,7 +120,11 @@ export const providers: Provider[] = [
     BollyflixProvider,
     CineMacityProvider,
     HDRezkaProvider,      // large movies + series catalog with multiple audio tracks (rezka.ag)
-    // subtitles
+];
+
+/** Active built-ins: the subtitle providers always, the scrapers only with BUILTIN_PROVIDERS=on. */
+export const providers: Provider[] = [
+    ...(process.env.BUILTIN_PROVIDERS === 'on' ? builtinProviders : []),
     SubtitleApiProvider,
     WyzieSubsProvider,
 ];
@@ -124,8 +141,6 @@ export const disabledProviders: Provider[] = [
     // `empty`, which doesn't trip the circuit breaker). Revive when kwik clears, or use
     // a self-hosted Consumet (its own maintained AnimePahe extractor).
     AnimePaheProvider,
-    VidlinkProvider,
-    VidEasyProvider,
     VidzeeProvider,
     MovieBoxProvider,
     MappleProvider,
@@ -147,7 +162,7 @@ export const disabledProviders: Provider[] = [
 const PROVIDER_KINDS: Record<string, ContentKind[]> = {
     // dedicated anime. (AnimeWorld is intentionally NOT listed → it serves ALL kinds:
     // it carries anime, Western cartoons like Ben 10, plus series & movies.)
-    allanime: ['anime'], anizone: ['anime'], anineko: ['anime'], animenosub: ['anime'], animepahe: ['anime'], consumet: ['anime'],
+    allanime: ['anime'], anizone: ['anime'], anikage: ['anime'], just4anime: ['anime'], animekizz: ['anime'], anineko: ['anime'], animenosub: ['anime'], animepahe: ['anime'], consumet: ['anime'],
     // Asian drama
     kisskh: ['asian'],
     // CastleTV also carries Indian-dubbed anime (Hindi/Tamil/Telugu), so it runs for anime too.
@@ -161,19 +176,14 @@ const PROVIDER_KINDS: Record<string, ContentKind[]> = {
     // anime — the dedicated anime providers cover that with better sub/dub handling.
     hdrezka: ['movie', 'series', 'asian'],
 };
-for (const p of providers) if (PROVIDER_KINDS[p.id]) p.kinds = PROVIDER_KINDS[p.id];
+for (const p of builtinProviders) if (PROVIDER_KINDS[p.id]) p.kinds = PROVIDER_KINDS[p.id];
 
-export const registerProvider = (provider: Provider) => {
-    providers.push(provider);
-};
-
-export const getProviders = (): Provider[] => {
-    return providers;
-};
+/** Built-ins + the admin-configured Nuvio plugins / Stremio addons (loaded at runtime). */
+export const getProviders = (): Provider[] => [...providers, ...nuvioProviders(), ...stremioProviders()];
 
 /** Providers that serve the given content kind (undefined `kinds` = all kinds). */
 export const getProvidersForKind = (kind: ContentKind): Provider[] =>
-    providers.filter((p) => !p.kinds || p.kinds.includes(kind));
+    getProviders().filter((p) => !p.kinds || p.kinds.includes(kind));
 
 /** Torrent providers — run ONLY in torrent mode. Kind-gated so a movie doesn't hit the
  *  anime tracker and vice-versa; the SSE filters these by the title's content kind. */
@@ -183,4 +193,4 @@ const TORRENT_PROVIDERS: Provider[] = (() => {
     TorrentTvProvider.kinds = ['series', 'asian'];
     return [TorrentAnimeProvider, TorrentMovieProvider, TorrentTvProvider];
 })();
-export const torrentProviders = (): Provider[] => TORRENT_PROVIDERS;
+export const torrentProviders = (): Provider[] => [...TORRENT_PROVIDERS, ...stremioTorrentProviders()];

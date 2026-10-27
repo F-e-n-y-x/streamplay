@@ -75,22 +75,17 @@ export const isFlareSolverrConfigured = (): boolean =>
 export const flareSolverrEndpoints = (): string[] => [...ENDPOINTS];
 
 /**
- * Diagnostics probe for ONE FlareSolverr endpoint: liveness (sessions.list), the
- * version it reports, and — via a solve of an IP-echo — the actual egress IP its
- * browser uses (so you can confirm it's going out through WARP, not direct).
+ * Diagnostics probe for ONE solver endpoint (FlareSolverr or Byparr): a real solve of
+ * an IP-echo — proves it works AND shows the egress IP (WARP vs direct). Byparr ignores
+ * `cmd`, so a `sessions.list` liveness check would wrongly report it down.
  */
 export const probeFlareSolverr = async (endpoint: string): Promise<{ up: boolean; latencyMs: number; version?: string; ip?: string; error?: string }> => {
     const start = Date.now();
     try {
-        const list = await axios.post(endpoint, { cmd: 'sessions.list' }, { timeout: 8000 });
-        const version = list.data?.version;
-        let ip: string | undefined;
-        try {
-            const solved = await axios.post(endpoint, { cmd: 'request.get', url: 'https://api.ipify.org?format=json', maxTimeout: 25000 }, { timeout: 40000 });
-            const body: string = solved.data?.solution?.response || '';
-            ip = (body.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/) || [])[1];
-        } catch { /* ip probe optional */ }
-        return { up: list.data?.status === 'ok', latencyMs: Date.now() - start, version, ip };
+        const r = await axios.post(endpoint, { cmd: 'request.get', url: 'https://api.ipify.org?format=json', maxTimeout: 25000 }, { timeout: 40000 });
+        const body: string = r.data?.solution?.response || '';
+        const ip = (body.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})/) || [])[1];
+        return { up: r.data?.status === 'ok' || !!body, latencyMs: Date.now() - start, version: r.data?.version, ip };
     } catch (e: any) {
         return { up: false, latencyMs: Date.now() - start, error: String(e?.code || e?.message || e).slice(0, 60) };
     }

@@ -31,13 +31,12 @@ Browser ──/api──▶ Express (src/index.ts)
                    ├─ /api/proxy   (routes/proxy.ts)   playback proxy + HLS rewrite + srt/ass→vtt
                    ├─ /api/torrent (routes/torrent.ts) webtorrent stream / debrid passthrough
                    ├─ /api/sync    (routes/sync.ts)    multi-device history/fav sync (SSE rooms)
-                   ├─ /api         (routes/web.ts)     PRIMARY client API (home/browse/title/search/
+                   ├─ /api         (routes/web.ts)     client API (home/browse/title/search/suggest/
                    │                                    sources SSE/skip-times/diag/providers/config)
-                   └─ /api         (routes/index.ts)   legacy compat (/info /streams /providers/status)
-                   └─ static: serves client/dist (falls back to legacy public/), SPA fallback
+                   └─ static: serves client/dist (gzip), SPA fallback
 ```
 
-- `src/index.ts` — bootstraps Express, CORS (`cors()` open), JSON/urlencoded body parsing, static
+- `src/index.ts` — bootstraps Express, JSON-only body parsing, optional STREAMPLAY_PASSWORD gate, TRUST_PROXY, gzip + static
   serving with cache-control (hashed assets immutable, `index.html` no-cache), SPA fallback, and a
   final error-handling middleware.
 - **Server reads** flow through `client/src/lib/api.ts` (`/api` proxied to :3000 in dev by Vite).

@@ -6,7 +6,7 @@ import net from './utils/net';
  * AniList records NO dub-availability, so we source it from MyDubList
  * (https://github.com/Joelis57/MyDubList, CC BY 4.0) — per-language lists of MAL
  * ids that have a dub, updated daily. We union the languages this app actually
- * serves (English + the Indian dubs CastleTV/AnimeWorld carry) into one "dubbed"
+ * serves (English + Hindi by default) into one "dubbed"
  * set keyed by MAL id.
  *
  * Fetched lazily and cached 24h; serves stale on failure. If the dataset is
@@ -14,7 +14,7 @@ import net from './utils/net';
  * everything) rather than hiding the whole catalog — a safe degradation.
  *
  * The confidence tier + languages are overridable via env for easy tuning:
- *   DUB_LIST_CONFIDENCE = very-high | high | normal | low   (default: normal)
+ *   DUB_LIST_CONFIDENCE = very-high | high | normal | low   (default: very-high)
  *   DUB_LIST_LANGS      = comma-separated (default: english,hindi — the tiers
  *                         MyDubList currently publishes; add more when available)
  */
@@ -47,7 +47,7 @@ async function fetchDubSet(): Promise<Set<number>> {
 }
 
 /**
- * The set of MAL ids that have a dub (English/Hindi/Tamil/Telugu). Empty if the
+ * The set of MAL ids that have a dub (in DUB_LIST_LANGS). Empty if the
  * dataset couldn't be loaded and nothing was cached — callers must treat an empty
  * set as "don't filter" so a fetch outage never blanks the anime catalog.
  */

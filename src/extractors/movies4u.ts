@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { seasonRe } from '../utils/season';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -57,7 +58,7 @@ export const Movies4uProvider: Provider = {
                     const blocks = postDoc('div.downloads-btns-div').toArray();
                     for (const block of blocks) {
                         const headerText = postDoc(block).prev().text() || '';
-                        if (!new RegExp(`Season ${data.season}`, 'i').test(headerText)) continue;
+                        if (!seasonRe(data.season).test(headerText)) continue;
 
                         const seasonLink = postDoc(block).find('a.btn').toArray()
                             .map(a => postDoc(a))

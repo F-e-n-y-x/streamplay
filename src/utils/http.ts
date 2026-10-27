@@ -2,7 +2,7 @@ import axios, { AxiosRequestConfig } from 'axios';
 import * as cheerio from 'cheerio';
 import { flareSolverrGet, isFlareSolverrConfigured } from './flaresolverr';
 import { USER_AGENT } from './encdec';
-import { dohAxios } from './dns';
+import { ssrfAgents, guardRedirect } from './ssrf';
 import { warpAxios } from './warp';
 import { currentSignal } from './reqctx';
 
@@ -95,10 +95,13 @@ export interface GetOptions {
 
 const doRequest = async (config: AxiosRequestConfig): Promise<SpResponse> => {
     // Route through the WARP SOCKS proxy when WARP is active for this request,
-    // otherwise use the DoH agents. (WARP does its own DNS at the proxy.)
+    // otherwise the SSRF-guarded agents (same DoH/system DNS as before, but scraped
+    // URLs can't reach private/loopback addresses). WARP does its own DNS at the
+    // proxy; the redirect guard still blocks literal private hosts on that branch.
     const res = await axios({
         ...config,
-        ...(warpAxios() ?? dohAxios()),
+        ...(warpAxios() ?? ssrfAgents()),
+        beforeRedirect: guardRedirect,
         // Cancel this request if the originating SSE client disconnected.
         signal: currentSignal() as any,
         // accept all statuses so we can inspect Cloudflare bodies instead of throwing

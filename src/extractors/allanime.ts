@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Provider, LinkData, ExtractorResult } from '../types';
 import { app, safeGet } from '../utils/http';
 import { isFlareSolverrConfigured } from '../utils/flaresolverr';
-import { seasonScore } from '../utils/season';
+import { seasonScore, norm } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 
 /**
@@ -50,7 +50,6 @@ function decryptTobeparsed(b64: string): string | null {
     } catch { return null; }
 }
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 /** Significant-token overlap so "Frieren: Beyond…" matches "Sousou no Frieren". */
 function overlaps(a: string, b: string): boolean {

@@ -23,7 +23,7 @@ query ($search: String, $type: MediaType, $format: [MediaFormat]) {
   }
 }`;
 
-interface AniHit { id: number; idMal?: number; seasonYear?: number; title?: { romaji?: string; english?: string; native?: string }; synonyms?: string[] }
+interface AniHit { id: number; idMal?: number; seasonYear?: number; format?: string; title?: { romaji?: string; english?: string; native?: string }; synonyms?: string[] }
 
 /** Ordered, de-duplicated alt titles from an AniList hit (romaji/english/native + synonyms). */
 const titlesOf = (hit: AniHit): string[] => {
@@ -57,9 +57,12 @@ async function anilistSearch(title: string, isMovie: boolean, year?: number): Pr
             { headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, timeout: 12000 });
         const media: AniHit[] = res.data?.data?.Page?.media ?? [];
         if (!media.length) return null;
-        // Prefer an exact season-year match when we know the year.
-        if (year) { const y = media.find((m) => m.seasonYear === year); if (y) return y; }
-        return media[0];
+        // Prefer an exact season-year match when we know the year — and among those the
+        // main TV/MOVIE entry: a same-year ONA/TV_SHORT spin-off (Frieren's "Mini Anime")
+        // can out-rank it in SEARCH_MATCH and hand every id-keyed provider the wrong show.
+        const main = (m: AniHit) => m.format === 'TV' || m.format === 'MOVIE';
+        if (year) { const y = media.filter((m) => m.seasonYear === year); if (y.length) return y.find(main) || y[0]; }
+        return media.find(main) || media[0];
     } catch { return null; }
 }
 
@@ -138,4 +141,17 @@ export const animeSearchTitles = (data: LinkData): string[] => {
         if (s && !seen.has(k)) { seen.add(k); out.push(s); }
     }
     return out;
+};
+
+/**
+ * AniList id + episode for the id-keyed anime APIs (Anikage, Just4Anime, Animekizz).
+ * null when the id can't be trusted for this season: on a TMDB plan, S2+ still carries
+ * the show's S1 AniList id, so asking for "episode N" there would land on the wrong cour.
+ * (AniList-plan cours are fine — buildLinkData swaps in that cour's id + seasonResolved.)
+ */
+export const anilistEpisode = (data: LinkData): { id: number; ep: number } | null => {
+    const id = data.animeIds?.anilistId;
+    if (!data.isAnime || !id) return null;
+    if (data.type === 'tv' && (data.season ?? 1) > 1 && !data.seasonResolved) return null;
+    return { id, ep: data.type === 'movie' ? 1 : data.episode ?? 1 };
 };

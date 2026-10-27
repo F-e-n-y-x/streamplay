@@ -9,11 +9,18 @@ export interface Stream {
     /** This `link` is a debrid-cached DIRECT http file (not a magnet): route it through
      *  /api/torrent/http (range passthrough for mp4, on-the-fly remux for mkv). */
     debrid?: boolean;
+    /** Addon streams: the site behind the addon ("VidFast") and its free-text release notes. */
+    origin?: string;
+    description?: string;
+    /** Addon streams: the addon's own card title, shown verbatim like Nuvio does ("🐧 PenguPlay ❄️ 4K • 2Peckle"). */
+    addonName?: string;
 }
 
 export interface Subtitle {
     language: string;
     url: string;
+    /** Headers the subtitle host needs (e.g. a Referer) — sent by /api/proxy/sub. */
+    headers?: Record<string, string>;
 }
 
 export interface ExtractorResult {

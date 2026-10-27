@@ -68,9 +68,9 @@ StreamPlay is built for a **trusted network** (LAN, Tailscale/VPN, or behind an 
 
 - **Sync rooms** are keyed only by a sync code — anyone who reaches the server and knows a code can read/write it.
 - **The playback proxy** streams arbitrary external URLs. It's **SSRF-guarded** (can't reach your LAN/metadata), but on a public box it's an open forward-proxy.
-- **CORS** is open (`*`).
+- **CORS**: the app is same-origin; only the media routes (`/api/proxy`, `/api/torrent`) send `Access-Control-Allow-Origin: *` so players/casting can fetch them.
 
-**Don't expose the port directly to the internet without an auth layer.** For a semi-public box, gate the sensitive endpoints with `ADMIN_TOKEN` (Torznab config) and `DEBUG_TOKEN` (provider diagnostics).
+**Don't expose the port directly to the internet without an auth layer.** Set `STREAMPLAY_PASSWORD` to password-protect the whole API, `ADMIN_TOKEN` to gate server settings (Torznab, Nuvio/Stremio addons), `DEBUG_TOKEN` for provider diagnostics, and `TRUST_PROXY` when behind a reverse proxy. **Nuvio plugins are code the server runs — only add repos you trust.**
 
 </details>
 

@@ -1,0 +1,52 @@
+/* =============================================================================
+   BROWSE (pages.md §2): one toolbar row, Filters in a Panel, applied filters as
+   removable chips, infinite grid. Phones: section tabs + one compact control row.
+   ========================================================================== */
+.browse { display: flex; flex-direction: column; gap: var(--space-5); }
+.browse-sections { display: none; }
+.browse-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); min-height: 3rem; border-bottom: 1px solid var(--border); }
+.browse-sort-tabs { flex: 0 1 auto; min-width: 0; border-bottom: 0; align-self: flex-end; }
+.btn.browse-sort-menu { display: none; }
+.browse-tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-left: auto; padding-block: var(--space-1); }
+.browse-filters-btn .badge { margin-left: 2px; background: var(--foreground); color: var(--background); min-width: 1.25rem; justify-content: center; }
+.browse-panel .browse-narrow-only { display: none; }
+.browse-applied { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-top: calc(-1 * var(--space-1)); }
+.browse-end { display: flex; justify-content: center; min-height: 1px; padding: var(--space-8) 0 var(--space-4); }
+.browse-end p { margin: 0; font: var(--type-meta); color: var(--subtle-foreground); }
+
+/* Filters panel */
+.browse-panel { display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-2) var(--space-2) var(--space-4); }
+.browse-panel-sec h3 { margin: 0 0 var(--space-3); font: var(--type-title); }
+.browse-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+
+/* tablet: sort tabs become a menu below 900px */
+@media (max-width: 899px) {
+  .browse-sort-tabs { display: none; }
+  .btn.browse-sort-menu { display: inline-flex; }
+  .browse-toolbar { border-bottom: 0; }
+}
+
+/* phone: section tabs (sticky) + ONE control row */
+@media (max-width: 767px) {
+  .browse { gap: var(--space-4); padding-top: 0; }
+  .browse-sections {
+    display: flex; gap: var(--space-6); position: sticky; z-index: 20; top: calc(var(--header-height) + var(--safe-top));
+    margin: 0 calc(-1 * var(--gutter)); padding: 0 var(--gutter);
+    background: var(--background); border-bottom: 1px solid var(--border);
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .browse-sections::-webkit-scrollbar { display: none; }
+  .browse-section { position: relative; flex: none; display: inline-flex; align-items: center; height: var(--hit-min); font: var(--type-label); color: var(--muted-foreground); }
+  .browse-section.active { color: var(--foreground); box-shadow: inset 0 -2px 0 var(--foreground); }
+  .browse-toolbar { flex-wrap: nowrap; min-height: 0; gap: var(--space-2); }
+  .browse-tools { margin-left: 0; flex-wrap: nowrap; gap: var(--space-2); padding: 0; }
+  .browse-toolbar .browse-wide-only { display: none; }
+  .browse-panel .browse-narrow-only { display: block; }
+  .browse-toolbar .btn { padding: 0 var(--space-3); }
+  .browse-toolbar .segmented .seg-opt { padding: 0 var(--space-3); }
+  .browse-end { padding-top: var(--space-6); }
+}
+@media (max-width: 374px) {
+  .browse-xs-hide { display: none; }
+}
+

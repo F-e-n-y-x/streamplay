@@ -1,65 +1,136 @@
-import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { api } from "../lib/api";
-import { useSearch } from "../lib/queries";
+import { useEffect, useRef, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { useHome, useSearch } from "../lib/queries";
+import { useDocTitle } from "../lib/useDocTitle";
 import type { Card } from "../lib/types";
-import PosterCard from "../components/PosterCard";
+import PosterCard, { PosterSkeleton } from "../components/PosterCard";
+import SearchBox, { clearRecent, removeRecent, saveRecent, useRecent } from "../components/SearchBox";
+import { Button, IconButton, StateMessage, Tabs } from "../components/ui";
+import { Clock, Search as SearchIcon, X } from "../components/icons";
+import Row from "../components/Row";
+import "../styles/search.css";
 
+type Kind = "all" | "tv" | "movie";
+const BROWSE = [{ to: "/movies", label: "Movies" }, { to: "/series", label: "Series" }, { to: "/anime", label: "Anime" }, { to: "/asian", label: "Asian" }];
+
+/**
+ * /search. On desktop the header field is THE field (none on the page); below 1100px the page
+ * has its own field with inline suggestions. Empty: recent searches, trending, browse links.
+ */
 export default function Search() {
-  const [params] = useSearchParams();
-  const q = params.get("q") ?? "";
-  // Page 1 comes from TanStack Query (cached, cancels on query change). Extra pages
-  // from "Load more" are appended locally and reset whenever the base query changes.
-  const { data: first } = useSearch(q, 1);
-  const [more, setMore] = useState<Card[]>([]);
-  const [page, setPage] = useState(1);
-  const [totalPages, setTotalPages] = useState(1);
-  const [loadingMore, setLoadingMore] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const nav = useNavigate();
+  const q = (params.get("q") ?? "").trim();
+  const kind = (["tv", "movie"].includes(params.get("type") ?? "") ? params.get("type") : "all") as Kind;
+  const [draft, setDraft] = useState(q);
+  const input = useRef<HTMLInputElement>(null);
+  const res = useSearch(q);
+  useDocTitle(q ? `“${q}”` : "Search");
 
-  // Reset appended pages ONLY when the query changes. Keying this on `first` too meant
-  // any background refetch of page 1 (new object identity) silently wiped the pages the
-  // user had loaded and snapped back to page 1.
-  useEffect(() => { setMore([]); setPage(1); }, [q]);
-  useEffect(() => { if (first) setTotalPages(first.totalPages || 1); }, [first]);
+  useEffect(() => { setDraft(q); }, [q]);
+  // phones/tablets: the field is the page; focus it when there's nothing to show yet
+  useEffect(() => { if (!q && matchMedia("(max-width: 1099px)").matches) input.current?.focus(); }, [q]);
 
-  const items: Card[] | null = q.trim() ? (first ? [...first.items, ...more] : null) : [];
+  // Pages can overlap; dedupe across them.
+  const seen = new Set<string>();
+  const items: Card[] = [];
+  for (const c of res.data?.pages.flatMap((p) => p.items) ?? []) {
+    const k = `${c.type}-${c.id}`;
+    if (!seen.has(k) && (c.posterUrl || c.year)) { seen.add(k); items.push(c); }   // no art and no year = TMDB junk
+  }
+  // Remember the query only once it found something (junk never reaches Recent).
+  useEffect(() => { if (q && items.length) saveRecent(q); }, [q, items.length > 0]);   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadMore = async () => {
-    const next = page + 1;
-    const forQuery = q;
-    setLoadingMore(true);
-    try {
-      const r = await api.search(q, next);
-      if (forQuery !== q) return;   // query changed mid-fetch → drop stale results
-      setMore((prev) => {
-        const seen = new Set([...(first?.items || []), ...prev].map((c) => `${c.type}-${c.id}`));
-        return [...prev, ...r.items.filter((c) => !seen.has(`${c.type}-${c.id}`))];
-      });
-      setPage(next);
-      setTotalPages(r.totalPages || totalPages);
-    } catch { /* ignore */ }
-    finally { setLoadingMore(false); }
-  };
+  const fix = res.data?.pages[0]?.didYouMean;
+  const showFix = fix && fix.toLowerCase() !== q.toLowerCase();
+  const counts = { all: items.length, tv: items.filter((c) => c.type === "tv").length, movie: items.filter((c) => c.type === "movie").length };
+  const shown = kind === "all" ? items : items.filter((c) => c.type === kind);
+  const setKind = (k: Kind) => { const p = new URLSearchParams(params); if (k === "all") p.delete("type"); else p.set("type", k); setParams(p, { replace: true }); };
+  const submit = (v: string) => { const t = v.trim(); if (t) nav(`/search?q=${encodeURIComponent(t)}`); };
 
   return (
-    <div className="container">
-      <h1 className="page-title">Results for “{q}”</h1>
-      {!items ? (
-        <div className="grid">{Array.from({ length: 12 }).map((_, i) => <div className="skeleton" key={i} style={{ aspectRatio: "2/3" }} />)}</div>
-      ) : items.length === 0 ? (
-        <div className="empty">No results found.</div>
+    <div className="container search-page">
+      <div className="search-page-field">
+        <SearchBox inline value={draft} onChange={setDraft} onSubmit={submit} inputRef={input} />
+      </div>
+
+      {!q ? (
+        <>
+          <h1 className="sr-only">Search</h1>
+          <SearchStart />
+        </>
       ) : (
         <>
-          <div className="grid">{items.map((c) => <PosterCard key={`${c.type}-${c.id}`} card={c} />)}</div>
-          {page < totalPages && (
-            <div style={{ display: "flex", justifyContent: "center", marginTop: "var(--space-6)" }}>
-              <button className="btn btn-primary" onClick={loadMore} disabled={loadingMore}>
-                {loadingMore ? "Loading…" : "Load more"}
-              </button>
-            </div>
+          <header className="search-head">
+            <h1 className={!res.isPending && !items.length ? "sr-only" : undefined}>Results for “{q}”</h1>
+            {showFix && <p className="search-fix">Did you mean <Link to={`/search?q=${encodeURIComponent(fix)}`}>{fix}</Link>?</p>}
+          </header>
+          {res.isError && !items.length ? (
+            <StateMessage kind="error" title="Search isn't working right now." body="Check your connection and try again." details={String(res.error)}
+              actions={<Button variant="solid" onClick={() => res.refetch()} loading={res.isFetching}>Try again</Button>} />
+          ) : res.isPending ? (
+            <div className="grid" aria-busy="true">{Array.from({ length: 12 }, (_, i) => <PosterSkeleton key={i} />)}</div>
+          ) : items.length === 0 ? (
+            <>
+              <StateMessage kind="empty" page align="center" icon={<SearchIcon size={40} />} title={`No results for “${q}”`} body="Check the spelling, or try the original or English title."
+                actions={showFix && <Button variant="solid" to={`/search?q=${encodeURIComponent(fix)}`}>Search for “{fix}”</Button>} />
+              <SearchStart />
+            </>
+          ) : (
+            <>
+              {/* one count: the tabs carry it when shown, else the status line */}
+              {counts.tv > 0 && counts.movie > 0 ? (
+                <Tabs id="search-kind" label="Filter results" value={kind} onChange={setKind} className="search-tabs" items={[
+                  { value: "all", label: <>All <span className="tab-count">{counts.all}</span></> },
+                  { value: "tv", label: <>Series <span className="tab-count">{counts.tv}</span></> },
+                  { value: "movie", label: <>Movies <span className="tab-count">{counts.movie}</span></> },
+                ]} />
+              ) : <p className="search-count" role="status">{res.hasNextPage ? `Top ${items.length} results` : `${items.length} result${items.length === 1 ? "" : "s"}`}</p>}
+              <div className="grid">{shown.map((c) => <PosterCard key={`${c.type}-${c.id}`} card={c} showType />)}</div>
+              {res.hasNextPage && (
+                <div className="search-more">
+                  <Button onClick={() => res.fetchNextPage()} loading={res.isFetchingNextPage}>Show more results</Button>
+                </div>
+              )}
+              {res.isFetchNextPageError && <p className="search-count" role="alert">Couldn't load more results. Try again.</p>}
+            </>
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function SearchStart() {
+  const recent = useRecent();
+  const { data: rows } = useHome();
+  const trending = rows?.find((r) => r.items.length)?.items ?? [];
+  return (
+    <div className="search-start">
+      {recent.length > 0 && (
+        <section className="search-recent" aria-labelledby="recent-h">
+          <div className="search-start-head">
+            <h2 id="recent-h">Recent</h2>
+            <Button variant="ghost" size="sm" onClick={clearRecent}>Clear</Button>
+          </div>
+          <ul className="search-list">
+            {recent.map((r) => (
+              <li key={r} className="search-list-row">
+                <Link to={`/search?q=${encodeURIComponent(r)}`}><Clock size={18} aria-hidden="true" /><span>{r}</span></Link>
+                <IconButton size="sm" label={`Remove ${r} from recent searches`} onClick={() => removeRecent(r)}><X size={16} /></IconButton>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {/* a row, not a grid: a grid's last line is ragged at most widths */}
+      {trending.length > 0 && (
+        <Row title="Trending this week">{trending.map((c) => <PosterCard key={`${c.type}-${c.id}`} card={c} showType />)}</Row>
+      )}
+      <nav className="search-browse" aria-label="Browse">
+        <span>Browse</span>
+        {BROWSE.map((b) => <Button key={b.to} size="sm" to={b.to}>{b.label}</Button>)}
+      </nav>
     </div>
   );
 }

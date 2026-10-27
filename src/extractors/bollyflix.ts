@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { seasonRe, episodeRe } from '../utils/season';
 import { safeGet, app } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -42,7 +43,7 @@ export const BollyflixProvider: Provider = {
             for (const url of articleHrefs) {
                 const res = (await safeGet(url, { cloudflare: true })).document;
                 const hTag = season == null ? 'h5' : 'h4';
-                const sTag = season == null ? '' : `Season ${season}`;
+                const sTag = season == null ? '' : seasonRe(season).source;
                 const headingRe = new RegExp(`${sTag}.*(480p|720p|1080p|2160p)`, 'i');
 
                 const entries: ReturnType<typeof res>[] = [];
@@ -66,12 +67,12 @@ export const BollyflixProvider: Provider = {
                     if (season == null) {
                         await pushHosted(href);
                     } else {
-                        const episodeText = `Episode ${String(episode).padStart(2, '0')}`;
+                        const epRe = episodeRe(episode ?? 1);
                         const epDoc = (await safeGet(href, { cloudflare: true })).document;
                         let link: string | undefined;
                         epDoc('article h3 a').each((_, a) => {
                             if (link) return;
-                            if (epDoc(a).text().includes(episodeText)) link = epDoc(a).attr('href');
+                            if (epRe.test(epDoc(a).text())) link = epDoc(a).attr('href');
                         });
                         if (link) await pushHosted(link);
                     }

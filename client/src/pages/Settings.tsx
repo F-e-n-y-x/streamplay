@@ -1,302 +1,274 @@
-import { useEffect, useState } from "react";
-import { api, type TorznabInfo } from "../lib/api";
+import { useState, type ComponentType } from "react";
+import { Link, Navigate, useParams } from "react-router-dom";
 import { useSettings, updateSettings, type ClientSettings } from "../lib/settings";
 import { useStore, getSyncState, getSyncCode, getDeviceName, setDeviceName, getRoster, createSync, joinSync, disableSync, forgetDevice, bridgeCode, randomCode } from "../lib/store";
-import { getTheme, setTheme, type Theme } from "../lib/theme";
-import Dropdown from "../components/Dropdown";
+import { setThemePref, useThemePref, type ThemePref } from "../lib/theme";
+import { useHealth } from "../lib/queries";
+import { useDocTitle } from "../lib/useDocTitle";
 import { copyText } from "../lib/clipboard";
-import { Check, Copy, Moon, Sun, X } from "../components/icons";
+import { rove } from "../components/ui/rove";
+import { Button, IconButton, InputChip, ListGroup, ListRow, Menu, SegmentedControl, StatusDot, toast } from "../components/ui";
+import ConfirmDialog from "../components/ConfirmDialog";
+import { Check, ChevronLeft, ChevronRight, Copy, Info, Layers, Moon, Play, Plus, Shield, Subtitles, Users, X } from "../components/icons";
+import ServerSection from "./settings/Server";
+import AddonsSection from "./settings/Addons";
+import { Field, Group } from "./settings/shared";
+import { version } from "../../package.json";
+import "../styles/settings.css";
 
 const AUDIO_LANGS = [
   "English", "Hindi", "Tamil", "Telugu", "Malayalam", "Kannada", "Spanish",
   "French", "German", "Korean", "Japanese", "Chinese", "Arabic", "Russian",
   "Portuguese", "Italian",
 ];
-const QUALITIES: { value: ClientSettings["quality"]; label: string }[] = [
-  { value: "auto", label: "Auto" }, { value: "2160", label: "4K" }, { value: "1080", label: "1080p" }, { value: "720", label: "720p" },
+const SUB_SIZES: { value: ClientSettings["subtitleSize"]; label: string; pct: number }[] = [
+  { value: "sm", label: "Small", pct: 80 }, { value: "md", label: "Medium", pct: 100 }, { value: "lg", label: "Large", pct: 135 }, { value: "xl", label: "Extra large", pct: 175 },
 ];
-const WARP_MODES: { value: ClientSettings["warp"]; label: string }[] = [
-  { value: "off", label: "Off" }, { value: "required", label: "Required" }, { value: "fallback", label: "Fallback" }, { value: "all", label: "All" },
+const SUB_COLORS = [
+  { value: "#ffffff", label: "White" }, { value: "#ffe082", label: "Yellow" }, { value: "#8ce99a", label: "Green" },
+  { value: "#74c0fc", label: "Blue" }, { value: "#ffa8a8", label: "Pink" },
 ];
-const SUB_SIZES: { value: ClientSettings["subtitleSize"]; label: string }[] = [
-  { value: "sm", label: "Small" }, { value: "md", label: "Medium" }, { value: "lg", label: "Large" }, { value: "xl", label: "X-Large" },
+const THEMES: { value: ThemePref; label: string }[] = [{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }, { value: "system", label: "Match device" }];
+const SYNC: Record<string, { tone: "success" | "warning" | "error" | "neutral"; text: string }> = {
+  live: { tone: "success", text: "Synced" },
+  connecting: { tone: "warning", text: "Connecting…" },
+  error: { tone: "error", text: "Couldn't sync. Check the server address." },
+  off: { tone: "neutral", text: "Not connected" },
+};
+const MIN_CODE = 8;
+
+type Section = { id: string; label: string; icon: ComponentType<{ size?: number }>; Body: ComponentType; summary: (s: ClientSettings) => string };
+const SECTIONS: Section[] = [
+  { id: "playback", label: "Playback", icon: Play, Body: Playback, summary: (s) => `${s.audioLanguages.length ? s.audioLanguages.join(", ") : "Original audio"} · anime ${s.anime === "dub" ? "dubbed" : "subtitled"}` },
+  { id: "subtitles", label: "Subtitles", icon: Subtitles, Body: SubtitlesSection, summary: (s) => `${SUB_SIZES.find((x) => x.value === s.subtitleSize)?.label ?? "Medium"}, ${SUB_COLORS.find((c) => c.value === s.subtitleColor)?.label.toLowerCase() ?? "custom colour"}` },
+  { id: "appearance", label: "Appearance", icon: Moon, Body: Appearance, summary: () => THEMES.find((t) => t.value === useThemePref())?.label ?? "Dark" },
+  { id: "sync", label: "Sync", icon: Users, Body: Sync, summary: () => SYNC[getSyncState()]?.text.split(".")[0] ?? "Not connected" },
+  { id: "server", label: "Server", icon: Shield, Body: ServerSection, summary: () => "Torrents, provider order, indexer" },
+  { id: "addons", label: "Addons", icon: Layers, Body: AddonsSection, summary: () => "Nuvio repos and Stremio addons" },
+  { id: "about", label: "About", icon: Info, Body: About, summary: () => `Version ${version}` },
 ];
-const SUB_COLORS = ["#ffffff", "#ffe082", "#8ce99a", "#74c0fc", "#ffa8a8"];
 
-function Toggle({ id, label, hint, on, onChange }: { id: string; label: string; hint?: string; on: boolean; onChange: () => void }) {
-  return (
-    <div className="field">
-      <div className="field-row">
-        <label htmlFor={id}>{label}</label>
-        <button id={id} role="switch" aria-checked={on} className={on ? "switch on" : "switch"} onClick={onChange} />
-      </div>
-      {hint && <div className="hint">{hint}</div>}
-    </div>
-  );
-}
-
-/** Torrent indexer (Jackett / Prowlarr / Torznab) — instance-wide server config. */
-function TorznabCard() {
-  const [info, setInfo] = useState<TorznabInfo | null>(null);
-  const [adminLock, setAdminLock] = useState(false);
-  const [kind, setKind] = useState("jackett");
-  const [url, setUrl] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [token, setToken] = useState("");
-  const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    api.config().then((c) => { if (!alive) return; setInfo(c.torznab); setAdminLock(c.adminLock); if (c.torznab) { setKind(c.torznab.kind); setUrl(c.torznab.url); } }).catch(() => {});
-    return () => { alive = false; };
-  }, []);
-
-  async function save() {
-    setBusy(true); setMsg("");
-    try {
-      const r = await api.saveTorznab({ kind, url, apiKey }, token || undefined);
-      if (r.ok) { setInfo(r.torznab); setApiKey(""); setMsg(url && apiKey ? "Saved ✓" : "Cleared ✓"); }
-      else setMsg(r.error || "Failed");
-    } catch { setMsg("Failed"); }
-    setBusy(false);
-  }
-  async function test() {
-    setBusy(true); setMsg("Testing…");
-    try { const r = await api.testTorznab(); setMsg(r.ok ? `Reachable ✓ — ${r.count} results for a sample query` : `Failed: ${r.error || "no response"}`); }
-    catch { setMsg("Test failed"); }
-    setBusy(false);
-  }
-
-  return (
-    <section className="settings-card">
-      <div className="settings-h" style={{ paddingTop: 0, borderTop: "none" }}>Torrent indexer</div>
-      <div className="field">
-        <div className="hint" style={{ marginTop: 0 }}>
-          Connect <b>Jackett</b> or <b>Prowlarr</b> to fan torrent search across every indexer you've configured (Movies/TV/Anime torrent providers use it). This is server-wide, not per-device.
-        </div>
-      </div>
-      {info && (
-        <div className="note" style={{ borderColor: "var(--success)" }}>
-          Active: <b>{info.kind}</b> at <span className="mono">{info.url}</span>{info.hasKey ? " · key set" : " · no key"} <span className="subtle">({info.source === "ui" ? "from Settings" : "from env"})</span>
-        </div>
-      )}
-      <div className="field">
-        <label>Type</label>
-        <div className="segmented">
-          {["jackett", "prowlarr", "torznab"].map((k) => (
-            <button key={k} className={kind === k ? "seg-opt active" : "seg-opt"} onClick={() => setKind(k)} style={{ textTransform: "capitalize" }}>{k}</button>
-          ))}
-        </div>
-      </div>
-      <div className="field">
-        <label>URL</label>
-        <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={kind === "jackett" ? "http://jackett:9117" : kind === "prowlarr" ? "http://prowlarr:9696" : "http://host/api/v2.0/…/torznab/api"} />
-        <div className="hint">{kind === "jackett" ? "Jackett base URL — the all-indexers endpoint is built automatically." : "Full Torznab feed URL."}</div>
-      </div>
-      <div className="field">
-        <label>API key</label>
-        <input className="input" type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={info?.hasKey ? "•••••• (leave blank to keep)" : "API key"} />
-      </div>
-      {adminLock && (
-        <div className="field">
-          <label>Admin token</label>
-          <input className="input" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder="Required (ADMIN_TOKEN is set)" />
-        </div>
-      )}
-      <div className="sync-row">
-        <button className="btn btn-primary btn-sm" disabled={busy} onClick={save}>Save</button>
-        <button className="btn btn-sm" disabled={busy || !info} onClick={test}>Test</button>
-        <button className="btn btn-sm" disabled={busy} onClick={() => { setUrl(""); setApiKey(""); setKind("jackett"); api.saveTorznab({ kind: "jackett", url: "", apiKey: "" }, token || undefined).then(() => { setInfo(null); setMsg("Cleared ✓"); }); }}>Clear</button>
-        {msg && <span className="subtle" style={{ fontSize: "var(--text-sm)" }}>{msg}</span>}
-      </div>
-    </section>
-  );
-}
-
+/**
+ * Settings. Tablet/desktop: section nav on the left, one section on the right (/settings/:section,
+ * /settings = Playback). Phone: /settings is the list of sections with their current values,
+ * each section is its own page with a back button.
+ */
 export default function Settings() {
+  const { section } = useParams();
   const s = useSettings();
   useStore();
-  const [theme, setThemeState] = useState<Theme>(getTheme());
-  const applyTheme = (t: Theme) => { setTheme(t); setThemeState(t); };
-
-  const syncState = getSyncState();
-  const syncCode = getSyncCode();
-  const roster = getRoster();
-  const myDevice = (() => { try { return localStorage.getItem("sp.device.id") || ""; } catch { return ""; } })();
-
-  const [name, setName] = useState(getDeviceName());
-  const [createCode, setCreateCode] = useState(randomCode());
-  const [joinCode, setJoinCode] = useState("");
-  const [msg, setMsg] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [bridge, setBridge] = useState("");
-  const [bridgeMsg, setBridgeMsg] = useState("");
-
-  const removeAudio = (lang: string) => updateSettings({ audioLanguages: s.audioLanguages.filter((l) => l !== lang) });
-  const addAudio = (lang: string) => { if (lang && !s.audioLanguages.includes(lang)) updateSettings({ audioLanguages: [...s.audioLanguages, lang] }); };
-  const availableAudio = AUDIO_LANGS.filter((l) => !s.audioLanguages.includes(l));
-
-  async function doCreate() { setMsg(""); try { await createSync(createCode); } catch (e: any) { setMsg(e.message); } }
-  async function doJoin() { setMsg(""); try { await joinSync(joinCode); } catch (e: any) { setMsg(e.message); } }
-  async function doBridge() { setBridgeMsg(""); try { await bridgeCode(bridge); setBridge(""); setBridgeMsg("Bridged ✓"); setTimeout(() => setBridgeMsg(""), 2000); } catch (e: any) { setBridgeMsg(e.message); } }
+  const active = SECTIONS.find((x) => x.id === section);
+  const current = active ?? SECTIONS[0];
+  useDocTitle(active ? `${active.label} settings` : "Settings");
+  if (section && !active) return <Navigate to="/settings" replace />;
 
   return (
-    <div className="container settings-page">
-      <h1 className="page-title">Settings</h1>
-      <div className="settings-grid">
-        {/* ── Appearance ── */}
-        <section className="settings-card">
-          <div className="settings-h" style={{ paddingTop: 0, borderTop: "none" }}>Appearance</div>
-          <div className="field">
-            <label>Theme</label>
-            <div className="segmented">
-              <button className={theme === "dark" ? "seg-opt active" : "seg-opt"} onClick={() => applyTheme("dark")}><Moon size={14} /> Dark</button>
-              <button className={theme === "light" ? "seg-opt active" : "seg-opt"} onClick={() => applyTheme("light")}><Sun size={14} /> Light</button>
-            </div>
-          </div>
-          <div className="field">
-            <label>Subtitle size</label>
-            <div className="segmented">
-              {SUB_SIZES.map((z) => (
-                <button key={z.value} className={s.subtitleSize === z.value ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ subtitleSize: z.value })}>{z.label}</button>
-              ))}
-            </div>
-          </div>
-          <div className="field">
-            <label>Subtitle colour</label>
-            <div className="rchips" style={{ marginBottom: 0 }}>
-              {SUB_COLORS.map((c) => (
-                <button key={c} aria-label={c} onClick={() => updateSettings({ subtitleColor: c })}
-                  style={{ width: 28, height: 28, borderRadius: "var(--radius-full)", background: c, border: s.subtitleColor === c ? "2px solid var(--accent)" : "2px solid var(--border)", cursor: "pointer" }} />
-              ))}
-            </div>
-          </div>
-          <div className="field">
-            <label>Subtitle background <span className="subtle">({Math.round(s.subtitleBgOpacity * 100)}%)</span></label>
-            <input className="slider" type="range" min={0} max={1} step={0.1} value={s.subtitleBgOpacity} onChange={(e) => updateSettings({ subtitleBgOpacity: Number(e.target.value) })} />
-            <div className="hint">Darkens the box behind subtitles for readability over bright scenes.</div>
-          </div>
-        </section>
-
-        {/* ── Playback & content ── */}
-        <section className="settings-card">
-          <div className="settings-h" style={{ paddingTop: 0, borderTop: "none" }}>Playback &amp; content</div>
-          <div className="field">
-            <label>Preferred audio languages</label>
-            <div className="rchips">
-              {s.audioLanguages.map((lang, i) => (
-                <span key={lang} className={i === 0 ? "rchip primary" : "rchip"}>
-                  <span className="idx">{i + 1}</span>{lang}
-                  <button className="x" aria-label="Remove" onClick={() => removeAudio(lang)}><X size={12} /></button>
-                </span>
-              ))}
-            </div>
-            <Dropdown value="" placeholder="Add a language…" options={availableAudio.map((l) => ({ value: l, label: l }))} onChange={addAudio} ariaLabel="Add audio language" />
-            <div className="hint">Sources matching these languages are sorted first (primary on top).</div>
-          </div>
-          <div className="field">
-            <label>Anime track</label>
-            <div className="segmented">
-              <button className={s.anime === "sub" ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ anime: "sub" })}>Subbed</button>
-              <button className={s.anime === "dub" ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ anime: "dub" })}>Dubbed</button>
-            </div>
-          </div>
-          <div className="field">
-            <label>Default quality</label>
-            <div className="segmented">
-              {QUALITIES.map((q) => (
-                <button key={q.value} className={s.quality === q.value ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ quality: q.value })}>{q.label}</button>
-              ))}
-            </div>
-          </div>
-          <Toggle id="autoplay" label="Autoplay" hint="Start the best source automatically when sources load." on={s.autoplay} onChange={() => updateSettings({ autoplay: !s.autoplay })} />
-          <Toggle id="autoNext" label="Auto-play next episode" hint="Advance to the next episode automatically when one ends." on={s.autoNext} onChange={() => updateSettings({ autoNext: !s.autoNext })} />
-          <Toggle id="autoSkip" label="Auto-skip openings/endings" hint="Skip anime OP/ED automatically using AniSkip data." on={s.autoSkip} onChange={() => updateSettings({ autoSkip: !s.autoSkip })} />
-          <Toggle id="adult" label="Show 18+ content" hint="Off by default — adult / hentai titles are hidden across browse and search." on={s.adult} onChange={() => updateSettings({ adult: !s.adult })} />
-          <div className="field">
-            <label>WARP proxy</label>
-            <div className="segmented">
-              {WARP_MODES.map((m) => (
-                <button key={m.value} className={s.warp === m.value ? "seg-opt active" : "seg-opt"} onClick={() => updateSettings({ warp: m.value })}>{m.label}</button>
-              ))}
-            </div>
-            <div className="hint"><b>Required</b> = only providers that need it · <b>Fallback</b> = retry a failed provider via WARP · <b>All</b> = everything. Needs a WARP proxy configured on the server.</div>
-          </div>
-        </section>
-
-        {/* ── Torrent indexer (Jackett/Prowlarr) ── */}
-        <TorznabCard />
-
-        {/* ── Sync ── */}
-        <section className="settings-card">
-          <div className="settings-h" style={{ paddingTop: 0, borderTop: "none" }}>Sync across devices</div>
-          <div className="field">
-            <label>This device</label>
-            <div className="sync-row">
-              <input className="input" style={{ flex: 1, minWidth: 140 }} value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setDeviceName(name)} placeholder="Device name" />
-            </div>
-            <div className="hint">Shown to your other devices in the list below.</div>
-          </div>
-          {syncCode ? (
-            <div className="field">
-              <div className="field-row">
-                <label>Sync code</label>
-                <span className={`badge ${syncState === "live" ? "badge-success" : syncState === "error" ? "badge-error" : "badge-warning"}`}>{syncState}</span>
-              </div>
-              <div className="sync-row">
-                <code className="sync-code">{syncCode}</code>
-                <button className="btn btn-sm" onClick={() => { copyText(syncCode).then((ok) => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1500); } }); }}>{copied ? <><Check size={14} /> Copied</> : <><Copy size={14} /> Copy</>}</button>
-                <button className="btn btn-sm" onClick={() => disableSync()}>Disconnect</button>
-              </div>
-              <div className="hint">Enter this code on another device to link it.</div>
-              <div style={{ marginTop: "var(--space-4)" }}>
-                <div className="block-label">Devices ({roster.length})</div>
-                <div className="roster">
-                  {roster.map((d) => (
-                    <div className="roster-row" key={d.id}>
-                      <span className={`roster-dot ${d.online ? "online" : ""}`} title={d.online ? "online" : "offline"} />
-                      <span className="rn">{d.name}{d.id === myDevice ? " (this device)" : ""}</span>
-                      {d.id !== myDevice && <button className="btn btn-icon btn-ghost btn-sm" aria-label="Forget device" onClick={() => forgetDevice(d.id)}><X size={14} /></button>}
-                    </div>
-                  ))}
-                  {roster.length === 0 && <div className="subtle" style={{ fontSize: "var(--text-sm)" }}>No devices yet.</div>}
-                </div>
-              </div>
-              <div style={{ marginTop: "var(--space-4)" }}>
-                <div className="block-label">Bridge another code</div>
-                <div className="sync-row">
-                  <input className="input" style={{ flex: 1, minWidth: 120 }} value={bridge} onChange={(e) => setBridge(e.target.value)} placeholder="Other code" />
-                  <button className="btn btn-sm" disabled={!bridge.trim()} onClick={doBridge}>Bridge</button>
-                </div>
-                <div className="hint">{bridgeMsg ? <b style={{ color: bridgeMsg.includes("✓") ? "var(--success)" : "var(--error)" }}>{bridgeMsg}</b> : "Merge another network into this one. Bridges are transitive."}</div>
-              </div>
-            </div>
-          ) : (
-            <>
-              <div className="field">
-                <label>Create a code</label>
-                <div className="sync-row">
-                  <input className="input" style={{ flex: 1, minWidth: 120 }} value={createCode} onChange={(e) => setCreateCode(e.target.value)} placeholder="my-code" />
-                  <button className="btn btn-sm" onClick={() => setCreateCode(randomCode())}>Random</button>
-                  <button className="btn btn-primary btn-sm" disabled={!createCode.trim()} onClick={doCreate}>Create</button>
-                </div>
-                <div className="hint">Pick a unique code, then enter it on your other devices.</div>
-              </div>
-              <div className="field">
-                <label>Join an existing code</label>
-                <div className="sync-row">
-                  <input className="input" style={{ flex: 1, minWidth: 120 }} value={joinCode} onChange={(e) => setJoinCode(e.target.value)} placeholder="Enter code" />
-                  <button className="btn btn-sm" disabled={!joinCode.trim()} onClick={doJoin}>Join</button>
-                </div>
-                <div className="hint">{msg ? <b style={{ color: "var(--error)" }}>{msg}</b> : "Link this device to a code created on another device."}</div>
-              </div>
-            </>
-          )}
-          {syncCode && msg && <div className="hint"><b style={{ color: "var(--error)" }}>{msg}</b></div>}
-        </section>
+    <div className="container settings" data-root={section ? undefined : ""}>
+      <div className="settings-head">
+        <Button className="settings-back" variant="ghost" size="sm" to="/settings" icon={<ChevronLeft size={20} />}>Settings</Button>
+        <h1 className="t-h1 settings-title">Settings</h1>
       </div>
-      <div className="subtle" style={{ fontSize: "var(--text-xs)", marginTop: "var(--space-5)" }}>Changes are saved automatically and sync across your linked devices.</div>
+      <nav className="settings-nav" aria-label="Settings sections">
+        {SECTIONS.map((x) => (
+          <Link key={x.id} to={`/settings/${x.id}`} className="settings-nav-item" aria-current={x === current ? "page" : undefined}
+            data-current={x === current && section ? "" : undefined}>
+            <x.icon size={20} />
+            <span className="sn-text"><span className="sn-label">{x.label}</span><span className="sn-sum"><Summary of={x} s={s} /></span></span>
+            <ChevronRight size={20} className="sn-chev" />
+          </Link>
+        ))}
+      </nav>
+      <section className="settings-content" aria-labelledby="settings-h">
+        <h2 id="settings-h" className="settings-h">{current.label}</h2>
+        <current.Body key={current.id} />
+      </section>
     </div>
+  );
+}
+// summaries may call hooks (theme), so each is its own component
+function Summary({ of, s }: { of: Section; s: ClientSettings }) { return <>{of.summary(s)}</>; }
+
+function Playback() {
+  const s = useSettings();
+  return (
+    <>
+      <AudioLanguages />
+      <Field label="Anime audio" desc="Japanese audio with subtitles, or a dub in your language when one exists.">
+        <SegmentedControl label="Anime audio" value={s.anime} options={[{ value: "sub", label: "Subtitled" }, { value: "dub", label: "Dubbed" }]}
+          onChange={(v) => updateSettings({ anime: v })} />
+      </Field>
+      <Group title="Autoplay and content">
+        <ListGroup divided>
+          <ListRow kind="toggle" checked={s.autoNext} onClick={() => updateSettings({ autoNext: !s.autoNext })}
+            title="Autoplay next episode" description="Starts the next episode when one ends." />
+          <ListRow kind="toggle" checked={s.autoSkip} onClick={() => updateSettings({ autoSkip: !s.autoSkip })}
+            title="Skip intros and credits" description="Skips openings and endings when their times are known, mostly for anime." />
+          <ListRow kind="toggle" checked={s.adult} onClick={() => updateSettings({ adult: !s.adult })}
+            title="Show 18+ titles" description="When off, adult titles stay out of browse and search." />
+        </ListGroup>
+      </Group>
+    </>
+  );
+}
+
+function SubtitlesSection() {
+  const s = useSettings();
+  const pct = SUB_SIZES.find((x) => x.value === s.subtitleSize)?.pct ?? 100;
+  return (
+    <>
+      <div className="sub-preview media-dark" aria-hidden="true">
+        <span className="sub-cue" style={{ color: s.subtitleColor, background: `rgba(0,0,0,${s.subtitleBgOpacity})`, fontSize: `calc(1.125rem * ${pct / 100})` }}>
+          This is how subtitles will look.
+        </span>
+      </div>
+      <Field label="Size" stack>
+        <SegmentedControl label="Subtitle size" value={s.subtitleSize} options={SUB_SIZES} onChange={(v) => updateSettings({ subtitleSize: v })} />
+      </Field>
+      <Field label="Colour" stack>
+        <div role="radiogroup" aria-label="Subtitle colour" className="swatches" onKeyDown={(e) => { const el = rove(e, '[role="radio"]'); if (el) updateSettings({ subtitleColor: el.dataset.value! }); }}>
+          {SUB_COLORS.map((c) => {
+            const on = s.subtitleColor === c.value;
+            return (
+              <button key={c.value} type="button" role="radio" aria-checked={on} tabIndex={on ? 0 : -1} data-value={c.value} className="swatch-opt"
+                onClick={() => updateSettings({ subtitleColor: c.value })}>
+                <span className="swatch-dot" style={{ background: c.value }}>{on && <Check size={14} />}</span>{c.label}
+              </button>
+            );
+          })}
+        </div>
+      </Field>
+      <div className="set-field" data-stack="">
+        <div className="set-field-text set-slider-head">
+          <label className="set-label" htmlFor="sub-bg">Background</label>
+          <span className="set-value">{Math.round(s.subtitleBgOpacity * 100)}%</span>
+        </div>
+        <input id="sub-bg" className="slider" type="range" min={0} max={1} step={0.1} value={s.subtitleBgOpacity}
+          onChange={(e) => updateSettings({ subtitleBgOpacity: Number(e.target.value) })} />
+      </div>
+      <p className="set-desc">Subtitle style is saved on this device only.</p>
+    </>
+  );
+}
+
+/** Preferred audio, in order. Empty = the server picks the title's original language, then English. */
+function AudioLanguages() {
+  const s = useSettings();
+  const add = (lang: string) => { if (!s.audioLanguages.includes(lang)) updateSettings({ audioLanguages: [...s.audioLanguages, lang] }); };
+  const left = AUDIO_LANGS.filter((l) => !s.audioLanguages.includes(l));
+  return (
+    <Field label="Audio language" stack desc={s.audioLanguages.length
+      ? "Sources with these audio tracks are tried first, in this order. Remove them all to go back to each title's original language."
+      : "Each title plays in its original language, with English as a backup. Add a language, such as Hindi, to try it first."}>
+      <div className="chip-row">
+        {s.audioLanguages.map((l) => (
+          <InputChip key={l} removeLabel={`Remove ${l}`} onRemove={() => updateSettings({ audioLanguages: s.audioLanguages.filter((x) => x !== l) })}>{l}</InputChip>
+        ))}
+        {left.length > 0 && (
+          <Menu label="Add an audio language" items={left.map((l) => ({ label: l, onSelect: () => add(l) }))}
+            trigger={(p) => <Button {...p} variant="secondary" size="sm" icon={<Plus size={16} />}>Add language</Button>} />
+        )}
+      </div>
+    </Field>
+  );
+}
+
+function Appearance() {
+  const pref = useThemePref();
+  return (
+    <Field label="Theme" desc="Artwork and the player stay dark in every theme.">
+      <SegmentedControl label="Theme" value={pref} options={THEMES} onChange={setThemePref} />
+    </Field>
+  );
+}
+
+function Sync() {
+  useStore();
+  const state = SYNC[getSyncState()] ?? SYNC.off;
+  const code = getSyncCode();
+  const roster = getRoster();
+  const me = (() => { try { return localStorage.getItem("sp.device.id") || ""; } catch { return ""; } })();
+  const [name, setName] = useState(getDeviceName());
+  const [create, setCreate] = useState(randomCode);
+  const [join, setJoin] = useState("");
+  const [bridge, setBridge] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [unlink, setUnlink] = useState(false);
+  const codeOk = create.trim().length >= MIN_CODE && new Set(create.trim()).size >= 4;
+  const run = async (fn: () => Promise<void>, done?: string) => {
+    setErr(""); setBusy(true);
+    try { await fn(); if (done) toast(done, { tone: "success" }); } catch (e) { setErr((e as Error).message); }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      <p className="set-intro">Link your devices with a sync code. History, My List and preferences then follow you to every device that uses it.</p>
+      <div className="sync-state" role="status"><StatusDot tone={state.tone} />{state.text}</div>
+
+      <Group title="This device's name">
+        <input className="input" aria-label="This device's name" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setDeviceName(name.trim() || getDeviceName())} autoComplete="off" />
+      </Group>
+
+      {code ? (
+        <>
+          <Group title="Sync code" desc="Enter this code on another device to link it. Anyone with the code can see your history, so keep it private.">
+            <div className="inline-form">
+              <code className="sync-code">{code}</code>
+              <Button icon={<Copy size={20} />} onClick={() => copyText(code).then((ok) => ok && toast("Code copied", { tone: "success" }))}>Copy</Button>
+            </div>
+          </Group>
+          <Group title={`Devices (${roster.length})`}>
+            {roster.length ? (
+              <ListGroup divided>
+                {roster.map((d) => (
+                  <ListRow key={d.id} leading={<StatusDot tone={d.online ? "success" : "neutral"} />} title={d.id === me ? `${d.name} (this device)` : d.name}
+                    description={d.online ? "Online" : "Offline"}
+                    trailing={d.id !== me ? <IconButton size="sm" label={`Forget ${d.name}`} onClick={() => forgetDevice(d.id)}><X size={16} /></IconButton> : undefined} />
+                ))}
+              </ListGroup>
+            ) : <p className="set-desc">No other devices yet.</p>}
+          </Group>
+          <Group title="Merge another code" desc="Have a second code from before? Merge it and both sets of devices share one history.">
+            <form className="inline-form" onSubmit={(e) => { e.preventDefault(); run(async () => { await bridgeCode(bridge); setBridge(""); }, "Codes merged"); }}>
+              <input className="input mono" aria-label="Other sync code" value={bridge} onChange={(e) => setBridge(e.target.value)} autoCapitalize="off" autoComplete="off" spellCheck={false} />
+              <Button type="submit" disabled={!bridge.trim() || busy}>Merge</Button>
+            </form>
+          </Group>
+          <div className="set-actions"><Button variant="danger" onClick={() => setUnlink(true)}>Unlink this device</Button></div>
+          {unlink && <ConfirmDialog title="Unlink this device?" body="It stops syncing but keeps what's already here. You can link it again with the code."
+            confirm="Unlink" cancel="Keep linked" onClose={() => setUnlink(false)} onConfirm={() => disableSync()} />}
+        </>
+      ) : (
+        <>
+          <Group title="Start syncing" desc={codeOk ? "We made a random code for you. You can change it." : `Use at least ${MIN_CODE} characters with some variety.`}>
+            <form className="inline-form" onSubmit={(e) => { e.preventDefault(); if (codeOk) run(() => createSync(create), "Sync is on"); }}>
+              <input className="input mono" aria-label="New sync code" value={create} onChange={(e) => setCreate(e.target.value)} autoCapitalize="off" autoComplete="off" spellCheck={false} />
+              <Button variant="ghost" onClick={() => setCreate(randomCode())}>New code</Button>
+              <Button type="submit" variant="solid" disabled={!codeOk || busy}>Create</Button>
+            </form>
+          </Group>
+          <Group title="Join from another device" desc="Already syncing somewhere else? Enter that device's code.">
+            <form className="inline-form" onSubmit={(e) => { e.preventDefault(); run(() => joinSync(join), "Sync is on"); }}>
+              <input className="input mono" aria-label="Existing sync code" value={join} onChange={(e) => setJoin(e.target.value)} autoCapitalize="off" autoComplete="off" spellCheck={false} />
+              <Button type="submit" disabled={!join.trim() || busy}>Join</Button>
+            </form>
+          </Group>
+        </>
+      )}
+      {err && <p className="set-error" role="alert">{err}</p>}
+    </>
+  );
+}
+
+function About() {
+  const h = useHealth();
+  return (
+    <ListGroup divided>
+      <ListRow title="Version" value={version} />
+      <ListRow title="Title data" description={h.data ? (h.data.tmdb === "live" ? "Live from TMDB." : "Backup data. Add a TMDB key on the server for full, current titles.") : h.isError ? "Couldn't reach the server." : "Checking…"}
+        leading={<StatusDot tone={!h.data ? (h.isError ? "error" : "neutral") : h.data.tmdb === "live" ? "success" : "warning"} />} />
+      <ListRow kind="nav" to="/settings/providers" title="Provider health" description="Which providers are reachable right now." />
+    </ListGroup>
   );
 }

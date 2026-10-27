@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { seasonRe, episodeRe } from '../utils/season';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -32,9 +33,8 @@ export const MoviesModProvider: Provider = {
 
             const hTag = season == null ? 'h4' : 'h3';
             const aTag = season == null ? 'Download' : 'Episode';
-            // Zero-pad the season so double-digit seasons match too (S01 … S10, S12).
-            // The old `S0${season}` produced "S010" for season 10 and never matched.
-            const sTag = season == null ? '' : `(S${String(season).padStart(2, '0')}|Season ${season})`;
+            // S01 / Season 1 — never S10 / Season 12 (word-bounded, see seasonRe).
+            const sTag = season == null ? '' : seasonRe(season).source;
 
             const res = (await safeGet(href, { cloudflare: true })).document;
 
@@ -69,7 +69,7 @@ export const MoviesModProvider: Provider = {
                 } else {
                     intermediate('h3 a').each((_, a) => {
                         if (source) return;
-                        if (new RegExp(`Episode ${episode}`, 'i').test(intermediate(a).text())) {
+                        if (episodeRe(episode ?? 1).test(intermediate(a).text())) {
                             source = intermediate(a).attr('href');
                         }
                     });

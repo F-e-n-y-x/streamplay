@@ -1,0 +1,154 @@
+/* =============================================================================
+   SHELL — header, tablet nav, phone tab bar, dialogs. Owned by components/Header.tsx + App.tsx.
+     ≥1100  64px bar: logo · text nav · search field · settings
+     768–1099  56px bar: logo mark · text nav (scrolls, edge fade) · search icon · settings
+     <768   48px bar: logo · search icon  +  56px bottom tab bar (none on Watch)
+   This file loads before tokens.css, so variables use :root:root to win.
+   ========================================================================== */
+:root:root { --header-height: 4rem; --chips-height: 0px; }
+@media (max-width: 1099px) { :root:root { --header-height: 3.5rem; } }
+@media (max-width: 767px) { :root:root { --header-height: 3rem; --tabbar-height: calc(3.5rem + var(--safe-bottom)); } }
+
+.header {
+  position: sticky; top: 0; z-index: 50;
+  padding-top: var(--safe-top);
+  background: var(--background);
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--border);
+  transition: background-color var(--duration-2) var(--ease-out), border-color var(--duration-2) var(--ease-out);
+}
+/* Home / Title: the bar floats over the full-bleed art, transparent until the page scrolls */
+.header[data-over-art] { position: fixed; left: 0; right: 0; }
+/* border-box origin: a repeating gradient tile otherwise paints its dark top into the transparent 1px border */
+.header[data-over-hero] { background: var(--player-scrim-top) border-box; border-bottom-color: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+
+.header-inner {
+  height: var(--header-height); max-width: var(--container-max); margin: 0 auto;
+  padding: 0 calc(var(--gutter) + var(--safe-right)) 0 calc(var(--gutter) + var(--safe-left));
+  display: flex; align-items: center; gap: var(--space-2);
+}
+.header-inner > * { flex-shrink: 0; }
+.header-inner > .grow { flex: 1 1 0; min-width: var(--space-4); }
+
+.brand { display: flex; align-items: center; gap: var(--space-2); margin-right: var(--space-6); color: var(--foreground); font: 700 1.125rem/1 var(--font-sans); letter-spacing: -0.02em; border-radius: var(--radius-sm); }
+/* Scrubber logo: lowercase wordmark riding the red progress bar, playhead between "stream" and "play".
+   Where the wordmark is hidden (tablet, tiny phones) the drawn-"s" mark stands in. */
+.brand .mark { display: none; width: auto; height: 1.625rem; flex: none; }
+.brand-name { position: relative; padding-bottom: 0.5rem; font-weight: 800; letter-spacing: -0.035em; }
+.brand-name::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) 0 61%, rgba(128, 128, 128, 0.4) 61% 100%);
+}
+.brand-name::after {
+  content: ""; position: absolute; left: 61%; bottom: -2.5px; width: 8px; height: 8px; margin-left: -4px;
+  border-radius: 50%; background: var(--foreground);
+}
+
+.nav-links { position: relative; display: flex; align-self: stretch; gap: var(--space-1); }
+.nav-link { position: relative; display: inline-flex; align-items: center; padding: 0 var(--space-3); color: var(--muted-foreground); font: var(--type-label); white-space: nowrap; transition: color var(--duration-1) var(--ease-out); }
+.nav-link:focus-visible { outline-offset: -4px; border-radius: var(--radius-md); }
+.nav-link.active { color: var(--foreground); }
+/* active = foreground + 2px underline sitting on the bar's bottom edge */
+.nav-link.active::after { content: ""; position: absolute; left: var(--space-3); right: var(--space-3); bottom: -1px; height: 2px; background: var(--foreground); }
+
+.header-search { width: 17.5rem; transition: width var(--duration-2) var(--ease-out); }
+.header-search:focus-within { width: 22.5rem; }
+.header-settings.active { background: var(--surface-2); }
+@media (pointer: coarse) and (min-width: 1100px) { .header-search { width: 20rem; } }   /* 16px touch font: the placeholder needs the room */
+.header .search-toggle, .header .search-link, .tabbar { display: none; }
+
+.search-overlay {
+  position: sticky; top: calc(var(--header-height) + var(--safe-top)); z-index: 49;
+  padding: var(--space-3) calc(var(--gutter) + var(--safe-right)) var(--space-3) calc(var(--gutter) + var(--safe-left));
+  background: var(--surface); border-bottom: 1px solid var(--border); box-shadow: var(--elevation-2);
+}
+.header[data-over-art] + .search-overlay { position: fixed; left: 0; right: 0; }
+.search-overlay-form { max-width: var(--container-max); margin: 0 auto; }
+
+/* ---------- tablet ---------- */
+@media (max-width: 1099px) {
+  .brand { margin-right: var(--space-3); }
+  .brand-name, .header-search { display: none; }
+  .brand .mark { display: block; }
+  .header .search-toggle { display: inline-flex; }
+  /* the nav scrolls sideways when it doesn't fit; fade the side that has more */
+  .nav-links { flex: 0 1 auto; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+  .nav-links::-webkit-scrollbar { display: none; }
+  .nav-links[data-fade-end] { -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent); }
+  .nav-links[data-fade-start] { -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px); mask-image: linear-gradient(90deg, transparent, #000 24px); }
+  .nav-links[data-fade-start][data-fade-end] { -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent); }
+}
+
+/* ---------- phone ---------- */
+@media (max-width: 767px) {
+  .brand { margin-right: 0; font-size: 1rem; }
+  .brand-name { display: inline-block; }
+  .brand .mark { display: none; }
+  .nav-links, .header .header-settings, .header .search-toggle, .search-overlay { display: none; }
+  .header .search-link { display: inline-flex; }
+  main { padding-bottom: var(--tabbar-height); }
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    height: var(--tabbar-height); padding: 0 var(--safe-right) var(--safe-bottom) var(--safe-left);
+    background: var(--background);
+    background: color-mix(in srgb, var(--background) 94%, transparent);
+    -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+    border-top: 1px solid var(--border);
+  }
+  .tab-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 0; color: var(--subtle-foreground); font: var(--type-caption); transition: color var(--duration-1) var(--ease-out); }
+  .tab-item:focus-visible { outline-offset: -4px; border-radius: var(--radius-md); }
+  .tab-item.active { color: var(--foreground); font-weight: 600; }
+}
+@media (max-width: 359px) { .brand-name { display: none; } .brand .mark { display: block; } }
+@media (pointer: coarse) { .brand { min-height: var(--hit-min); } }
+
+/* landscape phone: on the player page no page chrome (Header renders no tab bar there);
+   elsewhere a compact tab bar (icon beside label) leaves the content more height */
+@media (orientation: landscape) and (max-height: 500px) {
+  .header[data-watch] { display: none; }
+}
+@media (max-width: 767px) and (orientation: landscape) and (max-height: 500px) {
+  :root:root { --tabbar-height: calc(2.75rem + var(--safe-bottom)); }
+  .tab-item { flex-direction: row; gap: var(--space-2); }
+}
+
+@media (hover: hover) {
+  .nav-link:hover, .tab-item:hover { color: var(--foreground); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .header, .header-search, .nav-link, .tab-item { transition: none; }
+}
+
+/* ---------- Dialog (native <dialog>: focus trap, Esc and top layer for free) ---------- */
+dialog.dialog {
+  width: min(27.5rem, calc(100% - 2 * var(--space-4))); padding: 0;
+  color: var(--foreground); background: var(--surface); border: 0; border-radius: var(--radius-lg); box-shadow: var(--elevation-3);
+}
+/* padding lives inside so a click on the dialog element itself means the backdrop */
+.dialog-inner { padding: var(--space-6); }
+dialog.dialog::backdrop { background: var(--overlay); }
+.dialog-title { margin: 0 0 var(--space-2); font: var(--type-title); }
+.dialog-body { margin: 0; font: var(--type-body); color: var(--muted-foreground); }
+.dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-6); }
+
+/* ---------- Provider order dialog (ProviderPrefsEditor: Settings and the player) ---------- */
+dialog.ppe { width: min(35rem, calc(100% - 2 * var(--space-4))); max-height: min(88dvh, 100% - 2 * var(--space-4)); }
+.ppe-inner { padding: var(--space-5) var(--space-6) var(--space-6); }
+.ppe-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.ppe-head .dialog-title { margin: 0; }
+.ppe .dialog-body { margin: var(--space-1) 0 var(--space-4); font: var(--type-meta); }
+.ppe-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.ppe-row { display: flex; align-items: center; gap: var(--space-2); min-height: 3rem; padding: 0 var(--space-2) 0 var(--space-3); border-radius: var(--radius-sm); background: var(--surface-2); cursor: grab; }
+.ppe-row[data-off] .ppe-name, .ppe-row[data-off] .ppe-idx { opacity: 0.45; }
+.ppe-row[data-drag] { opacity: 0.4; cursor: grabbing; }
+.ppe-row[data-over] { box-shadow: inset 0 2px 0 var(--foreground); }
+.ppe-idx { width: 1.25rem; text-align: right; font: var(--type-meta); color: var(--subtle-foreground); font-variant-numeric: tabular-nums; }
+.ppe-name { flex: 1; min-width: 0; font: var(--type-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ppe-reset { margin-right: auto; }
+@media (max-width: 767px) {
+  dialog.ppe { width: 100%; max-width: none; max-height: 92dvh; margin: auto 0 0; border-radius: var(--radius-xl) var(--radius-xl) 0 0; }
+  .ppe-inner { padding: var(--space-4) var(--space-4) calc(var(--space-4) + var(--safe-bottom)); }
+}
+

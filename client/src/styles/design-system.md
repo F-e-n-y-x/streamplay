@@ -1,318 +1,79 @@
-# Design System
-
-A token-based, Geist/Vercel-neutral design system. This is the reference for all UI work in `client/`. Read it before adding or restyling components.
-
-Source files:
-
-- `styles/tokens.css` — the single source of truth for color, type, space, radius, elevation, motion.
-- `styles/app.css` — base reset + component classes (primitives in the `EXTENDED DESIGN SYSTEM` section).
-- `components/icons.tsx` — Lucide-style inline-SVG icon components.
-
----
-
-## 1. Principles
-
-- **Token-only values.** Components never use raw hex or px. Always reference `var(--…)`. The only allowed literals are structural (e.g. `1px` borders, fixed control heights already encoded in classes).
-- **Neutral-dominant.** The UI is built from the gray ramp. Color is rare.
-- **Single accent.** One hue (`--accent`) for focus, links, key emphasis, "playing"/active state. Never decorate with extra hues; status colors (`--success/--warning/--error`) are semantic, never decorative.
-- **Dark + light** via `data-theme` on `<html>`. Dark is the default.
-- **Lucide icons only.** No emoji as UI chrome. Icons come from `components/icons.tsx`.
-- **Motion is quick and quiet.** 120–240ms, `--ease-out`. Respect `prefers-reduced-motion` (durations collapse to 0).
-
----
-
-## 2. Tokens
-
-### Theme switching
-
-Theme is controlled by the `data-theme` attribute on the root element:
-
-```html
-<html data-theme="dark">   <!-- default -->
-<html data-theme="light">
-```
-
-Each theme redefines the gray ramp + accent/status + shadows. Everything else (semantic roles, spacing, type, radius, motion) resolves through these, so components are theme-agnostic.
-
-### Color ramp
-
-`--gray-1 … --gray-12` — neutral scale. `1` = app background, `12` = highest-contrast text. (Inverts between themes: in dark `gray-1` is near-black; in light it is white.)
-
-### Semantic roles
-
-Prefer these over raw ramp values in components.
-
-| Token | Role |
-| --- | --- |
-| `--background` | App background (`gray-1`) |
-| `--surface` | Card / panel surface (`gray-2`) |
-| `--surface-2` | Inset / secondary surface (`gray-3`) |
-| `--surface-hover` | Hover fill (`gray-4`) |
-| `--overlay` | Modal/drawer scrim |
-| `--foreground` | Primary text (`gray-12`) |
-| `--muted-foreground` | Secondary text (`gray-11`) |
-| `--subtle-foreground` | Tertiary / placeholder text (`gray-10`) |
-| `--border` | Default border (`gray-6`) |
-| `--border-strong` | Emphasized border (`gray-7`) |
-| `--accent` / `--accent-strong` / `--accent-soft` | Accent fill / hover-text / tint |
-| `--accent-foreground` | Text on accent fill |
-| `--primary` / `--primary-hover` / `--primary-foreground` | Solid primary action (Geist white-on-dark) |
-| `--success` / `--warning` / `--error` (+ `-soft`) | Status, semantic only |
-| `--ring` | Focus ring (= accent) |
-
-### Type scale
-
-- Font: `--font-sans` (Geist), `--font-mono` (Geist Mono). Base size 14px.
-- Sizes: `--text-xs` (12), `--text-sm` (13), `--text-base` (14), `--text-md` (15), `--text-lg` (16), `--text-xl` (18), `--text-2xl` (22), `--text-3xl` (28), `--text-4xl` (36).
-- Leading: `--leading-tight` (1.2), `--leading-snug` (1.4), `--leading-base` (1.55).
-- Weights: `--weight-normal` (400), `--weight-medium` (500), `--weight-semibold` (600).
-- Tracking: `--tracking-tight` (-0.02em), `--tracking-snug` (-0.01em).
-
-### Spacing (4px grid)
-
-`--space-1` (4) · `-2` (8) · `-3` (12) · `-4` (16) · `-5` (20) · `-6` (24) · `-8` (32) · `-10` (40) · `-12` (48) · `-16` (64).
-
-### Radius
-
-`--radius-sm` (4) · `-md` (6, default `--radius`) · `-lg` (8) · `-xl` (12) · `-2xl` (16) · `-full` (9999).
-
-### Shadows
-
-`--shadow-xs` · `-sm` · `-md` · `-lg`. Deeper/quieter in dark, softer in light.
-
-### Motion
-
-- Easing: `--ease-out` (`cubic-bezier(0.16, 1, 0.3, 1)`), `--ease-in-out`.
-- Durations: `--duration-1` (120ms), `--duration-2` (180ms), `--duration-3` (240ms).
-
----
-
-## 3. Components
-
-Class-based primitives in `app.css`. Use these JSX/HTML shapes.
-
-### Button — `.btn` `.btn-primary` `.btn-ghost` `.btn-sm` `.btn-icon`
-
-```jsx
-<button className="btn">Default</button>
-<button className="btn btn-primary">Save</button>
-<button className="btn btn-ghost btn-sm">Cancel</button>
-<button className="btn btn-icon btn-ghost"><Settings size={18} /></button>
-```
-
-### Input — `.input`
-
-```jsx
-<input className="input" placeholder="Search…" />
-```
-
-### Custom select — `.select-wrap` + `.chev-down`
-
-```jsx
-<div className="select-wrap">
-  <select className="input">
-    <option>Newest</option>
-  </select>
-  <ChevronDown size={16} className="chev-down" />
-</div>
-```
-
-### Badge — `.badge` `.badge-accent` `.badge-success` `.badge-warning` `.badge-error`
-
-```jsx
-<span className="badge">12</span>
-<span className="badge badge-accent">New</span>
-<span className="badge badge-success">Online</span>
-```
-
-### Segmented control — `.segmented` / `.seg-opt` (`.active`)
-
-```jsx
-<div className="segmented">
-  <button className="seg-opt active">Grid</button>
-  <button className="seg-opt">List</button>
-</div>
-```
-
-### Switch — `.switch` (`.on`)
-
-```jsx
-<button className={`switch ${on ? "on" : ""}`} onClick={toggle} aria-pressed={on} />
-```
-
-### Slider — `.slider`
-
-```jsx
-<input type="range" className="slider" min={0} max={100} value={v} onChange={…} />
-```
-
-### Dropdown menu — `.menu-wrap` / `.menu` (`.below` `.above` `.right`) / `.menu-label` / `.menu-item` (`.active`)
-
-```jsx
-<div className="menu-wrap">
-  <button className="btn btn-sm">Sort <ChevronDown size={14} /></button>
-  <div className="menu below right">
-    <div className="menu-label">Order</div>
-    <button className="menu-item active">Newest <span className="mi-meta">↓</span></button>
-    <button className="menu-item">Oldest</button>
-  </div>
-</div>
-```
-
-### Removable chip — `.rchip` (`.primary`) / `.idx` / `.x`
-
-```jsx
-<span className="rchip primary">
-  <span className="idx">1</span> English
-  <button className="x" onClick={remove}><X size={12} /></button>
-</span>
-```
-
-### Tooltip — `[data-tip]`
-
-```jsx
-<button className="btn btn-icon" data-tip="Refresh"><RotateCcw size={16} /></button>
-```
-
-### Spinner — `.spin`
-
-```jsx
-<span className="spin" />
-```
-
-### Filter chip — `.fchip` (`.on`) / `.n`
-
-```jsx
-<button className={`fchip ${active ? "on" : ""}`}>HD <span className="n">8</span></button>
-```
-
-### Grouped source manifest
-
-Structure: `.src-group` (`.open`, `.has-playing`) › `.group-head` (`.chev` `.pname` `.pcount` `.pbest`[`.sd`]) + `.group-body` › `.srow` (`.playing`) (`.led` `.sname` `.tags` › `.tag` `.hd`/`.audio`/`.fmt`).
-
-```jsx
-<div className={`src-group ${open ? "open" : ""} ${hasPlaying ? "has-playing" : ""}`}>
-  <button className="group-head" onClick={toggle}>
-    <ChevronRight size={16} className="chev" />
-    <span className="pname">VidSrc</span>
-    <span className="pcount">5</span>
-    <span className="pbest">1080p</span>
-  </button>
-  <div className="group-body">
-    <button className={`srow ${playing ? "playing" : ""}`}>
-      <span className="led" />
-      <span className="sname">Source A</span>
-      <span className="tags">
-        <span className="tag hd">HD</span>
-        <span className="tag audio">EAC3</span>
-        <span className="tag fmt">MP4</span>
-      </span>
-    </button>
-  </div>
-</div>
-```
-
-### Card / poster — `.grid` / `.poster`
-
-```jsx
-<div className="grid">
-  <a className="poster">
-    <img className="img" src={url} />
-    <div className="body">
-      <div className="t">Title</div>
-      <div className="sub">2024 · Movie</div>
-    </div>
-  </a>
-</div>
-```
-
-### Tabs — `.tabs` / `.tab` (`.active`)
-
-```jsx
-<div className="tabs">
-  <button className="tab active">Season 1</button>
-  <button className="tab">Season 2</button>
-</div>
-```
-
-### Table — `.table-wrap` / `table.tbl`
-
-```jsx
-<div className="table-wrap">
-  <table className="tbl">
-    <thead><tr><th>Provider</th><th>Status</th></tr></thead>
-    <tbody><tr><td>VidSrc</td><td>OK</td></tr></tbody>
-  </table>
-</div>
-```
-
-### Modal — `.modal-overlay` / `.modal` / `.modal-head` `.modal-body` `.modal-foot` / `.field` / `.hint`
-
-```jsx
-<div className="modal-overlay">
-  <div className="modal">
-    <div className="modal-head"><h3>Add provider</h3></div>
-    <div className="modal-body">
-      <div className="field">
-        <label>Name</label>
-        <input className="input" />
-        <div className="hint">Shown in the source list.</div>
-      </div>
-    </div>
-    <div className="modal-foot">
-      <button className="btn btn-ghost">Cancel</button>
-      <button className="btn btn-primary">Save</button>
-    </div>
-  </div>
-</div>
-```
-
-### Drawer — `.overlay` + `.drawer` (`.drawer-head` `.drawer-body`)
-
-```jsx
-<>
-  <div className="overlay" onClick={close} />
-  <aside className="drawer">
-    <div className="drawer-head"><h3>Sources</h3></div>
-    <div className="drawer-body">…</div>
-  </aside>
-</>
-```
-
-### Skeleton — `.skeleton`
-
-```jsx
-<div className="skeleton" style={{ height: "var(--space-12)" }} />
-```
-
-### Empty — `.empty`
-
-```jsx
-<div className="empty">No results found.</div>
-```
-
----
-
-## 4. Icons
-
-Icons live in `components/icons.tsx` — Lucide-style inline SVGs (stroke-width 2, `currentColor`, `viewBox 0 0 24 24`). Each takes a `size` prop (default 18) and any `SVGProps`. Color follows text color; tint with `style={{ color: "var(--accent)" }}` or a parent class.
-
-```jsx
-import { Play } from "../components/icons";
-<Play size={16} />
-```
-
-Available names:
-
-`Play` · `Pause` · `Search` · `Sun` · `Moon` · `Plus` · `Check` · `Star` · `Bookmark` · `Activity` · `Settings` · `ChevronLeft` · `ChevronRight` · `ChevronDown` · `ChevronUp` · `X` · `Film` · `Tv` · `Clock` · `Layers` · `Volume2` · `VolumeX` · `Maximize` · `RotateCcw` · `Filter` · `SlidersHorizontal` · `Subtitles` · `Languages` · `Gauge` · `Globe` · `Trash2` · `Download` · `Cast` · `Loader` · `Wifi` · `WifiOff`
-
----
-
-## 5. Adding a new component
-
-1. **Compose first.** Build from existing primitives + tokens before writing anything new.
-2. **New classes go in `app.css` only**, in the `EXTENDED DESIGN SYSTEM` section, using `var(--…)` values exclusively.
-3. **Never hardcode colors** (no hex, no `rgb()` except token-defined scrims). Use semantic roles, fall back to the gray ramp only when no role fits.
-4. **Spacing/radius/type/motion** must come from tokens — no magic numbers.
-5. **Icons** come from `components/icons.tsx`; add new ones there following the existing `base(p)` pattern. No emoji.
-6. **Theme test:** verify in both `data-theme="dark"` and `light`. If it only looks right in one, you hardcoded something.
+# StreamPlay design system v2: "Lights down"
+
+How to build UI here. The full spec, including page layouts, lives in the UX docs. This file covers what the code gives you.
+Live catalogue: **`/__ui`**. It shows every component in every state.
+
+## Rules that decide most questions
+
+1. **The picture is the interface.** Chrome is neutral and dark. Don't use gradients (the two scrims are the only exception), glow, colored shadows, or decorative badges.
+2. **One obvious next step.** Each view has one `primary` (red) button. Everything else is secondary (tonal), ghost, or link.
+3. **Shape means something.** A rectangle (radius 8) is a button. A pill is a filter chip. A circle is an icon button, avatar, or switch. An underline is a tab. **Outline buttons don't exist.**
+4. **Red budget:** at most one red fill per viewport, plus progress bars. Selected states are never red. Use white text + underline for tabs, `--surface-2` + Check for rows, and an inverted fill for filter chips.
+5. **Status is a dot + text, never color alone.**
+6. **Dark is the default for everyone.** Light is opt-in in Settings. Media surfaces (`.media-dark`) stay dark in both themes.
+
+## Tokens (`tokens.css`)
+
+| Group | Tokens |
+|---|---|
+| Ground/surfaces | `--background #0A0A0C` · `--surface #141418` (panels, menus) · `--surface-2 #1E1E23` (tonal fill, selected row) · `--surface-3 #2A2A31` (hover/pressed, tracks) |
+| Text | `--foreground #F4F4F5` · `--muted-foreground #ABABB4` (secondary) · `--subtle-foreground #92929C` (tertiary, ≥12px only) |
+| Lines | `--border` (hairlines) · `--border-strong` (chip outline, inputs) |
+| Action | `--accent #D92632` (the primary button, progress) · `--accent-hover` · `--accent-soft` (current-episode tint) · `--accent-strong` (red as text) |
+| Neutral solid | `--primary` / `--primary-foreground` (dialog confirm, "Go home") |
+| Status | `--success` · `--warning` · `--error` (+ `-soft`) |
+| Overlays | `--overlay` (scrim) · `--scrim-media` (text over art) · `--player-scrim-top/-bottom` |
+| Elevation | `--elevation-2` (menus, toast) · `--elevation-3` (dialog). Panels and cards get no shadow. |
+| Type | `font: var(--type-display \| -h1 \| -h2 \| -title \| -body \| -label \| -meta \| -caption)`, letter-spacing `--track-display/-h1/-h2/-caption`. Responsive at 768/1100. Utility classes `.t-h1` etc. |
+| Space | `--space-1…20` (4px grid). 4/8/12 inside components, 16/24 between groups, 40 (phone 32) between sections. |
+| Radius | `--radius-xs 4` badges/progress · `-sm 6` stills/menu rows · `-md 8` buttons/inputs/posters · `-lg 12` menus/panel edge · `-xl 16` sheet/player · `-full` chips/circles only |
+| Controls | `--control-sm 32` · `-md 40` · `-lg 48` · `--hit-min 44` (coarse pointer) |
+| Motion | `--duration-1 120` hover · `-2 200` menus/tabs · `-3 280` panels · `--duration-exit 180` · `--ease-out` (enter) · `--ease-in` (exit). Reduced motion sets all of them to 0. |
+
+Legacy names (`--text-*`, `--weight-*`, `--shadow-*`, `--radius-2xl`, `--primary-color`, …) are aliases in tokens.css §4. Don't use them in new code.
+
+**Motion:** animate `transform`, `opacity`, and colors only. Never width, height, margin, or padding. Progress uses `transform: scaleX(var(--p))`.
+**Meta strings:** `<div class="meta-line"><span>2008</span><span>Series</span></div>` draws the `·` separators. Use at most 3 items, and drop any item the page already implies.
+
+## Components (`components/ui`, import from `components/ui`)
+
+| Component | Use | Key props |
+|---|---|---|
+| `Button` | All text buttons | `variant` `primary` (red, one per view) · `secondary` (tonal, default) · `ghost` · `solid` (neutral-solid) · `danger` · `link` · `media` (tonal on art/player); `size` sm/md/lg; `icon`; `meta` ("32 min left" after a hairline, Resume only); `loading`; `full`; `to` (router link) |
+| `IconButton` | Icon-only actions | `label` (required: aria-label + tooltip), `variant` ghost/tonal/media, `size`, `pressed` (toggle), `to` |
+| `Badge` | Quality, audio language, count, New, Watched. **Nothing else.** | children |
+| `StatusDot` | Source/provider health, always next to text | `tone` success/warning/error/neutral |
+| `FilterChip` | Toggle filter | `selected`, `count` |
+| `InputChip` | Removable value | `onRemove`, `removeLabel` |
+| `SegmentedControl` | 2–4 options that change the view immediately (Sub/Dub) | `value`, `options`, `onChange`, `label` |
+| `Tabs` | Sort, search type, seasons ≤6 | `value`, `items`, `onChange`, `label`, `id` (tab ids `${id}-tab-${value}`), `accent` (red ink, player panels only) |
+| `ListRow` / `ListGroup` | Settings rows, choice lists, source rows | `title`, `description`, `leading`, `value`, `trailing`, `kind` plain/nav/toggle/choice, `checked`, `onClick`/`to`, `role`, `tooltip`; group: `role` group/radiogroup, `divided` |
+| `Switch` | Standalone toggle (inside a row use `kind="toggle"`) | `checked`, `onChange`, `label` |
+| `Panel` | **The** overlay: right side panel, or a bottom sheet in phone portrait | `open`, `onClose`, `title`, `onBack` + `view` (sub-views), `subheader`, `footer`, `container` (e.g. the player element; `null` = not ready), `scrim` (false in the player), `initialFocus` |
+| `Menu` | Anchored choice/action menu; a sheet on phones when >6 items | `label`, `items` [{label, onSelect, checked?, meta?, group?, disabled?}], `trigger={(p) => <Button {...p}/>}`, `align` |
+| `Toaster` / `toast()` | One-sentence feedback | `toast(msg, {tone, action:{label,onClick}})`. `<Toaster/>` is mounted in App. The player mounts `<Toaster placement="top"/>` inside its element, and while that's mounted it takes over |
+| `Skeleton` / `SkeletonText` | Loading in the final shape | `width`, `height`, `aspect`, `radius`; `lines` |
+| `StateMessage` | Empty, error, offline, not found | `kind`, `title`, `body`, `actions`, `details` (collapsed technical text), `align` start/center |
+| `SourceStatus` | The line under the player | `state` finding/starting/playing/switching/web/failed/offline, `provider`, `quality`, `audio`, `slow`, `checked`/`total`, `onChangeSource` |
+| `EpisodeListItem` / `EpisodeList` / `EpisodeListSkeleton` | Episodes panel, Watch rail, Title page | `number`, `title`, `still`, `runtime`, `overview`, `airDate`, `progress` 0–1, `watched`, `current`, `size` panel/page, `to`/`onSelect`. The list adds ↑/↓ navigation |
+| `rove()` | Arrow-key roving for your own composite widgets | `(event, selector, axis)` |
+
+`ErrorState` (components/ErrorBoundary) now renders `StateMessage`. Raw errors go into "Technical details".
+
+### Behaviour you get for free
+- **Panel:** dialog semantics, focus moves to the current item (or the first control), Tab is trapped, everything else is `inert`, Esc / scrim tap / swipe-down (sheet) closes, and focus returns to the opener. A sheet with tall content opens at 60svh and expands when you drag up or scroll. Sub-views slide in. Use one panel at a time and never stack them.
+- **Inside the player:** pass `container={playerEl}` and `scrim={false}`. The side panel then fills the player (works in fullscreen) and the video stays visible. In phone portrait it becomes a viewport sheet. Note: `position: fixed` breaks if an ancestor has `transform` or `filter`.
+- **Touch:** every target reaches 44px under `(pointer: coarse)`. Icon buttons, chips, and switches extend their hit area with `::before`, so the visuals stay compact.
+- **Hover styles** only apply under `(hover: hover)`.
+
+## CSS (`app.css` → PRIMITIVES section)
+The classes the components emit are `.btn .btn-accent/-solid/-ghost/-danger/-link/-media/-sm/-lg`, `.icon-btn`, `.badge`, `.status-dot`, `.filter-chip`, `.input-chip`, `.segmented/.seg-opt`, `.tabs/.tab/.tabs-ink`, `.switch`, `.list-row`, `.menu/.menu-item`, `.panel*`, `.toast*`, `.skeleton`, `.state-msg*`, `.source-status`, `.epi*`.
+Legacy aliases restyle old markup into the new look, so pages render correctly until they're migrated: `.btn-primary` (= solid), `.btn-outline` (= media), `.btn-sub`, `.btn-icon`, `.fab`, `.rchip`, `.seg-opt.active`, `.tab.active`, `.switch.on`, `.menu-item.active`, `.badge-success/-warning/-error`, `.state*`. Delete each alias once nothing uses it.
+
+## Don't
+- Don't add pill buttons, outline buttons, or more than three buttons in a row (put extras in a ⋯ `Menu`).
+- Don't use chips for genres, navigation, or actions.
+- Don't use badges for type, genre, format (M3U8/IFRAME), "VLC", "IMDb", or "#1".
+- Don't show "Loading…" text on its own. Spinners belong only in buttons and the player.
+- Don't apologize or show raw errors in copy.
+- Don't use emoji or unicode glyphs as icons. Use `components/icons.tsx`.

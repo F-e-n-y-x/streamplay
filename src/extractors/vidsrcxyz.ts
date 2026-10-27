@@ -1,11 +1,11 @@
 import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { getBaseUrl } from '../utils/bypass';
 import { safeGet } from '../utils/http';
 
 const Vidsrcxyz = 'https://vidsrc-embed.su';
 
 const httpsify = (u: string): string => (u.startsWith('//') ? 'https:' + u : u);
-const getBaseUrl = (u: string): string => { try { const x = new URL(u); return `${x.protocol}//${x.host}`; } catch { return ''; } };
 
 const b64decode = (s: string): string => Buffer.from(s, 'base64').toString('latin1');
 const codesOf = (s: string): number[] => Array.from(s).map(c => c.charCodeAt(0));

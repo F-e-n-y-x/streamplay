@@ -1,4 +1,4 @@
-import axios from 'axios';
+import net from '../utils/net';
 import crypto from 'crypto';
 import { Provider, LinkData, ExtractorResult, Stream } from '../types';
 import { USER_AGENT } from '../utils/encdec';
@@ -43,7 +43,7 @@ export const VidrockProvider: Provider = {
             const encoded = vidrockEncode(data.id, type, data.season, data.episode);
             const headers = { 'Origin': VIDROCK_API, 'User-Agent': USER_AGENT };
 
-            const res = await axios.get(`${VIDROCK_API}/api/${type}/${encoded}`, { headers, timeout: 15000 });
+            const res = await net.get(`${VIDROCK_API}/api/${type}/${encoded}`, { headers, timeout: 15000 });
             const sources = res.data;
             if (!sources || typeof sources !== 'object') return result;
 
@@ -57,11 +57,10 @@ export const VidrockProvider: Provider = {
                 // not throw and abort the whole loop (losing every later source).
                 let safeUrl = rawUrl;
                 if (rawUrl.includes('%')) { try { safeUrl = decodeURIComponent(rawUrl); } catch { safeUrl = rawUrl; } }
-                const displayName = `Vidrock [${key}] ${lang}`;
 
                 if (safeUrl.includes('/playlist/')) {
                     try {
-                        const playlist = (await axios.get(safeUrl, { headers, timeout: 15000 })).data;
+                        const playlist = (await net.get(safeUrl, { headers, timeout: 15000 })).data;
                         if (Array.isArray(playlist)) {
                             for (const item of playlist) {
                                 if (item?.url) {
@@ -78,7 +77,7 @@ export const VidrockProvider: Provider = {
                     } catch { /* skip playlist */ }
                 } else {
                     const type: Stream['type'] = safeUrl.includes('.m3u8') ? 'm3u8' : 'mp4';
-                    result.streams.push({ server: `Vidrock-${key}`, link: safeUrl, type, quality: lang, headers });
+                    result.streams.push({ server: `Vidrock-${key} · ${lang}`, link: safeUrl, type, headers });
                 }
             }
         } catch (error: any) {

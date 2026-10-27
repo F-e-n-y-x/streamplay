@@ -50,9 +50,6 @@ export const X = (p: P) => (<svg {...base(p)}><path d="M18 6 6 18M6 6l12 12" /><
 export const Film = (p: P) => (
   <svg {...base(p)}><rect x="2" y="3" width="20" height="18" rx="2" /><path d="M7 3v18M17 3v18M2 9h5M2 15h5M17 9h5M17 15h5" /></svg>
 );
-export const Tv = (p: P) => (
-  <svg {...base(p)}><rect x="2" y="7" width="20" height="15" rx="2" /><path d="m17 2-5 5-5-5" /></svg>
-);
 export const Clock = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="10" /><path d="M12 6v6l4 2" /></svg>
 );
@@ -107,9 +104,6 @@ export const Copy = (p: P) => (
 export const Home = (p: P) => (
   <svg {...base(p)}><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" /><path d="M9 22V12h6v10" /></svg>
 );
-export const ExternalLink = (p: P) => (
-  <svg {...base(p)}><path d="M15 3h6v6" /><path d="M10 14 21 3" /><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></svg>
-);
 export const Clapperboard = (p: P) => (
   <svg {...base(p)}><path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z" /><path d="m6.2 5.3 3.1 3.9" /><path d="m12.4 3.4 3.1 4" /><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" /></svg>
 );
@@ -130,31 +124,43 @@ export const SlidersHorizontal = (p: P) => (
 export const Subtitles = (p: P) => (
   <svg {...base(p)}><rect x="2" y="5" width="20" height="14" rx="2" /><path d="M7 15h4M15 15h2M7 11h2M13 11h4" /></svg>
 );
-export const Languages = (p: P) => (
-  <svg {...base(p)}><path d="m5 8 6 6M4 14l6-6 2-3M2 5h12M7 2h1m14 20-5-10-5 10M14 18h6" /></svg>
-);
-export const Gauge = (p: P) => (
-  <svg {...base(p)}><path d="m12 14 4-4M3.34 19a10 10 0 1 1 17.32 0" /></svg>
-);
 export const Globe = (p: P) => (
   <svg {...base(p)}><circle cx="12" cy="12" r="10" /><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20M2 12h20" /></svg>
 );
 export const Trash2 = (p: P) => (
   <svg {...base(p)}><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6" /></svg>
 );
-export const Download = (p: P) => (
-  <svg {...base(p)}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
-);
 export const Cast = (p: P) => (
   <svg {...base(p)}><path d="M2 16.1A5 5 0 0 1 5.9 20M2 12.05A9 9 0 0 1 9.95 20M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6" /><path d="M2 20h.01" /></svg>
 );
-export const Loader = (p: P) => (
-  <svg {...base(p)}><path d="M12 2v4M16.2 7.8l2.9-2.9M18 12h4M16.2 16.2l2.9 2.9M12 18v4M4.9 19.1l2.9-2.9M2 12h4M4.9 4.9l2.9 2.9" /></svg>
+
+export const Info = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="10" /><path d="M12 16v-4M12 8h.01" /></svg>
 );
-export const Wifi = (p: P) => (
-  <svg {...base(p)}><path d="M5 13a10 10 0 0 1 14 0M8.5 16.5a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 20 0" /><path d="M12 20h.01" /></svg>
+export const AlertCircle = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
+);
+export const Lock = (p: P) => (
+  <svg {...base(p)}><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 10 0v4" /></svg>
+);
+export const Unlock = (p: P) => (
+  <svg {...base(p)}><rect x="3" y="11" width="18" height="11" rx="2" /><path d="M7 11V7a5 5 0 0 1 9.9-1" /></svg>
+);
+export const ListVideo = (p: P) => (
+  <svg {...base(p)}><path d="M12 12H3" /><path d="M16 6H3" /><path d="M12 18H3" /><path d="m16 12 5 3-5 3v-6Z" /></svg>
+);
+export const MoreVertical = (p: P) => (
+  <svg {...base(p)}><circle cx="12" cy="12" r="1" /><circle cx="12" cy="5" r="1" /><circle cx="12" cy="19" r="1" /></svg>
 );
 export const WifiOff = (p: P) => (
-  <svg {...base(p)}><path d="M12 20h.01M8.5 16.5a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.17-2.65M10.66 5c4.01-.36 8.14.9 11.34 3.76M16.85 11.25a10 10 0 0 1 2.22 1.68M5 13a10 10 0 0 1 5.24-2.76M2 2l20 20" /></svg>
+  <svg {...base(p)}><path d="M12 20h.01M8.5 16.43a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.17-2.65M10.66 5c4.01-.36 8.14.9 11.34 3.76M16.85 11.25a10 10 0 0 1 2.22 1.68M5 13a10 10 0 0 1 5.24-2.76M2 2l20 20" /></svg>
 );
-
+export const SkipForward = (p: P) => (
+  <svg {...base(p)}><polygon points="5 4 15 12 5 20 5 4" fill="currentColor" /><path d="M19 5v14" /></svg>
+);
+export const Minimize = (p: P) => (
+  <svg {...base(p)}><path d="M8 3v3a2 2 0 0 1-2 2H3M21 8h-3a2 2 0 0 1-2-2V3M3 16h3a2 2 0 0 1 2 2v3M16 21v-3a2 2 0 0 1 2-2h3" /></svg>
+);
+export const PictureInPicture = (p: P) => (
+  <svg {...base(p)}><path d="M21 9V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4" /><rect x="12" y="13" width="10" height="7" rx="1.5" /></svg>
+);

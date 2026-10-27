@@ -20,7 +20,7 @@ import { AsyncLocalStorage } from 'async_hooks';
 import { app } from './http';
 import { getIndexQuality, qualityLabel } from './common';
 import { USER_AGENT } from './encdec';
-import { getDomain } from './domains';
+import { getBaseUrl, fixUrl } from './bypass';
 import type { Stream, Subtitle } from '../types';
 
 export interface HostResult {
@@ -97,6 +97,23 @@ export const getAndUnpack = (input: string): string => {
     return payload.replace(/\b\w+\b/g, (token) => dict[token] ?? token);
 };
 
+/**
+ * Unpack a (possibly packed) player page and return its first media URL of the given
+ * extensions (in preference order): a `file|source|src: "…"` value first, else any bare
+ * absolute URL. Relative values resolve against `base` when given.
+ */
+export const findMediaUrl = (html: string, exts: string[] = ['m3u8'], base?: string): string | undefined => {
+    const packed = getPacked(html);
+    const src = (packed ? getAndUnpack(packed) + '\n' : '') + html;   // packed blob may be an unrelated script
+    for (const ext of exts) {
+        const m = new RegExp(`(?:file|source|src)\\s*[:=]\\s*["']([^"']+\\.${ext}[^"']*)["']`, 'i').exec(src)
+            || new RegExp(`(https?:\\/\\/[^"'\\s\\\\<>]+\\.${ext}[^"'\\s\\\\<>]*)`, 'i').exec(src);
+        if (!m) continue;
+        try { return base ? new URL(m[1], base).href : m[1]; } catch { return m[1]; }
+    }
+    return undefined;
+};
+
 // ---------------------------------------------------------------------------
 // small utilities
 // ---------------------------------------------------------------------------
@@ -105,14 +122,19 @@ const getHost = (url: string): string => {
     try { return new URL(url).hostname.toLowerCase(); } catch { return ''; }
 };
 
-const getBaseUrl = (url: string): string => {
-    try { const u = new URL(url); return `${u.protocol}//${u.host}`; } catch { return ''; }
-};
+const pixeldrainUrl = (link: string): string =>
+    link.includes('download') ? link : `${getBaseUrl(link)}/api/file/${link.split('/').pop()}?download`;
 
-const absolute = (base: string, href: string): string => {
-    if (!href) return '';
-    if (/^https?:/i.test(href)) return href;
-    return base.replace(/\/+$/, '') + '/' + href.replace(/^\/+/, '');
+/** HubCloud-style card button → direct-file stream (null = not a direct-file button). */
+const CARD_BUTTONS: [string, string][] = [
+    ['fslv2', 'FSLv2'], ['fsl', 'FSL Server'], ['download file', 'Download File'],
+    ['s3 server', 'S3 Server'], ['mega server', 'Mega Server'], ['pdl server', 'PDL Server'],
+];
+const cardButton = (label: string, link: string, quality?: string): Stream | null => {
+    const named = CARD_BUTTONS.find(([k]) => label.includes(k));
+    if (named) return { server: named[1], link, type: 'mp4', quality };
+    if (/pixeldra|pixel ?server/.test(label)) return { server: 'Pixeldrain', link: pixeldrainUrl(link), type: 'mp4', quality };
+    return null;
 };
 
 // ---------------------------------------------------------------------------
@@ -129,7 +151,7 @@ const packedPlayerHosts = [
     'dwish', 'dlions', 'alions', 'mwish', 'embedwish', 'swhoi', 'sfastwish',
     'ridoo', 'streamruby', 'rubystm', 'rubyvid', 'rapidplayers', 'luluvdo',
     'movearnpre', 'smoothpre', 'streamvid', 'cdnwish', 'wishfast', 'kswplayer',
-    'flaswish', 'obeywish', 'streamewish', 'animezia', 'server2', 'filemoon',
+    'flaswish', 'obeywish', 'streamewish', 'animezia', 'server2', 'filemoon', 'vidmoly',
 ];
 
 const isPackedPlayerHost = (host: string): boolean =>
@@ -149,18 +171,9 @@ const resolvePackedPlayer = async (
         const res = await app.get(url, { referer: referer ?? base, headers: { 'User-Agent': USER_AGENT } });
         const body = res.text;
 
-        let script: string;
-        if (getPacked(body)) {
-            script = getAndUnpack(body);
-        } else {
-            // grab the inline <script> that holds the sources block
-            const $ = res.document;
-            script =
-                $('script')
-                    .toArray()
-                    .map((el) => $(el).html() || '')
-                    .find((s) => s.includes('sources') || s.includes('file:')) || body;
-        }
+        // Unpacked player JS first, then the raw page: the packed blob may be an unrelated
+        // (ad) script while the real `sources:` sit inline (Vidmoly).
+        const script = (getPacked(body) ? getAndUnpack(body) + '\n' : '') + body;
 
         // m3u8 source: file:"..." or src:"..." or sources:[{file:"..."}]
         const fileMatch =
@@ -229,36 +242,24 @@ const resolveHubCloud = async (url: string, referer?: string): Promise<HostResul
             if (!raw) {
                 raw = /(https?:\/\/[^"'\s]+hubcloud\.php[^"'\s]*)/.exec(firstRes.text)?.[1] || '';
             }
-            href = /^http/i.test(raw) ? raw : absolute(baseUrl, raw);
+            href = fixUrl(raw, baseUrl);
         }
         if (!href) return result;
 
         // 2. Parse the card page that lists every server button.
         const $ = (await app.get(href, { referer })).document;
-        const size = $('i#size').first().text().trim();
         const header = $('div.card-header').first().text().trim();
-        const quality = qualityLabel(getIndexQuality(header) || 2160);
+        const quality = qualityLabel(getIndexQuality(header));   // unknown stays unknown (no 4K guess)
 
-        const labelExtras = `${header}${size ? ` [${size}]` : ''}`.trim();
-
-        const buttons = $('a.btn').toArray();
-        for (const el of buttons) {
+        for (const el of $('a.btn').toArray()) {
             const link = $(el).attr('href') || '';
             if (!link) continue;
             if (HUBCLOUD_BLOCKED.some((b) => link.includes(b))) continue;
 
             const label = ($(el).text() || '').toLowerCase();
-
-            const push = (server: string, l: string, type: Stream['type'] = 'mp4') =>
-                result.streams.push({ server, link: l, type, quality });
-
-            if (label.includes('fslv2')) {
-                push('FSLv2', link);
-            } else if (label.includes('fsl')) {
-                push('FSL Server', link);
-            } else if (label.includes('download file')) {
-                push('Download File', link);
-            } else if (label.includes('buzzserver')) {
+            const direct = cardButton(label, link, quality);
+            if (direct) { result.streams.push(direct); continue; }
+            if (label.includes('buzzserver')) {
                 // BuzzServer answers the real link via an HX-Redirect response header.
                 // Stop at the 3xx (maxRedirects:0) so the header survives, then read it.
                 try {
@@ -267,29 +268,11 @@ const resolveHubCloud = async (url: string, referer?: string): Promise<HostResul
                         headers: { 'User-Agent': USER_AGENT },
                         maxRedirects: 0,
                     });
-                    const base = getBaseUrl(link);
                     const hxHeader = resp.responseHeaders['hx-redirect'] || resp.responseHeaders['location'] || '';
                     // Fallback: some deployments echo it in the body.
                     const hx = hxHeader || /hx-redirect"?\s*:\s*"?([^"\n]+)/i.exec(resp.text)?.[1] || '';
-                    if (hx) push('BuzzServer', /^https?:/i.test(hx) ? hx : absolute(base, hx));
+                    if (hx) result.streams.push({ server: 'BuzzServer', link: fixUrl(hx, getBaseUrl(link)), type: 'mp4', quality });
                 } catch { /* ignore */ }
-            } else if (
-                label.includes('pixeldra') ||
-                label.includes('pixelserver') ||
-                label.includes('pixel server') ||
-                label.includes('pixeldrain')
-            ) {
-                const b = getBaseUrl(link);
-                const finalUrl = link.includes('download')
-                    ? link
-                    : `${b}/api/file/${link.split('/').pop()}?download`;
-                push('Pixeldrain', finalUrl);
-            } else if (label.includes('s3 server')) {
-                push('S3 Server', link);
-            } else if (label.includes('mega server')) {
-                push('Mega Server', link);
-            } else if (label.includes('pdl server')) {
-                push('PDL Server', link);
             }
         }
     } catch (e: any) {
@@ -320,7 +303,6 @@ const resolveGDFlix = async (url: string, referer?: string): Promise<HostResult>
         const liText = (needle: string): string =>
             $(`ul > li.list-group-item:contains(${needle})`).first().text();
         const fileName = liText('Name').split('Name : ')[1] || '';
-        const fileSize = (liText('Size').split('Size : ')[1] || '').trim();
 
         const quality = qualityLabel(getIndexQuality(fileName));
 
@@ -361,13 +343,9 @@ const resolveGDFlix = async (url: string, referer?: string): Promise<HostResult>
                 t.includes('pixel') ||
                 t.includes('pixelserver')
             ) {
-                const b = getBaseUrl(link);
-                const finalUrl = link.includes('download')
-                    ? link
-                    : `${b}/api/file/${link.split('/').pop()}?download`;
                 result.streams.push({
                     server: 'GDFlix [Pixeldrain]',
-                    link: finalUrl,
+                    link: pixeldrainUrl(link),
                     type: 'mp4',
                     quality,
                 });
@@ -389,9 +367,6 @@ const resolveGDFlix = async (url: string, referer?: string): Promise<HostResult>
                 }
             }
         } catch { /* ignore */ }
-
-        // surface the size in quality-less entries through the server name
-        void fileSize;
     } catch (e: any) {
         console.error('[loadExtractor:GDFlix] failed:', e?.message || e);
     }
@@ -409,21 +384,8 @@ const parseCardButtons = ($: import('cheerio').CheerioAPI, quality?: string): St
         const link = $(el).attr('href') || '';
         if (!link || !/^https?:/i.test(link)) return;
         if (HUBCLOUD_BLOCKED.some((b) => link.includes(b))) return;
-        const label = ($(el).text() || '').toLowerCase();
-
-        const push = (server: string) => streams.push({ server, link, type: 'mp4', quality });
-
-        if (label.includes('fslv2')) push('FSLv2');
-        else if (label.includes('fsl')) push('FSL Server');
-        else if (label.includes('download file')) push('Download File');
-        else if (label.includes('s3 server')) push('S3 Server');
-        else if (label.includes('mega server')) push('Mega Server');
-        else if (label.includes('pdl server')) push('PDL Server');
-        else if (label.includes('pixeldra') || label.includes('pixel server') || label.includes('pixelserver')) {
-            const b = getBaseUrl(link);
-            const finalUrl = link.includes('download') ? link : `${b}/api/file/${link.split('/').pop()}?download`;
-            streams.push({ server: 'Pixeldrain', link: finalUrl, type: 'mp4', quality });
-        }
+        const s = cardButton(($(el).text() || '').toLowerCase(), link, quality);
+        if (s) streams.push(s);
     });
     return streams;
 };
@@ -453,7 +415,7 @@ const resolveVCloud = async (url: string, referer?: string): Promise<HostResult>
 
         const $card = (await app.get(urlValue, { referer })).document;
         const header = $card('div.card-header').first().text().trim();
-        const quality = qualityLabel(getIndexQuality(header) || 1080);
+        const quality = qualityLabel(getIndexQuality(header));
 
         const direct = parseCardButtons($card, quality);
         result.streams.push(...direct);
@@ -490,8 +452,7 @@ const resolveGDMirrorbot = async (url: string, referer?: string): Promise<HostRe
 
         const sid = url.split('embed/').pop() || '';
         if (!sid) return result;
-        const landed = await app.get(url, { referer });
-        const host = getBaseUrl(landed.url || url) || getBaseUrl(url);
+        const host = getBaseUrl(url);
         if (!host) return result;
 
         const resp = await app.post(`${host}/embedhelper.php`, new URLSearchParams({ sid }), {
@@ -635,8 +596,6 @@ export const loadExtractor = async (url: string, referer?: string): Promise<Host
 const loadExtractorInner = async (url: string, host: string, referer?: string): Promise<HostResult> => {
     try {
         if (host.includes('hubcloud')) {
-            // dynamic-domain hosts may rotate; the path/shape stays the same.
-            await getDomain('hubcloud').catch(() => undefined);
             return await resolveHubCloud(url, referer);
         }
 

@@ -1,4 +1,5 @@
 import { Provider, LinkData, ExtractorResult } from '../types';
+import { episodeRe } from '../utils/season';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
@@ -80,7 +81,7 @@ export const TopMoviesProvider: Provider = {
                     let episodeLink: string | undefined;
                     detailDoc('span strong').each((_, el) => {
                         if (episodeLink) return;
-                        if (new RegExp(`Episode\\s+${episode}`, 'i').test(detailDoc(el).text())) {
+                        if (episodeRe(episode ?? 1).test(detailDoc(el).text())) {
                             episodeLink = detailDoc(el).closest('a').attr('href')
                                 || detailDoc(el).parent().closest('a').attr('href');
                         }

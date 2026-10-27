@@ -2,7 +2,7 @@ import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
 import { app } from '../utils/http';
 import { flareSolverrGetHtml } from '../utils/flaresolverr';
-import { seasonScore } from '../utils/season';
+import { seasonScore, norm } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 
 /**
@@ -27,7 +27,6 @@ import { animeSearchTitles } from '../anime';
 
 const BASE = (process.env.ANIZONE_BASE_URL || 'https://anizone.to').replace(/\/+$/, '');
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const abs = (href: string) => (href.startsWith('http') ? href : `${BASE}${href.startsWith('/') ? '' : '/'}${href}`);
 const looksChallenged = (html: string) => /just a moment|cf-browser-verification|__cf_chl|checking your browser/i.test(html);
 

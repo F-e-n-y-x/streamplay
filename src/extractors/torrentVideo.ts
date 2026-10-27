@@ -1,5 +1,5 @@
 import { Provider, LinkData, ExtractorResult, Stream } from '../types';
-import { searchYTS, searchApibay, searchEztv, searchTorrentio, searchTorznab, scoreVideo, shortLabel, qualityOf, sxe, titleVariants, titleSimilarity, TRelease } from '../utils/torrentSearch';
+import { TORRENTSDB, searchYTS, searchApibay, searchEztv, searchTorrentio, searchTorznab, scoreVideo, shortLabel, qualityOf, sxe, titleVariants, titleSimilarity, TRelease } from '../utils/torrentSearch';
 
 /**
  * Torrent-mode providers for MOVIES and TV (anime stays on AnimeTosho/Nyaa — see torrent.ts).
@@ -7,7 +7,6 @@ import { searchYTS, searchApibay, searchEztv, searchTorrentio, searchTorznab, sc
  * Runs only in torrent mode (the SSE `torrent=1` gate).
  */
 
-const p2 = (n: number) => String(n).padStart(2, '0');
 const normT = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '');
 
 /**
@@ -27,9 +26,8 @@ const titleMatches = (relTitle: string, wants: string[]): boolean => {
 };
 
 const toStreams = (rels: TRelease[], wants: string[], year?: number, epTag?: RegExp): Stream[] => {
-    const matched = rels.filter((r) => titleMatches(r.title, wants));
-    const pool = matched.length ? matched : rels;   // never end up empty if the guard is too strict
-    const scored = pool
+    // Title-matched releases only: an unrelated torrent is worse than no result.
+    const scored = rels.filter((r) => titleMatches(r.title, wants))
         .map((r) => ({ r, s: scoreVideo(r, year) + (epTag && epTag.test(r.title) ? 4 : 0) }))
         // cached (debrid) releases don't need live seeders — they stream from the debrid CDN
         .filter((x) => (x.r.cached || x.r.seeders > 0) && x.s > 0)
@@ -59,13 +57,14 @@ export const TorrentMovieProvider: Provider = {
         const wants = titleVariants(data.title, data.orgTitle);
         // Query YTS + Torrentio (aggregator) by IMDb id, apibay + Torznab (Jackett/Prowlarr
         // meta-indexer, if configured) by title. Merge everything, then rank/dedupe.
-        const [yts, torrentio, torznab, ...bays] = await Promise.all([
+        const [yts, torrentio, tdb, torznab, ...bays] = await Promise.all([
             searchYTS(data.imdbId, data.title),
             searchTorrentio('movie', data.imdbId),
+            searchTorrentio('movie', data.imdbId, undefined, undefined, TORRENTSDB),
             searchTorznab(`${data.title} ${data.year || ''}`.trim(), '2000'),
             ...wants.slice(0, 2).map((w) => searchApibay(`${w} ${data.year || ''}`.trim(), '201,207')),
         ]);
-        const rels = [...yts, ...torrentio, ...torznab, ...bays.flat()];
+        const rels = [...yts, ...torrentio, ...tdb, ...torznab, ...bays.flat()];
         return { streams: toStreams(rels, wants, data.year), subtitles: [] };
     },
 };
@@ -80,9 +79,10 @@ export const TorrentTvProvider: Provider = {
         const tag = sxe(s, e);
         const epRe = new RegExp(tag, 'i');
         const wants = titleVariants(data.title, data.orgTitle);
-        const [eztv, torrentio, torznab, epq, packq] = await Promise.all([
+        const [eztv, torrentio, tdb, torznab, epq, packq] = await Promise.all([
             searchEztv(data.imdbId),
             searchTorrentio('series', data.imdbId, s, e),
+            searchTorrentio('series', data.imdbId, s, e, TORRENTSDB),
             searchTorznab(`${data.title} ${tag}`, '5000'),          // Jackett/Prowlarr, this episode
             // exact-episode query on the top two title variants
             Promise.all(wants.slice(0, 2).map((w) => searchApibay(`${w} ${tag}`, '205,208'))).then((a) => a.flat()),
@@ -91,8 +91,6 @@ export const TorrentTvProvider: Provider = {
         // EZTV: keep this exact episode (or untagged, which the stream will file-pick by &ep).
         const eztvHit = eztv.filter((r) => (r.season === s && r.episode === e) || epRe.test(r.title));
         const packHit = packq.filter((r) => new RegExp(`(season\\s*0*${s}|s0*${s})\\b`, 'i').test(r.title) && !/S\d{1,2}E\d{1,2}/i.test(r.title));
-        return { streams: toStreams([...eztvHit, ...epq, ...packHit, ...torznab, ...torrentio], wants, data.year, epRe), subtitles: [] };
+        return { streams: toStreams([...eztvHit, ...epq, ...packHit, ...torznab, ...torrentio, ...tdb], wants, data.year, epRe), subtitles: [] };
     },
 };
-
-export { p2 };

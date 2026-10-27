@@ -1,8 +1,83 @@
 # Changelog
 
-## Unreleased
+## Unreleased — 2.0.0
 
-Nothing yet — in development.
+Full audit + redesign. **Upgrade notes first:**
+
+Post-deploy fixes:
+- CastleTV picks the requested season's own entry (it lists a show once, defaulting to the
+  latest season — S7 used to play S4). A season it doesn't carry returns nothing.
+- Stremio/PenguPlay: `file|^|tag.pad-Source` names become "PenguPlay · Source"; files
+  naming another show or SxxEyy are dropped.
+- Source probe measures real download speed (256 KB) and ranks trickling servers down.
+- Player: taps go to a gesture layer (iOS can swallow pointer events on `<video>`); the app
+  bar stays on the player page on phone/tablet.
+- Solver diagnostics work with Byparr (optional service in docker-compose.yml).
+- NVIDIA GPUs: HEVC/AV1 sources are converted to H.264 with NVENC (auto-detected; compose
+  `gpus: all`). H.264 is still copied as-is. The runtime image is now Debian (NVIDIA's
+  driver libs are glibc-only). VAAPI no longer breaks every MKV when it can't open.
+- Converted files (MKV / HEVC / DTS…) play as seekable HLS on NVIDIA: full-length slider,
+  seeking, 1080p H.264, every audio track switchable. Before, they were shelved as "external
+  player only" or played as a one-shot stream whose slider grew as it downloaded.
+- Change source shows each addon's own card verbatim (Nuvio-style emoji lines: specs, size,
+  audio, subtitles) with Quality / Audio / Addon filter chips. Audio languages come from the
+  card's "Audio:" line only.
+- `ADDON_ADMIN=open` lets a private LAN instance manage addons without the admin token.
+
+- The Docker image now runs as the non-root `node` user. Existing data volumes are
+  root-owned — run once: `docker run --rm -v streamplay-data:/d alpine chown -R 1000:1000 /d`
+  (or chown your bind-mounted data folder to 1000:1000), otherwise sync can't save.
+- Production runs compiled JS (`npm run build && npm start` → `node dist/index.js`).
+- Removed legacy endpoints: `/api/info`, `/api/streams`, `/api/providers/status`, the old
+  `/api/search` duplicate and the legacy `public/` UI.
+- Only JSON POSTs are accepted under `/api`; debug endpoints need `DEBUG_TOKEN`; admin
+  token is header-only (`X-Admin-Token`).
+- New sync codes need ≥ 8 characters (existing codes keep working).
+
+### UI — full redesign (phone, tablet, desktop, TV)
+- New look built from user-picked references: inset hero card with Top 10 outline
+  numerals, artwork-tinted title pages with cast + episodes column, Watch page with the
+  episode switcher above the server list, redesigned player (lock, playlist, centre
+  ±10, brightness/volume edge sliders on touch).
+- Phone bottom tab bar, tablet chips nav, desktop header, TV arrow-key navigation.
+- Typo-tolerant search with live suggestions and "Did you mean" ("naurto", "abngers",
+  "the kardshin" all find the right title).
+- Resume-aware Play buttons, "Up next" in Continue Watching, watched/progress markers.
+- Touch player: tap shows controls, double-tap seeks ±10s; iOS Safari / iPadOS and
+  Firefox fixes; auto-next countdown; clear "trying next source" / "all failed" states.
+- Accessibility: contrast fixes, focus rings, skip link, live regions, labelled inputs.
+- PWA icons (PNG/maskable/apple-touch); Settings → Server → Addons manages Nuvio /
+  Stremio addon lists.
+
+### Providers
+- New: Anikage, Just4Anime, Animekizz (anime, sub+dub), generic Stremio addons
+  (`STREMIO_ADDONS`), TorrentsDB for torrent mode.
+- **Nuvio plugin support** (`NUVIO_PLUGINS` or the Settings UI): Nuvio scraper repos run
+  in an isolated worker with the Nuvio runtime API. Plugins are code the server runs —
+  only add repos you trust.
+- Revived: VidLink, VidEasy (new host flow), VidFast (new enc-dec flow), AnimeWorld (new
+  video host), AnimeNoSub (Vidmoly).
+- Fixed wrong-episode bugs: "Episode 1" matching Episode 10–19 and "Season 1" matching
+  Season 10 across 9 scrapers; no more "first search result" fallbacks that played a
+  different show; anime season (cour) numbering now agrees between title, season list and
+  stream resolution.
+
+### Security
+- SSRF: redirects to private/LAN IPs blocked everywhere (was open on `/api/torrent/http`),
+  extended IPv4/IPv6 blocklist, extractor requests guarded.
+- Proxied responses get `nosniff` + `CSP: sandbox` and a content-type allowlist (stops
+  same-origin script injection via `/api/proxy`).
+- Optional `STREAMPLAY_PASSWORD` gate; `TRUST_PROXY` for correct per-IP rate limits behind
+  a reverse proxy; sync rate limits, room/device caps, clamped timestamps, atomic writes.
+- TMDB API key no longer logged; addon URLs (may embed debrid keys) hidden without the
+  admin token.
+
+### Reliability / infra
+- Socket + ffmpeg leaks on client disconnect fixed; wrong Content-Length on gzip fixed;
+  torrent mode downloads only selected files, max `TORRENT_MAX_ACTIVE` torrents.
+- Express 5, React Router 7, non-root multi-stage Docker image with healthcheck and tini,
+  CI publishes the image only after tests pass; `npm audit`: 0 critical.
+- 13 → 39 automated tests.
 
 ## 1.2.0
 

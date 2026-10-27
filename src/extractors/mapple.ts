@@ -10,13 +10,16 @@ const MAPPLE_API = 'https://mapple.uk';
  * SHA256(challenge + nonce) interpreted as a big-endian integer is below
  * 2^(256-difficulty). Mirrors StreamPlayUtils.solvePowChallenge.
  */
-const solvePowChallenge = (challenge: string, difficulty: number): string | null => {
+// ponytail: yields to the event loop every 20k hashes instead of a worker thread; it still
+// burns up to ~10M sha256 of CPU — move to worker_threads if Mapple is revived and hot.
+const solvePowChallenge = async (challenge: string, difficulty: number): Promise<string | null> => {
     // target = 1 << (256 - difficulty). Compare the leading `difficulty` bits being zero.
     // We compare the hash bytes against the target threshold directly.
     const fullBytes = Math.floor(difficulty / 8);
     const remBits = difficulty % 8;
 
     for (let nonce = 0; nonce <= 10_000_000; nonce++) {
+        if (nonce % 20_000 === 0 && nonce) await new Promise((r) => setImmediate(r));
         const hash = crypto.createHash('sha256').update(challenge + nonce).digest();
         // hashInt < 2^(256-difficulty)  <=>  the top `difficulty` bits are all zero.
         let ok = true;
@@ -73,7 +76,7 @@ export const MappleProvider: Provider = {
             let finalToken: string | undefined;
             if (tokenRes1.requiresPow) {
                 const pow = tokenRes1.pow;
-                const nonce = solvePowChallenge(String(pow.challenge), Number(pow.difficulty));
+                const nonce = await solvePowChallenge(String(pow.challenge), Number(pow.difficulty));
                 if (!nonce) return result;
 
                 const body2 = JSON.stringify({

@@ -167,3 +167,17 @@ export function useSettings(): ClientSettings {
     () => current,
   );
 }
+
+// ADMIN_TOKEN typed in Settings: kept for this browser tab only (sessionStorage), never synced
+// or written to localStorage. It unlocks server-wide edits (addons, indexer) and full addon URLs.
+const ATKEY = "sp.adminToken";
+let adminToken = (() => { try { return sessionStorage.getItem(ATKEY) || ""; } catch { return ""; } })();
+const adminSubs = new Set<() => void>();
+export function setAdminToken(t: string): void {
+  adminToken = t;
+  try { if (t) sessionStorage.setItem(ATKEY, t); else sessionStorage.removeItem(ATKEY); } catch { /* private mode */ }
+  adminSubs.forEach((f) => f());
+}
+export function useAdminToken(): string {
+  return useSyncExternalStore((f) => { adminSubs.add(f); return () => adminSubs.delete(f); }, () => adminToken);
+}

@@ -2,8 +2,10 @@ import { Provider, LinkData, ExtractorResult } from '../types';
 import { safeGet } from '../utils/http';
 import { getDomain } from '../utils/domains';
 import { loadExtractor } from '../utils/hostextractors';
+import { seasonRe, episodeRe, norm } from '../utils/season';
 
-const VEGA_HEADERS: Record<string, string> = {
+/** Browser-like headers the Vega-family sites (VegaMovies, RogMovies) expect. */
+export const VEGA_HEADERS: Record<string, string> = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'en-US,en;q=0.9',
     'Cache-Control': 'no-cache',
@@ -56,7 +58,7 @@ export const VegaMoviesProvider: Provider = {
             let match: VegaDoc | undefined = (await fetchResults(imdb)).find(d => d.imdb_id?.toLowerCase() === imdb.toLowerCase());
             if (!match && data.title) {
                 const results = await fetchResults(data.title);
-                match = results.find(d => d.post_title?.toLowerCase().includes(data.title.toLowerCase())) || results[0];
+                match = results.find(d => norm(d.post_title || '').includes(norm(data.title)));   // no blind first hit
             }
             if (!match?.permalink) return result;
 
@@ -91,13 +93,13 @@ export const VegaMoviesProvider: Provider = {
             }
 
             // TV
-            const seasonRe = new RegExp(`Season ${season}`, 'i');
+            const sRe = seasonRe(season);
             const linkRe = /(V-Cloud|Single|Episode)/i;
             const pages = new Set<string>();
 
             mainDoc('h3,h5').each((_, header) => {
                 const ht = mainDoc(header).text();
-                if (!(seasonRe.test(ht) || /Episode/i.test(ht))) return;
+                if (!sRe.test(ht)) return;   // only THIS season's blocks (a bare "Episode" header pulled every season)
                 let sib = mainDoc(header).next();
                 while (sib.length && !['h3', 'h5', 'h4'].includes((sib[0] as any).tagName)) {
                     sib.find('a').each((_, a) => {
@@ -110,7 +112,7 @@ export const VegaMoviesProvider: Provider = {
                 }
             });
 
-            const episodeRe = new RegExp(`Episodes?:\\s*${episode}`, 'i');
+            const epRe = episodeRe(episode ?? 1);
             for (const page of pages) {
                 let doc;
                 try { doc = (await safeGet(page, { referer: api, headers: VEGA_HEADERS, cloudflare: true })).document; } catch { continue; }
@@ -118,7 +120,7 @@ export const VegaMoviesProvider: Provider = {
                 let epNode: ReturnType<typeof doc> | null = null;
                 doc('h4').each((_, el) => {
                     if (epNode) return;
-                    if (episodeRe.test(doc(el).text())) epNode = doc(el);
+                    if (epRe.test(doc(el).text())) epNode = doc(el);
                 });
                 if (!epNode) continue;
 

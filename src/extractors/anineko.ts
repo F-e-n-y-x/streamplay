@@ -2,8 +2,8 @@ import * as cheerio from 'cheerio';
 import { Provider, LinkData, ExtractorResult, Stream, Subtitle } from '../types';
 import { app } from '../utils/http';
 import { flareSolverrGetHtml } from '../utils/flaresolverr';
-import { getPacked, getAndUnpack } from '../utils/hostextractors';
-import { seasonScore } from '../utils/season';
+import { findMediaUrl } from '../utils/hostextractors';
+import { seasonScore, norm } from '../utils/season';
 import { animeSearchTitles } from '../anime';
 import { getLanguage } from '../utils/common';
 
@@ -21,7 +21,6 @@ import { getLanguage } from '../utils/common';
  * requested season via seasonScore (like AnimePahe/AniZone), not just the title.
  */
 const BASE = (process.env.ANINEKO_BASE_URL || 'https://anineko.to').replace(/\/+$/, '');
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36';
 
 interface Card { slug: string; title: string }
@@ -63,11 +62,7 @@ function subsFromEmbed(embedUrl: string): Subtitle[] {
 async function resolveEmbed(embedUrl: string): Promise<string | null> {
     try {
         const r = await app.get(embedUrl, { referer: `${BASE}/`, headers: { 'User-Agent': UA, Referer: `${BASE}/` }, timeout: 15000 });
-        const packed = getPacked(r.text);
-        const src = packed ? getAndUnpack(packed) : r.text;
-        const m = /(?:file|source|src)\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']/i.exec(src)
-            || /(https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)/i.exec(src);
-        return m ? (m[1] || m[0]) : null;
+        return findMediaUrl(r.text, ['m3u8'], embedUrl) ?? null;
     } catch { return null; }
 }
 
