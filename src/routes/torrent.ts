@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { pipeline } from 'stream';
-import { addTorrent, pickVideoFile, remuxToMp4, remuxReadableToMp4, hasFfmpeg, touch, torrentStats, getStatus } from '../utils/torrent';
+import { addTorrent, pickVideoFile, remuxToMp4, remuxReadableToMp4, hasFfmpeg, touch, torrentStats, getStatus, probeAudioTracks, AudioTrackInfo } from '../utils/torrent';
 import { guardUrl, guardedGet, pipeUpstream, setPassthroughSecurity } from '../utils/ssrf';
 import { unb64 } from './proxy';
 
@@ -36,6 +36,43 @@ export const parseRange = (range: string | undefined, total: number): { start: n
 
 const gone = (req: Request) => req.destroyed;
 
+/** `audio=<n>` (audio-relative track index) for a remux; out of range falls back to the first. */
+const audioIdx = (req: Request) => Math.min(31, Math.max(0, parseInt(String(req.query.audio ?? '0'), 10) || 0));
+
+// Audio track list per file URL (first 4 MB through the SSRF guard → ffprobe), cached 30 min.
+const trackCache = new Map<string, { at: number; p: Promise<AudioTrackInfo[]> }>();
+function audioTracksOf(url: string): Promise<AudioTrackInfo[]> {
+    const hit = trackCache.get(url);
+    if (hit && Date.now() - hit.at < 30 * 60_000) return hit.p;
+    const p = guardedGet(url, { headers: { Range: 'bytes=0-4194303', 'Accept-Encoding': 'identity' }, responseType: 'stream', timeout: 20000, maxRedirects: 5, validateStatus: () => true })
+        .then((r) => (r.status >= 400 ? (r.data.destroy?.(), []) : probeAudioTracks(r.data)))
+        .catch(() => []);
+    if (trackCache.size > 500) trackCache.delete(trackCache.keys().next().value!);
+    trackCache.set(url, { at: Date.now(), p });
+    return p;
+}
+const langNames = new Intl.DisplayNames(['en'], { type: 'language' });
+const trackLang = (t: AudioTrackInfo) => { try { return t.lang && t.lang !== 'und' ? langNames.of(t.lang) || t.lang : ''; } catch { return t.lang; } };
+/** First track matching the preference list (language names or codes, e.g. "Hindi,English"). */
+const preferredTrack = (tracks: AudioTrackInfo[], prefs: string[]) => {
+    for (const p of prefs.map((x) => x.trim().toLowerCase()).filter(Boolean)) {
+        const t = tracks.find((t) => [trackLang(t), t.lang, t.title].some((v) => v && v.toLowerCase().includes(p)));
+        if (t) return t.index;
+    }
+    return 0;
+};
+
+/** GET /api/torrent/tracks?url=<b64> → [{ index, lang, label, channels }] for a remuxed file. */
+router.get('/tracks', async (req, res) => {
+    let url: string;
+    try { url = unb64(String(req.query.url || '')); } catch { return res.status(400).json({ error: 'bad url' }); }
+    const blocked = guardUrl(url);
+    if (blocked) return res.status(403).json({ error: blocked });
+    if (!(await hasFfmpeg())) return res.json({ tracks: [] });
+    const tracks = await audioTracksOf(url);
+    res.json({ chosen: req.query.alang ? preferredTrack(tracks, String(req.query.alang).split(',')) : 0, tracks: tracks.map((t) => ({ index: t.index, lang: t.lang, label: [trackLang(t) || `Track ${t.index + 1}`, t.title && !trackLang(t).includes(t.title) ? t.title : ''].filter(Boolean).join(' · '), channels: t.channels })) });
+});
+
 const mimeOf = (name: string): string =>
     /\.webm$/i.test(name) ? 'video/webm' : /\.mkv$/i.test(name) ? 'video/x-matroska' : /\.avi$/i.test(name) ? 'video/x-msvideo' : 'video/mp4';
 
@@ -58,7 +95,7 @@ router.get('/stream', async (req, res) => {
     // it plays inline). Falls back to raw if ffmpeg is missing.
     const wantRemux = req.query.remux === '1' && !/\.(mp4|webm)$/i.test(file.name) && (await hasFfmpeg());
     if (gone(req)) return;
-    if (wantRemux) return sendRemux(remuxToMp4(file), res);
+    if (wantRemux) return sendRemux(remuxToMp4(file, audioIdx(req)), res);
 
     // Raw path: full Range support (seekable; great for VLC and mp4 in-browser).
     const total = file.length;
@@ -98,9 +135,12 @@ router.get('/http', async (req, res) => {
     // guard the passthrough branch below relies on.
     if (wantRemux) {
         try {
+            // no explicit track: start in the viewer's language (alang=Hindi,English) when the file has several
+            const audio = req.query.audio != null ? audioIdx(req) : req.query.alang ? preferredTrack(await audioTracksOf(url), String(req.query.alang).split(',')) : 0;
+            if (gone(req)) return;
             const upstream = await guardedGet(url, { responseType: 'stream', timeout: 30000, maxRedirects: 5, validateStatus: () => true });
             if (gone(req) || upstream.status >= 400) { upstream.data.destroy?.(); return gone(req) ? undefined : res.status(502).send('debrid fetch failed: ' + upstream.status); }
-            sendRemux(remuxReadableToMp4(upstream.data), res);
+            sendRemux(remuxReadableToMp4(upstream.data, audio), res);
         } catch (e: any) {
             if (!res.headersSent) res.status(502).send('debrid fetch failed: ' + (e?.message || e));
         }

@@ -253,6 +253,9 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
   const [curAudio, setCurAudio] = useState(-1);
   // Audio renditions parsed from the manifest (used when hls.js doesn't expose them).
   const [manifestAudios, setManifestAudios] = useState<{ name: string; lang: string }[]>([]);
+  // server remux (MKV): every audio track of the file; the server maps the chosen one (&audio=n)
+  const [remuxAudios, setRemuxAudios] = useState<{ index: number; label: string }[]>([]);
+  const [curRemux, setCurRemux] = useState(0);
   const [curMAudio, setCurMAudio] = useState("");
   const pendingSeek = useRef<number | null>(null);
   // AniSkip: the OP/ED interval the playhead is inside, and which were auto-skipped once.
@@ -406,7 +409,16 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
 
     const startNative = () => {
       engineRef.current = "native";
-      el.src = source.url;
+      const remux = /^\/api\/torrent\/http\?.*remux=1/.test(source.url);
+      const alang = remux ? `&alang=${encodeURIComponent(S0.audioLanguages.join(","))}` : "";
+      el.src = source.url + alang;
+      if (remux) {
+        const b64 = new URL(source.url, location.origin).searchParams.get("url");
+        fetch(`/api/torrent/tracks?url=${encodeURIComponent(b64 || "")}${alang}`).then((r) => r.json()).then((j: { chosen: number; tracks: { index: number; label: string }[] }) => {
+          if (cancelled || !(j.tracks?.length > 1)) return;
+          setRemuxAudios(j.tracks); setCurRemux(j.chosen || 0);
+        }).catch(() => { /* single track as far as we know */ });
+      }
       const nativeAudio = () => {
         const nat = nativeAudioOf(el);
         if (!nat || nat.length <= 1) return;
@@ -743,11 +755,24 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
   const JP = /\b(jp|jpn|japanese)\b/i;
   const animeAudio = audioTracks.some((t) => JP.test(t.label)) || manifestAudios.some((a) => JP.test(a.name));
   const audioLabel = (label: string) => !animeAudio ? label : JP.test(label) ? `${label} · Sub` : /\b(en|eng|english)\b/i.test(label) ? `${label} · Dub` : label;
-  const audios = audioTracks.length > 1 ? audioTracks.map((t) => ({ key: `t${t.id}`, label: audioLabel(t.label) }))
+  const audios = remuxAudios.length > 1 ? remuxAudios.map((t) => ({ key: `r${t.index}`, label: audioLabel(t.label) }))
+    : audioTracks.length > 1 ? audioTracks.map((t) => ({ key: `t${t.id}`, label: audioLabel(t.label) }))
     : manifestAudios.length > 1 ? manifestAudios.map((a) => ({ key: `m${a.name}`, label: audioLabel(a.name) }))
     : [{ key: "x", label: manifestAudios[0]?.name || audioTracks[0]?.label || audioLang || "Original" }];
-  const audioKey = audioTracks.length > 1 ? `t${curAudio}` : manifestAudios.length > 1 ? `m${curMAudio}` : "x";
-  const onAudio = (key: string) => { if (key[0] === "t") pickAudio(Number(key.slice(1))); else if (key[0] === "m") pickManifestAudio(key.slice(1)); };
+  const audioKey = remuxAudios.length > 1 ? `r${curRemux}` : audioTracks.length > 1 ? `t${curAudio}` : manifestAudios.length > 1 ? `m${curMAudio}` : "x";
+  // Remux: restart the server conversion on the other track and jump back to where we were
+  // (a live remux may refuse the seek — then it resumes from the start).
+  function pickRemuxAudio(index: number) {
+    const el = video.current;
+    if (!el || index === curRemux) return;
+    const pos = el.currentTime;
+    const url = source.url.replace(/([?&])(audio|alang)=[^&]*/gi, "$1").replace(/[?&]+$/, "");
+    el.addEventListener("loadedmetadata", () => { if (pos > 5) try { el.currentTime = pos; } catch { /* not seekable */ } }, { once: true });
+    el.src = `${url}&audio=${index}`;
+    el.play().catch(() => { /* autoplay policy: the play button stays */ });
+    setCurRemux(index);
+  }
+  const onAudio = (key: string) => { if (key[0] === "t") pickAudio(Number(key.slice(1))); else if (key[0] === "m") pickManifestAudio(key.slice(1)); else if (key[0] === "r") pickRemuxAudio(Number(key.slice(1))); };
   const grabFrame = () => {
     const el = video.current; if (!el || !el.videoWidth) return poster;
     try {

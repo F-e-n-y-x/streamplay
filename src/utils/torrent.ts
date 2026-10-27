@@ -136,15 +136,25 @@ export const touch = (magnetOrHash: string) => { const e = torrents.get(magnetHa
 
 // ── ffmpeg (optional) — remux mkv → browser-playable fragmented mp4 ───────────
 let ffmpegOk: boolean | null = null;
-export function hasFfmpeg(): Promise<boolean> {
-    if (ffmpegOk !== null) return Promise.resolve(ffmpegOk);
-    return new Promise((resolve) => {
-        try {
-            const p = spawn('ffmpeg', ['-version']);
-            p.on('error', () => { ffmpegOk = false; resolve(false); });
-            p.on('close', (code) => { ffmpegOk = code === 0; resolve(ffmpegOk); });
-        } catch { ffmpegOk = false; resolve(false); }
-    });
+/** ffmpeg exits 0 for these args (spawn failure = false). */
+const ffmpegRuns = (args: string[]): Promise<boolean> => new Promise((resolve) => {
+    try {
+        const p = spawn('ffmpeg', args, { stdio: 'ignore' });
+        p.on('error', () => resolve(false));
+        p.on('close', (code) => resolve(code === 0));
+    } catch { resolve(false); }
+});
+// TORRENT_VAAPI is only honoured when the device really opens: on an NVIDIA render node
+// (proprietary driver, no VAAPI) every remux used to die at startup with "I/O error".
+let vaapiOk = false;
+export async function hasFfmpeg(): Promise<boolean> {
+    if (ffmpegOk !== null) return ffmpegOk;
+    ffmpegOk = await ffmpegRuns(['-version']);
+    if (ffmpegOk && /^(1|true|yes)$/i.test(process.env.TORRENT_VAAPI || '')) {
+        vaapiOk = await ffmpegRuns(['-hide_banner', '-loglevel', 'error', '-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-f', 'lavfi', '-i', 'nullsrc', '-t', '0.1', '-f', 'null', '-']);
+        if (!vaapiOk) console.warn('[remux] TORRENT_VAAPI set but VAAPI did not initialise — using software remux');
+    }
+    return ffmpegOk;
 }
 
 /**
@@ -161,14 +171,14 @@ export function hasFfmpeg(): Promise<boolean> {
  * (DNS-rebinding / redirect-to-internal). Callers fetch through the guarded agents
  * and pipe the result here. Returns the ffmpeg child; pipe `ff.stdout` to the response.
  */
-export function remuxReadableToMp4(input: NodeJS.ReadableStream): any {
-    const vaapi = /^(1|true|yes)$/i.test(process.env.TORRENT_VAAPI || '');
+export function remuxReadableToMp4(input: NodeJS.ReadableStream, audio = 0): any {
+    const vaapi = vaapiOk;
     const args = [
         '-hide_banner', '-loglevel', 'error',
         '-i', 'pipe:0',
         ...(vaapi ? ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-filter_hw_device', 'va'] : []),
         // copy h264 as-is; transcode anything else (HEVC) — VAAPI when available
-        '-map', '0:v:0', '-map', '0:a:0?',
+        '-map', '0:v:0', '-map', `0:a:${audio}?`,   // one audio track (browsers can't switch muxed ones) — chosen by the client
         '-c:v', vaapi ? 'h264_vaapi' : 'copy',
         '-c:a', 'aac', '-ac', '2',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
@@ -185,8 +195,31 @@ export function remuxReadableToMp4(input: NodeJS.ReadableStream): any {
 }
 
 /** Remux a torrent file (mkv/HEVC) to fragmented MP4. */
-export function remuxToMp4(file: any): any {
-    return remuxReadableToMp4(file.createReadStream());
+export function remuxToMp4(file: any, audio = 0): any {
+    return remuxReadableToMp4(file.createReadStream(), audio);
+}
+
+export interface AudioTrackInfo { index: number; lang: string; title: string; channels?: number }
+/** Audio tracks of a media file, from its first bytes (MKV/MP4 headers sit at the start).
+ *  `index` is the audio-relative index the remux maps with `0:a:<index>`. [] on failure. */
+export function probeAudioTracks(head: NodeJS.ReadableStream): Promise<AudioTrackInfo[]> {
+    return new Promise((resolve) => {
+        const ff = spawn('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=channels:stream_tags=language,title', '-of', 'json', '-i', 'pipe:0'], { stdio: ['pipe', 'pipe', 'ignore'] });
+        let out = '';
+        const timer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch { /* */ } }, 20000);
+        ff.stdout.on('data', (c: Buffer) => { out += c; });
+        ff.on('close', () => {
+            clearTimeout(timer);
+            try {
+                resolve((JSON.parse(out).streams || []).map((s: any, index: number) => ({
+                    index, lang: String(s.tags?.language || ''), title: String(s.tags?.title || ''), ...(s.channels ? { channels: s.channels } : {}),
+                })));
+            } catch { resolve([]); }
+        });
+        ff.on('error', () => resolve([]));
+        head.on('error', () => { /* upstream cut short: ffprobe works with what it got */ });
+        head.pipe(ff.stdin).on('error', () => { /* ffprobe stopped reading */ });
+    });
 }
 
 // ── idle eviction ─────────────────────────────────────────────────────────────
