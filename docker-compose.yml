@@ -44,6 +44,9 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
     volumes:
       - streamplay-data:/app/data
+    # NVIDIA GPU (needs nvidia-container-toolkit): HEVC/AV1 sources are converted to H.264
+    # with NVENC so every browser plays them. Auto-detected; uncomment to enable.
+    # gpus: all
     depends_on:
       flaresolverr:
         condition: service_healthy

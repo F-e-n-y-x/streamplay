@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { pipeline } from 'stream';
-import { addTorrent, pickVideoFile, remuxToMp4, remuxReadableToMp4, hasFfmpeg, touch, torrentStats, getStatus, probeAudioTracks, AudioTrackInfo } from '../utils/torrent';
+import { addTorrent, pickVideoFile, remuxToMp4, remuxReadableToMp4, hasFfmpeg, touch, torrentStats, getStatus, probeMedia, AudioTrackInfo, MediaInfo } from '../utils/torrent';
 import { guardUrl, guardedGet, pipeUpstream, setPassthroughSecurity } from '../utils/ssrf';
 import { unb64 } from './proxy';
 
@@ -39,14 +39,15 @@ const gone = (req: Request) => req.destroyed;
 /** `audio=<n>` (audio-relative track index) for a remux; out of range falls back to the first. */
 const audioIdx = (req: Request) => Math.min(31, Math.max(0, parseInt(String(req.query.audio ?? '0'), 10) || 0));
 
-// Audio track list per file URL (first 4 MB through the SSRF guard → ffprobe), cached 30 min.
-const trackCache = new Map<string, { at: number; p: Promise<AudioTrackInfo[]> }>();
-function audioTracksOf(url: string): Promise<AudioTrackInfo[]> {
+// Video codec + audio tracks per file URL (first 4 MB through the SSRF guard → ffprobe), cached 30 min.
+const NO_INFO: MediaInfo = { video: '', audio: [] };
+const trackCache = new Map<string, { at: number; p: Promise<MediaInfo> }>();
+function mediaOf(url: string): Promise<MediaInfo> {
     const hit = trackCache.get(url);
     if (hit && Date.now() - hit.at < 30 * 60_000) return hit.p;
     const p = guardedGet(url, { headers: { Range: 'bytes=0-4194303', 'Accept-Encoding': 'identity' }, responseType: 'stream', timeout: 20000, maxRedirects: 5, validateStatus: () => true })
-        .then((r) => (r.status >= 400 ? (r.data.destroy?.(), []) : probeAudioTracks(r.data)))
-        .catch(() => []);
+        .then((r) => (r.status >= 400 ? (r.data.destroy?.(), NO_INFO) : probeMedia(r.data)))
+        .catch(() => NO_INFO);
     if (trackCache.size > 500) trackCache.delete(trackCache.keys().next().value!);
     trackCache.set(url, { at: Date.now(), p });
     return p;
@@ -69,7 +70,7 @@ router.get('/tracks', async (req, res) => {
     const blocked = guardUrl(url);
     if (blocked) return res.status(403).json({ error: blocked });
     if (!(await hasFfmpeg())) return res.json({ tracks: [] });
-    const tracks = await audioTracksOf(url);
+    const tracks = (await mediaOf(url)).audio;
     res.json({ chosen: req.query.alang ? preferredTrack(tracks, String(req.query.alang).split(',')) : 0, tracks: tracks.map((t) => ({ index: t.index, lang: t.lang, label: [trackLang(t) || `Track ${t.index + 1}`, t.title && !trackLang(t).includes(t.title) ? t.title : ''].filter(Boolean).join(' · '), channels: t.channels })) });
 });
 
@@ -95,7 +96,11 @@ router.get('/stream', async (req, res) => {
     // it plays inline). Falls back to raw if ffmpeg is missing.
     const wantRemux = req.query.remux === '1' && !/\.(mp4|webm)$/i.test(file.name) && (await hasFfmpeg());
     if (gone(req)) return;
-    if (wantRemux) return sendRemux(remuxToMp4(file, audioIdx(req)), res);
+    if (wantRemux) {
+        const { video } = await probeMedia(file.createReadStream({ start: 0, end: 4194303 }));
+        if (gone(req)) return;
+        return sendRemux(remuxToMp4(file, audioIdx(req), video), res);
+    }
 
     // Raw path: full Range support (seekable; great for VLC and mp4 in-browser).
     const total = file.length;
@@ -136,11 +141,12 @@ router.get('/http', async (req, res) => {
     if (wantRemux) {
         try {
             // no explicit track: start in the viewer's language (alang=Hindi,English) when the file has several
-            const audio = req.query.audio != null ? audioIdx(req) : req.query.alang ? preferredTrack(await audioTracksOf(url), String(req.query.alang).split(',')) : 0;
+            const info = await mediaOf(url);   // codec decides copy vs GPU transcode
+            const audio = req.query.audio != null ? audioIdx(req) : req.query.alang ? preferredTrack(info.audio, String(req.query.alang).split(',')) : 0;
             if (gone(req)) return;
             const upstream = await guardedGet(url, { responseType: 'stream', timeout: 30000, maxRedirects: 5, validateStatus: () => true });
             if (gone(req) || upstream.status >= 400) { upstream.data.destroy?.(); return gone(req) ? undefined : res.status(502).send('debrid fetch failed: ' + upstream.status); }
-            sendRemux(remuxReadableToMp4(upstream.data, audio), res);
+            sendRemux(remuxReadableToMp4(upstream.data, audio, info.video), res);
         } catch (e: any) {
             if (!res.headersSent) res.status(502).send('debrid fetch failed: ' + (e?.message || e));
         }

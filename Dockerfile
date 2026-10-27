@@ -19,19 +19,23 @@ COPY src/ ./src/
 RUN npx tsc
 
 # ── Stage 3: runtime (plain node, serves the built client) ───────────────────
-FROM node:22-alpine AS runtime
+# Debian, not Alpine: NVIDIA's driver libs (NVENC/NVDEC) are glibc-only and Alpine's ffmpeg has no NVENC.
+FROM node:22-bookworm-slim AS runtime
 WORKDIR /app
 
 # FlareSolverr handles Cloudflare, so skip Puppeteer's Chromium download.
 ENV PUPPETEER_SKIP_DOWNLOAD=true \
     NODE_ENV=production \
     PORT=3000 \
-    SYNC_DATA_FILE=/app/data/sync-data.json
+    SYNC_DATA_FILE=/app/data/sync-data.json \
+    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 
-# ffmpeg — remux torrent .mkv to fragmented MP4. mesa-va-gallium + libva add VAAPI
-# (TORRENT_VAAPI=1 + /dev/dri mapped; the node user then needs the host's render gid
-# via compose `group_add`). tini reaps children (ffmpeg) and forwards SIGTERM.
-RUN apk add --no-cache ffmpeg mesa-va-gallium libva tini
+# ffmpeg — remux .mkv to fragmented MP4. Non-h264 video (HEVC/AV1) is transcoded on the GPU:
+# NVENC automatically when the container gets an NVIDIA GPU (compose `gpus: all`), or VAAPI via
+# mesa-va-drivers (TORRENT_VAAPI=1 + /dev/dri + the host's render gid in `group_add`).
+# tini reaps children (ffmpeg) and forwards SIGTERM.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg mesa-va-drivers tini \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY package*.json ./
 RUN npm ci --omit=dev --omit=optional && npm cache clean --force
@@ -47,7 +51,7 @@ USER node
 
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget -qO- "http://127.0.0.1:${PORT}/" >/dev/null || exit 1
+    CMD node -e "fetch('http://127.0.0.1:'+process.env.PORT+'/').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/usr/bin/tini", "--"]
 CMD ["node", "dist/index.js"]

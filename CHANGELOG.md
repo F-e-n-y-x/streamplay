@@ -13,6 +13,9 @@ Post-deploy fixes:
 - Player: taps go to a gesture layer (iOS can swallow pointer events on `<video>`); the app
   bar stays on the player page on phone/tablet.
 - Solver diagnostics work with Byparr (optional service in docker-compose.yml).
+- NVIDIA GPUs: HEVC/AV1 sources are converted to H.264 with NVENC (auto-detected; compose
+  `gpus: all`). H.264 is still copied as-is. The runtime image is now Debian (NVIDIA's
+  driver libs are glibc-only). VAAPI no longer breaks every MKV when it can't open.
 
 - The Docker image now runs as the non-root `node` user. Existing data volumes are
   root-owned — run once: `docker run --rm -v streamplay-data:/d alpine chown -R 1000:1000 /d`

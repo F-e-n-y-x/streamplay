@@ -144,25 +144,23 @@ const ffmpegRuns = (args: string[]): Promise<boolean> => new Promise((resolve) =
         p.on('close', (code) => resolve(code === 0));
     } catch { resolve(false); }
 });
-// TORRENT_VAAPI is only honoured when the device really opens: on an NVIDIA render node
-// (proprietary driver, no VAAPI) every remux used to die at startup with "I/O error".
-let vaapiOk = false;
+// GPU encoder for non-h264 video, probed once. NVENC is picked up automatically when the
+// container has an NVIDIA GPU (compose `gpus: all`). TORRENT_VAAPI is only honoured when the
+// device really opens: on an NVIDIA render node every remux used to die with "I/O error".
+let hwEnc: 'nvenc' | 'vaapi' | null = null;
 export async function hasFfmpeg(): Promise<boolean> {
     if (ffmpegOk !== null) return ffmpegOk;
     ffmpegOk = await ffmpegRuns(['-version']);
-    if (ffmpegOk && /^(1|true|yes)$/i.test(process.env.TORRENT_VAAPI || '')) {
-        vaapiOk = await ffmpegRuns(['-hide_banner', '-loglevel', 'error', '-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-f', 'lavfi', '-i', 'nullsrc', '-t', '0.1', '-f', 'null', '-']);
-        if (!vaapiOk) console.warn('[remux] TORRENT_VAAPI set but VAAPI did not initialise — using software remux');
+    const src = ['-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'nullsrc=s=256x256', '-t', '0.1'], sink = ['-f', 'null', '-'];
+    if (ffmpegOk && await ffmpegRuns([...src, '-c:v', 'h264_nvenc', ...sink])) hwEnc = 'nvenc';
+    else if (ffmpegOk && /^(1|true|yes)$/i.test(process.env.TORRENT_VAAPI || '')) {
+        if (await ffmpegRuns(['-init_hw_device', 'vaapi=va:/dev/dri/renderD128', ...src, ...sink])) hwEnc = 'vaapi';
+        else console.warn('[remux] TORRENT_VAAPI set but VAAPI did not initialise — using software remux');
     }
+    if (hwEnc) console.log(`[remux] HEVC/AV1 → H.264 on the GPU (${hwEnc})`);
     return ffmpegOk;
 }
 
-/**
- * Remux a torrent file's read stream to fragmented MP4 for the browser. Copies the
- * video when it's already h264 (cheap) and transcodes audio to AAC; a VAAPI encoder
- * ($TORRENT_VAAPI=1, needs /dev/dri) handles HEVC. Returns the ffmpeg child; pipe
- * ffmpeg.stdout to the HTTP response.
- */
 /**
  * Remux any readable stream (a torrent file stream OR an SSRF-guarded HTTP fetch
  * stream) to fragmented MP4 for the browser, reading from ffmpeg's stdin. Feeding
@@ -171,15 +169,20 @@ export async function hasFfmpeg(): Promise<boolean> {
  * (DNS-rebinding / redirect-to-internal). Callers fetch through the guarded agents
  * and pipe the result here. Returns the ffmpeg child; pipe `ff.stdout` to the response.
  */
-export function remuxReadableToMp4(input: NodeJS.ReadableStream, audio = 0): any {
-    const vaapi = vaapiOk;
+export function remuxReadableToMp4(input: NodeJS.ReadableStream, audio = 0, video = ''): any {
+    // h264 is copied (free, lossless); anything else (HEVC/AV1/unknown) goes through the GPU
+    // encoder when there is one, else is copied as before (Safari/Edge still play HEVC).
+    const enc = video === 'h264' ? null : hwEnc;
     const args = [
         '-hide_banner', '-loglevel', 'error',
+        // NVDEC decodes when it can (Pascal: HEVC 8/10-bit), falls back to CPU otherwise (AV1)
+        ...(enc === 'nvenc' ? ['-hwaccel', 'cuda'] : []),
         '-i', 'pipe:0',
-        ...(vaapi ? ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-filter_hw_device', 'va'] : []),
-        // copy h264 as-is; transcode anything else (HEVC) — VAAPI when available
+        ...(enc === 'vaapi' ? ['-init_hw_device', 'vaapi=va:/dev/dri/renderD128', '-filter_hw_device', 'va'] : []),
         '-map', '0:v:0', '-map', `0:a:${audio}?`,   // one audio track (browsers can't switch muxed ones) — chosen by the client
-        '-c:v', vaapi ? 'h264_vaapi' : 'copy',
+        // ponytail: 10-bit HDR is squeezed to 8-bit without tone-mapping (colours look flat); add tonemap_cuda (jellyfin-ffmpeg) if that matters
+        ...(enc === 'nvenc' ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-pix_fmt', 'yuv420p', '-rc', 'vbr', '-cq', '23']
+            : enc === 'vaapi' ? ['-c:v', 'h264_vaapi'] : ['-c:v', 'copy']),
         '-c:a', 'aac', '-ac', '2',
         '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
         '-f', 'mp4', 'pipe:1',
@@ -195,28 +198,33 @@ export function remuxReadableToMp4(input: NodeJS.ReadableStream, audio = 0): any
 }
 
 /** Remux a torrent file (mkv/HEVC) to fragmented MP4. */
-export function remuxToMp4(file: any, audio = 0): any {
-    return remuxReadableToMp4(file.createReadStream(), audio);
+export function remuxToMp4(file: any, audio = 0, video = ''): any {
+    return remuxReadableToMp4(file.createReadStream(), audio, video);
 }
 
 export interface AudioTrackInfo { index: number; lang: string; title: string; channels?: number }
-/** Audio tracks of a media file, from its first bytes (MKV/MP4 headers sit at the start).
- *  `index` is the audio-relative index the remux maps with `0:a:<index>`. [] on failure. */
-export function probeAudioTracks(head: NodeJS.ReadableStream): Promise<AudioTrackInfo[]> {
+export interface MediaInfo { video: string; audio: AudioTrackInfo[] }
+/** Video codec + audio tracks of a media file, from its first bytes (MKV/MP4 headers sit at
+ *  the start). Audio `index` is what the remux maps with `0:a:<index>`. Empty on failure. */
+export function probeMedia(head: NodeJS.ReadableStream): Promise<MediaInfo> {
     return new Promise((resolve) => {
-        const ff = spawn('ffprobe', ['-v', 'error', '-select_streams', 'a', '-show_entries', 'stream=channels:stream_tags=language,title', '-of', 'json', '-i', 'pipe:0'], { stdio: ['pipe', 'pipe', 'ignore'] });
+        const ff = spawn('ffprobe', ['-v', 'error', '-show_entries', 'stream=codec_type,codec_name,channels:stream_tags=language,title', '-of', 'json', '-i', 'pipe:0'], { stdio: ['pipe', 'pipe', 'ignore'] });
         let out = '';
         const timer = setTimeout(() => { try { ff.kill('SIGKILL'); } catch { /* */ } }, 20000);
         ff.stdout.on('data', (c: Buffer) => { out += c; });
         ff.on('close', () => {
             clearTimeout(timer);
             try {
-                resolve((JSON.parse(out).streams || []).map((s: any, index: number) => ({
-                    index, lang: String(s.tags?.language || ''), title: String(s.tags?.title || ''), ...(s.channels ? { channels: s.channels } : {}),
-                })));
-            } catch { resolve([]); }
+                const streams: any[] = JSON.parse(out).streams || [];
+                resolve({
+                    video: String(streams.find((s) => s.codec_type === 'video')?.codec_name || ''),
+                    audio: streams.filter((s) => s.codec_type === 'audio').map((s, index) => ({
+                        index, lang: String(s.tags?.language || ''), title: String(s.tags?.title || ''), ...(s.channels ? { channels: s.channels } : {}),
+                    })),
+                });
+            } catch { resolve({ video: '', audio: [] }); }
         });
-        ff.on('error', () => resolve([]));
+        ff.on('error', () => resolve({ video: '', audio: [] }));
         head.on('error', () => { /* upstream cut short: ffprobe works with what it got */ });
         head.pipe(ff.stdin).on('error', () => { /* ffprobe stopped reading */ });
     });
