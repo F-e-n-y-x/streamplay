@@ -141,7 +141,7 @@ export default function Browse({ section }: { section: Section }) {
           {typeSeg && <span className="browse-wide-only">{typeSeg}</span>}
           {audioSeg}
           {filtersBtn}
-          <Button variant="ghost" className="browse-wide-only" onClick={surprise}>Surprise me</Button>
+          <Button variant="secondary" className="browse-wide-only" onClick={surprise}>Surprise me</Button>
         </div>
       </div>
 

@@ -14,7 +14,6 @@
   linear-gradient(90deg, var(--background) 0%, color-mix(in srgb, var(--background) 80%, transparent) 30%, transparent 62%),
   linear-gradient(0deg, var(--background) 0%, color-mix(in srgb, var(--background) 88%, transparent) 30%, color-mix(in srgb, var(--background) 45%, transparent) 60%, transparent 85%); }
 .title-side { text-shadow: 0 1px 10px rgba(0, 0, 0, 0.55); }
-.icon-btn.title-back { display: none; }
 .title-hero-inner {
   position: relative; z-index: 1; width: 100%; max-width: var(--container-max); margin: 0 auto;
   padding: var(--space-16) calc(var(--gutter) + var(--safe-right)) var(--space-10) calc(var(--gutter) + var(--safe-left));
@@ -30,20 +29,21 @@
 .title-plot-wrap .title-more { font: var(--type-label); color: var(--foreground); }
 .title-actions { order: 2; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-top: var(--space-3); }
 .title-secondary { display: flex; flex-wrap: wrap; gap: var(--space-3); }
-.title-secondary .title-restart-tile { display: none; }
-.title-main .title-restart { order: 3; font: var(--type-label); color: var(--muted-foreground); }
 
 /* right column: Cast (wraps into up to two lines of four, never clipped) */
 .title-side { display: flex; flex-direction: column; gap: var(--space-8); min-width: 0; }
 .title-side-h { margin: 0 0 var(--space-3); font: var(--type-title); }
-.cast-track { list-style: none; margin: 0 calc(-1 * var(--space-1)); padding: var(--space-1); display: grid; grid-auto-flow: column; grid-auto-columns: 5.5rem; gap: var(--space-3); overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.cast-track { list-style: none; margin: 0 calc(-1 * var(--space-1)); padding: var(--space-1); display: grid; grid-auto-flow: column; grid-auto-columns: 6.5rem; gap: var(--space-3); overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
 .cast-track::-webkit-scrollbar { display: none; }
 .cast-card { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; text-align: center; }
 .cast-card img, .cast-ph { width: 4rem; height: 4rem; margin-bottom: var(--space-1); border-radius: var(--radius-full); object-fit: cover; background: var(--surface-2); }
 .cast-ph { display: grid; place-items: center; font: var(--type-label); color: var(--muted-foreground); }
 .cast-name, .cast-role { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.title-side .cast-track { grid-auto-flow: row; grid-template-columns: repeat(auto-fill, minmax(5.5rem, 1fr)); row-gap: var(--space-4); overflow: visible; }
-.title-side .cast-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.cast-name { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; text-wrap: balance; }
+.title-side .cast-track { grid-auto-flow: row; grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr)); row-gap: var(--space-4); overflow: visible; }
+/* the cast sits on the art: a soft dark panel keeps names readable on bright backdrops */
+.title-side .cast-card { align-items: flex-start; text-align: left; }   /* line up under the "Cast" heading */
+.title-side .title-cast { padding: var(--space-4); border-radius: var(--radius-lg); background: rgba(10, 10, 12, 0.45); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); }
 .cast-name { font: 500 0.8125rem/1.125rem var(--font-sans); }
 .cast-role { font: var(--type-caption); font-weight: 400; color: var(--subtle-foreground); }
 .title-cast-stacked { display: none; }
@@ -54,7 +54,7 @@
 .title-section-head h2, .title-about h2 { margin: 0 auto 0 0; font: var(--type-h2); letter-spacing: var(--track-h2); }
 .title-season-tabs { margin-bottom: var(--space-3); }
 .title-episodes .epi-list { margin-inline: calc(-1 * var(--space-3)); }
-.title-about dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: var(--space-4) var(--space-8); max-width: 60rem; margin: var(--space-4) 0 0; }
+.title-about dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: var(--space-4) var(--space-8); margin: var(--space-4) 0 0; }
 .title-about dt { font: var(--type-meta); color: var(--subtle-foreground); }
 .title-about dd { margin: 2px 0 0; font: var(--type-body); color: var(--foreground); }
 .title-about a { text-decoration: underline; text-underline-offset: 3px; }
@@ -91,22 +91,19 @@ dialog.trailer::backdrop { background: rgba(0, 0, 0, 0.85); }
 
 /* phone (pin02) */
 @media (max-width: 767px) {
-  .icon-btn.title-back { display: inline-grid; position: absolute; z-index: 2; top: var(--space-3); left: calc(var(--space-3) + var(--safe-left)); }
   .title-bg, .title-scrim { aspect-ratio: 16 / 9; max-height: none; }
   .title-hero-inner { margin-top: calc(-1 * var(--space-8)); }
   .title-main { gap: var(--space-2); }
   .title-kind, .title-genres { display: none; }
-  .title-plot-wrap, .title-actions, .title-main .title-restart { order: 0; }
+  .title-plot-wrap, .title-actions { order: 0; }
   .title-actions { width: 100%; flex-direction: column; align-items: stretch; gap: var(--space-3); margin: var(--space-2) 0 var(--space-2); }
   .title-play { width: 100%; }
   .title-secondary { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: var(--space-2); }
   .title-secondary .btn { --btn-h: 4rem; flex-direction: column; gap: var(--space-1); padding: 0 var(--space-1); font: var(--type-caption); }
-  .title-secondary .title-restart-tile { display: inline-flex; }
   /* only My List (no Trailer / Start over): one row with Play instead of a lone full-width tile */
   .title-actions[data-count="1"] { flex-direction: row; }
   .title-actions[data-count="1"] .title-primary { flex: 1; min-width: 0; }
   .title-actions[data-count="1"] .title-secondary .btn { --btn-h: var(--control-lg); flex-direction: row; gap: var(--space-2); padding: 0 var(--space-4); font: var(--type-label); }
-  .title-main .title-restart { display: none; }
   .title-below { gap: var(--space-8); }
   .title-about dl { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
   .title-cta {

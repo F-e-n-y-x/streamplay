@@ -26,7 +26,10 @@ const maskUrl = (u: string) => { try { return `${new URL(u).origin}/…`; } catc
 
 router.get('/catalog', (_req, res) => {
     const added = new Set([...getAddonUrls('nuvio'), ...getAddonUrls('stremio')]);
-    res.json({ entries: CATALOG.map((e) => ({ ...e, added: added.has(e.manifestUrl) })) });
+    // a configured addon is installed under the user's personal URL (same site, token in the path)
+    const origin = (u: string) => { try { return new URL(u).origin; } catch { return u; } };
+    const origins = new Set([...added].map(origin));
+    res.json({ entries: CATALOG.map((e) => ({ ...e, added: added.has(e.manifestUrl) || (!!e.needsConfig && origins.has(origin(e.manifestUrl))) })) });
 });
 
 router.post('/inspect', async (req, res) => {

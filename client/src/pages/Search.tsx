@@ -6,7 +6,8 @@ import type { Card } from "../lib/types";
 import PosterCard, { PosterSkeleton } from "../components/PosterCard";
 import SearchBox, { clearRecent, removeRecent, saveRecent, useRecent } from "../components/SearchBox";
 import { Button, IconButton, StateMessage, Tabs } from "../components/ui";
-import { Clock, X } from "../components/icons";
+import { Clock, Search as SearchIcon, X } from "../components/icons";
+import Row from "../components/Row";
 import "../styles/search.css";
 
 type Kind = "all" | "tv" | "movie";
@@ -35,7 +36,7 @@ export default function Search() {
   const items: Card[] = [];
   for (const c of res.data?.pages.flatMap((p) => p.items) ?? []) {
     const k = `${c.type}-${c.id}`;
-    if (!seen.has(k)) { seen.add(k); items.push(c); }
+    if (!seen.has(k) && (c.posterUrl || c.year)) { seen.add(k); items.push(c); }   // no art and no year = TMDB junk
   }
   // Remember the query only once it found something (junk never reaches Recent).
   useEffect(() => { if (q && items.length) saveRecent(q); }, [q, items.length > 0]);   // eslint-disable-line react-hooks/exhaustive-deps
@@ -70,12 +71,11 @@ export default function Search() {
           ) : res.isPending ? (
             <div className="grid" aria-busy="true">{Array.from({ length: 12 }, (_, i) => <PosterSkeleton key={i} />)}</div>
           ) : items.length === 0 ? (
-            <StateMessage kind="empty" title={`No results for “${q}”`} body="Check the spelling, or try the original or English title."
-              actions={<>
-                {showFix && <Button variant="solid" to={`/search?q=${encodeURIComponent(fix)}`}>Search for “{fix}”</Button>}
-                <Button to="/anime">Browse anime</Button>
-                <Button to="/movies">Browse movies</Button>
-              </>} />
+            <>
+              <StateMessage kind="empty" page align="center" icon={<SearchIcon size={40} />} title={`No results for “${q}”`} body="Check the spelling, or try the original or English title."
+                actions={showFix && <Button variant="solid" to={`/search?q=${encodeURIComponent(fix)}`}>Search for “{fix}”</Button>} />
+              <SearchStart />
+            </>
           ) : (
             <>
               {/* one count: the tabs carry it when shown, else the status line */}
@@ -104,7 +104,7 @@ export default function Search() {
 function SearchStart() {
   const recent = useRecent();
   const { data: rows } = useHome();
-  const trending = rows?.find((r) => r.items.length)?.items.slice(0, 12) ?? [];
+  const trending = rows?.find((r) => r.items.length)?.items ?? [];
   return (
     <div className="search-start">
       {recent.length > 0 && (
@@ -123,15 +123,13 @@ function SearchStart() {
           </ul>
         </section>
       )}
+      {/* a row, not a grid: a grid's last line is ragged at most widths */}
       {trending.length > 0 && (
-        <section aria-labelledby="trend-h">
-          <div className="search-start-head"><h2 id="trend-h">Trending this week</h2></div>
-          <div className="grid">{trending.map((c) => <PosterCard key={`${c.type}-${c.id}`} card={c} showType />)}</div>
-        </section>
+        <Row title="Trending this week">{trending.map((c) => <PosterCard key={`${c.type}-${c.id}`} card={c} showType />)}</Row>
       )}
       <nav className="search-browse" aria-label="Browse">
         <span>Browse</span>
-        {BROWSE.map((b) => <Link key={b.to} to={b.to}>{b.label}</Link>)}
+        {BROWSE.map((b) => <Button key={b.to} size="sm" to={b.to}>{b.label}</Button>)}
       </nav>
     </div>
   );

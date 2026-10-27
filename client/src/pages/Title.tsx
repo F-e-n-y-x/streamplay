@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTitle, useSeason } from "../lib/queries";
 import { useSettings } from "../lib/settings";
@@ -12,8 +12,8 @@ import Row from "../components/Row";
 import TrailerModal from "../components/TrailerModal";
 import { playAction, toggleMyList, type PlayAction } from "../components/playAction";
 import { formatRuntime } from "../lib/format";
-import { Button, EpisodeList, EpisodeListItem, EpisodeListSkeleton, IconButton, Menu, Skeleton, SkeletonText, StateMessage, Tabs } from "../components/ui";
-import { Check, ChevronDown, ChevronLeft, Film, Play, Plus, RotateCcw, Star } from "../components/icons";
+import { Button, EpisodeList, EpisodeListItem, EpisodeListSkeleton, Menu, Skeleton, SkeletonText, StateMessage, Tabs } from "../components/ui";
+import { Check, ChevronDown, Film, Play, Plus, RotateCcw, Star } from "../components/icons";
 import "../styles/title.css";
 
 const RANGE = 50;   // long (anime) seasons are paged in blocks of 50 episodes
@@ -90,7 +90,6 @@ function TitleView({ data, act, season, pickSeason, episodes, seasonError, retry
   data: TitleDetail; act: PlayAction; season: number | null; pickSeason: (n: number) => void;
   episodes: Episode[] | null; seasonError: boolean; retrySeason: () => void;
 }) {
-  const nav = useNavigate();
   const [trailer, setTrailer] = useState(false);
   const [more, setMore] = useState(false);
   const [ctaShown, setCtaShown] = useState(false);
@@ -119,7 +118,6 @@ function TitleView({ data, act, season, pickSeason, episodes, seasonError, retry
     <Button variant="media" size="lg" aria-pressed={saved} icon={saved ? <Check size={20} /> : <Plus size={20} />} onClick={() => toggleMyList(card)}>My List</Button>
   );
   const trailerBtn = hasTrailer && <Button variant="media" size="lg" icon={<Film size={20} />} onClick={() => setTrailer(true)}>Trailer</Button>;
-  const back = () => (history.state?.idx > 0 ? nav(-1) : nav("/"));
 
   return (
     <div className="title-page" data-kind={data.type}>
@@ -128,7 +126,6 @@ function TitleView({ data, act, season, pickSeason, episodes, seasonError, retry
           ? <img className="title-bg" src={data.backdropUrl} srcSet={tmdbSrcSet(data.backdropUrl, [780, 1280])} sizes="100vw" alt="" fetchPriority="high" />
           : <div className="title-bg" />}
         <div className="title-scrim" />
-        <IconButton variant="media" label="Back" className="title-back" onClick={back}><ChevronLeft size={22} /></IconButton>
 
         <div className="title-hero-inner">
           <div className="title-main">
@@ -148,10 +145,9 @@ function TitleView({ data, act, season, pickSeason, episodes, seasonError, retry
               <div className="title-secondary">
                 {listBtn}
                 {trailerBtn}
-                {resuming && <Button variant="media" size="lg" icon={<RotateCcw size={20} />} to={act.restart} className="title-restart-tile">Start over</Button>}
+                {resuming && <Button variant="media" size="lg" icon={<RotateCcw size={20} />} to={act.restart}>Start over</Button>}
               </div>
             </div>
-            {resuming && <Link to={act.restart!} className="btn btn-link title-restart">Start over</Link>}
 
             {data.overview && (
               <div className="title-plot-wrap">

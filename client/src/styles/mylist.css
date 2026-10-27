@@ -9,7 +9,8 @@
 /* Saved: poster grid; remove sits on the art (hover / focus on pointer devices, always on touch) */
 .mylist-grid { list-style: none; margin: 0; padding: 0; }
 .saved-item { position: relative; min-width: 0; }
-.saved-remove { position: absolute; top: var(--space-2); right: var(--space-2); z-index: 1; }
+/* opaque enough to read on any poster (the shared 40% chip vanishes on dark art, and blur isn't everywhere) */
+.saved-remove.icon-btn-media { position: absolute; top: var(--space-2); right: var(--space-2); z-index: 1; background: rgba(0, 0, 0, 0.6); }
 @media (hover: hover) {
   .saved-remove { opacity: 0; transition: opacity var(--duration-1) var(--ease-out); }
   .saved-item:hover .saved-remove, .saved-item:focus-within .saved-remove { opacity: 1; }

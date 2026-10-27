@@ -10,6 +10,8 @@ import { ChevronLeft } from "../components/icons";
 import "../styles/settings.css";
 
 type DiagNode = DiagInfo["flaresolverr"][number];
+/** Where an installed addon's provider comes from, so "Castle TV · Nuvio" isn't read as a duplicate of the built-in CastleTV. */
+const origin = (id: string) => id.startsWith("nuvio:") ? "Nuvio" : id.startsWith("stremio:") ? "Stremio" : "";
 
 function ago(ts: number): string {
   const m = Math.round((Date.now() - ts) / 60_000);
@@ -19,7 +21,7 @@ function ago(ts: number): string {
 /** FlareSolverr + WARP: reachable, latency, version, and the egress IP each one uses
  *  (a different IP from the server's means traffic really leaves through WARP). */
 function Connections() {
-  const { data: diag, isFetching, isError, refetch } = useDiag();
+  const { data: diag, isError } = useDiag();
   const { warp } = useSettings();
   const nodes: (DiagNode & { kind: string })[] = diag ? [
     ...diag.flaresolverr.map((n) => ({ ...n, kind: "FlareSolverr" })),
@@ -29,7 +31,6 @@ function Connections() {
     <section className="ph-section" aria-labelledby="conn-h">
       <div className="ph-head">
         <h2 id="conn-h" className="t-h2">Connections</h2>
-        <Button size="sm" variant="ghost" loading={isFetching} onClick={() => refetch()}>Check again</Button>
       </div>
       {!diag ? (
         isError ? <StateMessage kind="error" title="Couldn't run the connection test." body="Check that the server is running, then check again." />
@@ -40,7 +41,7 @@ function Connections() {
         <>
           <p className="set-desc">WARP: {warp === "off" ? `${warpLabel(diag.warpMode)} (server default)` : `${warpLabel(warp)} on this device · server default ${warpLabel(diag.warpMode)}`}{diag.directIp && <> · server address <span className="mono">{diag.directIp}</span></>}</p>
           <div className="table-wrap">
-            <table className="tbl">
+            <table className="tbl tbl-conn">
               <thead><tr><th>Host</th><th>Type</th><th>Status</th><th>Latency</th><th>Version</th><th>Leaves through</th></tr></thead>
               <tbody>
                 {nodes.map((n) => {
@@ -86,6 +87,7 @@ export default function Providers() {
   useDocTitle("Provider health");
   const providersQ = useProviders();
   const healthQ = useProvidersHealth();
+  const diagQ = useDiag();
   const providers = providersQ.data ?? [];
   const health = useMemo<Record<string, ProviderHealth>>(() => Object.fromEntries((healthQ.data ?? []).map((h) => [h.id, h])), [healthQ.data]);
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "status", dir: "asc" });
@@ -106,7 +108,8 @@ export default function Providers() {
     }
     return (sort.dir === "asc" ? r : -r) || a.name.localeCompare(b.name);
   });
-  const up = Object.values(health).filter((h) => h.status === "up").length;
+  const checked = Object.values(health);   // plugin/addon providers have no site to ping: count only what was checked
+  const up = checked.filter((h) => h.status === "up").length;
   const p = { sort, onSort };
 
   return (
@@ -114,12 +117,12 @@ export default function Providers() {
       <div className="settings-head">
         <Button className="ph-back" variant="ghost" size="sm" to="/settings/server" icon={<ChevronLeft size={20} />}>Server settings</Button>
         <h1 className="t-h1">Provider health</h1>
+        <p className="ph-summary" role="status">
+          {healthQ.data ? <>{up} of {checked.length} providers reachable · checked {ago(healthQ.dataUpdatedAt)}</>
+            : healthQ.isError ? "Couldn't check the providers." : "Checking every provider…"}
+          <Button size="sm" loading={healthQ.isFetching || diagQ.isFetching} onClick={() => { healthQ.refetch(); diagQ.refetch(); }}>Check again</Button>
+        </p>
       </div>
-      <p className="ph-summary" role="status">
-        {healthQ.data ? <>{up} of {providers.length} providers reachable · checked {ago(healthQ.dataUpdatedAt)}</>
-          : healthQ.isError ? "Couldn't check the providers." : "Checking every provider…"}
-        <Button size="sm" variant="ghost" loading={healthQ.isFetching} onClick={() => healthQ.refetch()}>Check again</Button>
-      </p>
 
       <Connections />
 
@@ -130,7 +133,7 @@ export default function Providers() {
           <StateMessage kind="error" title="Couldn't load the provider list." body="Check that the server is running, then try again." actions={<Button variant="solid" onClick={() => providersQ.refetch()}>Try again</Button>} />
         ) : (
           <div className="table-wrap">
-            <table className="tbl">
+            <table className="tbl tbl-prov">
               <thead>
                 <tr>
                   <Th k="name" {...p}>Provider</Th><Th k="kind" {...p}>Kind</Th><Th k="host" {...p}>Host</Th><Th k="status" {...p}>Status</Th>
@@ -144,13 +147,13 @@ export default function Providers() {
                     const tries = pr.stats.successCount + pr.stats.failureCount;
                     return (
                       <tr key={pr.id}>
-                        <td>{pr.name}{pr.needsToken && <span className="subtle"> (needs token)</span>}</td>
+                        <td>{pr.name.replace(/^(.+) · \1$/, "$1")}{pr.needsToken && <span className="subtle"> (needs token)</span>}{origin(pr.id) && <span className="subtle"> · {origin(pr.id)}</span>}</td>
                         <td>{pr.kind}</td>
-                        <td className="mono">{pr.host.replace(/^https?:\/\//, "")}</td>
+                        <td className="mono">{pr.host.replace(/^https?:\/\//, "") || "–"}</td>
                         <td>{h ? <span className="dot-text"><StatusDot tone={h.status === "up" ? "success" : "error"} />{h.status === "up" ? "Up" : "Down"}</span> : <span className="subtle">–</span>}</td>
                         <td className="mono">{h?.status === "up" ? `${h.latencyMs} ms` : "–"}</td>
                         <td className="mono">{tries ? `${Math.round(pr.stats.successRate * 100)}%` : "–"}</td>
-                        <td className="mono">{pr.stats.isCircuitBroken ? <span className="dot-text"><StatusDot tone="error" />Paused</span> : Math.round(pr.priorityScore)}</td>
+                        <td className="mono">{pr.stats.isCircuitBroken ? <span className="dot-text"><StatusDot tone="error" />Paused</span> : Math.max(0, Math.round(pr.priorityScore))}</td>
                       </tr>
                     );
                   })}

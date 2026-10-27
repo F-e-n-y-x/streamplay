@@ -7,7 +7,7 @@ import { AlertCircle, WifiOff } from "../icons";
  * put them in `details` (collapsed "Technical details").
  * Left-aligned on pages; align="center" inside the player and inside a Panel.
  */
-export function StateMessage({ kind, title, body, actions, details, align = "start", icon }: {
+export function StateMessage({ kind, title, body, actions, details, align = "start", icon, page }: {
   kind: "empty" | "error" | "offline" | "notFound";
   title: ReactNode;
   body?: ReactNode;
@@ -17,10 +17,12 @@ export function StateMessage({ kind, title, body, actions, details, align = "sta
   align?: "start" | "center";
   /** Override the default 24px icon; false hides it */
   icon?: ReactNode | false;
+  /** The whole page is this message (404, no results): bigger and with room around it */
+  page?: boolean;
 }) {
   const def = kind === "offline" ? <WifiOff size={24} /> : kind === "empty" ? null : <AlertCircle size={24} />;
   return (
-    <div className="state-msg" data-align={align} role={kind === "error" || kind === "offline" ? "alert" : "status"}>
+    <div className="state-msg" data-align={align} data-page={page ? "" : undefined} role={kind === "error" || kind === "offline" ? "alert" : "status"}>
       {icon === false ? null : (icon ?? def)}
       <p className="state-msg-title">{title}</p>
       {body && <p className="state-msg-body">{body}</p>}

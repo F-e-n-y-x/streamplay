@@ -236,6 +236,7 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [loading, setLoading] = useState(true);
+  const lastTick = useRef(-1);
   const [ready, setReady] = useState(false);       // first frame decoded
   const [showControls, setShowControls] = useState(true);
   const shownRef = useRef(true);
@@ -570,9 +571,10 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
       (screen.orientation as LockableOrientation | undefined)?.lock?.("landscape").catch(() => { /* desktop / iOS */ });
     };
     // iPhone Safari has no element fullscreen: only the <video> itself (native controls).
-    if (!canElementFs() || !root) { vid?.webkitEnterFullscreen?.(); return; }
-    if (root.requestFullscreen) root.requestFullscreen().then(lock).catch(() => vid?.webkitEnterFullscreen?.());
-    else Promise.resolve(root.webkitRequestFullscreen?.()).catch(() => vid?.webkitEnterFullscreen?.());
+    const nativeFs = () => { try { vid?.webkitEnterFullscreen?.(); } catch { /* not ready yet */ } };
+    if (!canElementFs() || !root) { nativeFs(); return; }
+    if (root.requestFullscreen) root.requestFullscreen().then(lock).catch(nativeFs);
+    else Promise.resolve(root.webkitRequestFullscreen?.()).catch(nativeFs);
   };
   useEffect(() => {
     const onFs = () => {
@@ -759,7 +761,7 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
   const bufPct = duration ? (buffered / duration) * 100 : 0;
   const ccOn = ccIndex >= 0;
   const hasSkips = !!(skips?.opening || skips?.ending);
-  const holdChrome = settingsOpen || !!hold || loading;
+  const holdChrome = settingsOpen || !!hold || (loading && !ready);
   const series = next !== undefined;
   const seg = (iv: { start: number; end: number } | null | undefined) => iv && duration > 0
     ? [iv.start, iv.end].filter((x) => x > 1 && x < duration - 1).map((x) => <i key={x} className="seek-gap" style={{ left: `${(x / duration) * 100}%` }} />) : null;
@@ -769,7 +771,7 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
       ref={wrap}
       tabIndex={-1}
       aria-label={`Video player: ${title}`}
-      className={`vp ${showControls && !locked ? "show" : ""} ${playing ? "" : "paused"} ${fullscreen ? "fs" : ""} ${locked ? "locked" : ""} ${holdChrome && !locked ? "hold" : ""} ${ready ? "ready" : ""}`}
+      className={`vp ${showControls && !locked ? "show" : ""} ${playing ? "" : "paused"} ${fullscreen ? "fs" : ""} ${locked ? "locked" : ""} ${holdChrome && !locked ? "hold" : ""} ${ready ? "ready" : ""} ${upNext === "shown" && next ? "upnext-on" : ""}`}
       onPointerMove={(e) => { if (e.pointerType === "mouse") nudgeControls(); }}
       onPointerDown={(e) => { lastPointer.current = e.pointerType; if (e.pointerType === "mouse" || (e.target as Element).closest(".controls, .center, .vp-top")) nudgeControls(); }}
       onFocus={() => nudgeControls()}
@@ -804,6 +806,9 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
         onDurationChange={(e) => setDuration(e.currentTarget.duration)}
         onTimeUpdate={(e) => {
           const el = e.currentTarget; const t = el.currentTime; setCurrent(t);
+          // `waiting` isn't always followed by `playing`/`canplay` (hls.js, Safari): time moving = not buffering
+          if (!el.paused && t !== lastTick.current) { if (loading) { setLoading(false); window.clearTimeout(stallTimer.current); } }
+          lastTick.current = t;
           if (timeRef) timeRef.current = t;
           try { if (el.buffered.length) setBuffered(el.buffered.end(el.buffered.length - 1)); } catch { /* noop */ }
           if (onProgress && el.duration > 0 && Date.now() - lastSaved.current > 8000) { lastSaved.current = Date.now(); onProgress(t, el.duration); }
@@ -866,7 +871,7 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
         </div>
       )}
 
-      {poster && !ready && <img className="vp-poster" src={poster} alt="" />}
+      {poster && (!ready || (!playing && current === 0)) && <img className="vp-poster" src={poster} alt="" />}
       <TorrentStats url={source.url} />
 
       <div className="center">

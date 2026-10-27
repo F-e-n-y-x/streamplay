@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { putHistory, recentHistory, removeHistory, watchHref, type HistoryEntry } from "../lib/store";
 import { tmdbSrcSet } from "../lib/img";
+import { useTitle } from "../lib/queries";
 import { Menu } from "./ui";
 import { MoreVertical, Play } from "./icons";
 import { epLabel, remaining } from "./playAction";
@@ -14,7 +15,10 @@ import "../styles/home.css";
 export default function ContinueCard({ h, tabIndex }: { h: HistoryEntry; tabIndex?: number }) {
   const pct = h.upNext || h.duration <= 0 ? 0 : Math.min(100, (h.position / (h.duration || 1)) * 100);
   const ep = epLabel(h);
-  const art = h.backdropUrl || h.posterUrl;
+  // entries from older builds have no backdrop: borrow the title's (same cache as the title page)
+  const t = useTitle(h.type, h.backdropUrl ? 0 : h.id);
+  const backdrop = h.backdropUrl || t.data?.backdropUrl;
+  const art = backdrop || h.posterUrl;
   const left = remaining(h);
   const verb = h.upNext ? "Play" : "Resume";
 
@@ -28,7 +32,7 @@ export default function ContinueCard({ h, tabIndex }: { h: HistoryEntry; tabInde
         aria-label={`${verb} ${h.title}${ep ? `, ${ep.replace(" · ", " ")}` : ""}, ${left}`}>
         <span className="card-art">
           {art
-            ? <img src={art} srcSet={h.backdropUrl ? tmdbSrcSet(h.backdropUrl, [300, 780]) : undefined} sizes="(max-width: 767px) 80vw, 360px"
+            ? <img src={art} srcSet={backdrop ? tmdbSrcSet(backdrop, [300, 780]) : undefined} sizes="(max-width: 767px) 80vw, 360px"
                 width={320} height={180} alt="" loading="lazy" decoding="async" draggable={false} />
             : <span className="card-ph" aria-hidden="true">{h.title}</span>}
           <span className="cw-play" aria-hidden="true"><Play size={16} fill="currentColor" /></span>

@@ -206,18 +206,18 @@ function Sync() {
       <p className="set-intro">Link your devices with a sync code. History, My List and preferences then follow you to every device that uses it.</p>
       <div className="sync-state" role="status"><StatusDot tone={state.tone} />{state.text}</div>
 
-      <Field label="This device's name" stack>
+      <Group title="This device's name">
         <input className="input" aria-label="This device's name" value={name} onChange={(e) => setName(e.target.value)} onBlur={() => setDeviceName(name.trim() || getDeviceName())} autoComplete="off" />
-      </Field>
+      </Group>
 
       {code ? (
         <>
-          <Field label="Sync code" stack desc="Enter this code on another device to link it. Anyone with the code can see your history, so keep it private.">
+          <Group title="Sync code" desc="Enter this code on another device to link it. Anyone with the code can see your history, so keep it private.">
             <div className="inline-form">
               <code className="sync-code">{code}</code>
               <Button icon={<Copy size={20} />} onClick={() => copyText(code).then((ok) => ok && toast("Code copied", { tone: "success" }))}>Copy</Button>
             </div>
-          </Field>
+          </Group>
           <Group title={`Devices (${roster.length})`}>
             {roster.length ? (
               <ListGroup divided>

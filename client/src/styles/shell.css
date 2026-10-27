@@ -20,7 +20,8 @@
 }
 /* Home / Title: the bar floats over the full-bleed art, transparent until the page scrolls */
 .header[data-over-art] { position: fixed; left: 0; right: 0; }
-.header[data-over-hero] { background: var(--player-scrim-top); border-bottom-color: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
+/* border-box origin: a repeating gradient tile otherwise paints its dark top into the transparent 1px border */
+.header[data-over-hero] { background: var(--player-scrim-top) border-box; border-bottom-color: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; }
 
 .header-inner {
   height: var(--header-height); max-width: var(--container-max); margin: 0 auto;
@@ -31,8 +32,18 @@
 .header-inner > .grow { flex: 1 1 0; min-width: var(--space-4); }
 
 .brand { display: flex; align-items: center; gap: var(--space-2); margin-right: var(--space-6); color: var(--foreground); font: 700 1.125rem/1 var(--font-sans); letter-spacing: -0.02em; border-radius: var(--radius-sm); }
-.brand .mark { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--radius-md); background: var(--foreground); color: var(--accent); }
-.brand .mark svg { margin-left: 2px; }
+/* Scrubber logo: lowercase wordmark riding the red progress bar, playhead between "stream" and "play".
+   Where the wordmark is hidden (tablet, tiny phones) the drawn-"s" mark stands in. */
+.brand .mark { display: none; width: auto; height: 1.625rem; flex: none; }
+.brand-name { position: relative; padding-bottom: 0.5rem; font-weight: 800; letter-spacing: -0.035em; }
+.brand-name::before {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px; border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent) 0 61%, rgba(128, 128, 128, 0.4) 61% 100%);
+}
+.brand-name::after {
+  content: ""; position: absolute; left: 61%; bottom: -2.5px; width: 8px; height: 8px; margin-left: -4px;
+  border-radius: 50%; background: var(--foreground);
+}
 
 .nav-links { position: relative; display: flex; align-self: stretch; gap: var(--space-1); }
 .nav-link { position: relative; display: inline-flex; align-items: center; padding: 0 var(--space-3); color: var(--muted-foreground); font: var(--type-label); white-space: nowrap; transition: color var(--duration-1) var(--ease-out); }
@@ -44,6 +55,7 @@
 .header-search { width: 17.5rem; transition: width var(--duration-2) var(--ease-out); }
 .header-search:focus-within { width: 22.5rem; }
 .header-settings.active { background: var(--surface-2); }
+@media (pointer: coarse) and (min-width: 1100px) { .header-search { width: 20rem; } }   /* 16px touch font: the placeholder needs the room */
 .header .search-toggle, .header .search-link, .tabbar { display: none; }
 
 .search-overlay {
@@ -58,6 +70,7 @@
 @media (max-width: 1099px) {
   .brand { margin-right: var(--space-3); }
   .brand-name, .header-search { display: none; }
+  .brand .mark { display: block; }
   .header .search-toggle { display: inline-flex; }
   /* the nav scrolls sideways when it doesn't fit; fade the side that has more */
   .nav-links { flex: 0 1 auto; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
@@ -70,8 +83,8 @@
 /* ---------- phone ---------- */
 @media (max-width: 767px) {
   .brand { margin-right: 0; font-size: 1rem; }
-  .brand-name { display: inline; }
-  .brand .mark { width: 1.75rem; height: 1.75rem; }
+  .brand-name { display: inline-block; }
+  .brand .mark { display: none; }
   .nav-links, .header .header-settings, .header .search-toggle, .search-overlay { display: none; }
   .header .search-link { display: inline-flex; }
   main { padding-bottom: var(--tabbar-height); }
@@ -88,7 +101,7 @@
   .tab-item:focus-visible { outline-offset: -4px; border-radius: var(--radius-md); }
   .tab-item.active { color: var(--foreground); font-weight: 600; }
 }
-@media (max-width: 359px) { .brand-name { display: none; } }
+@media (max-width: 359px) { .brand-name { display: none; } .brand .mark { display: block; } }
 @media (pointer: coarse) { .brand { min-height: var(--hit-min); } }
 
 /* landscape phone: on the player page no page chrome (Header renders no tab bar there);

@@ -120,7 +120,7 @@ export default function Watch() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, data, ttype, tid, seasonN, episodeN]);
 
-  // Esc / TV Back: open panels close first (they handle it), then fullscreen, then leave.
+  // TV Back keys leave (after open panels / fullscreen). Esc never leaves: it only closes things.
   const back = () => {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     if (((window.history.state as { idx?: number } | null)?.idx ?? 0) > 0) nav(-1);
@@ -130,7 +130,7 @@ export default function Watch() {
   backRef.current = back;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const isBack = e.key === "Escape" || e.key === "BrowserBack" || e.key === "GoBack" || e.keyCode === 461 || e.keyCode === 10009 || e.key === "Backspace";
+      const isBack = e.key === "BrowserBack" || e.key === "GoBack" || e.keyCode === 461 || e.keyCode === 10009 || e.key === "Backspace";
       if (!isBack || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || document.fullscreenElement) return;
       if ((e.target as HTMLElement | null)?.closest?.("input, textarea, select, [contenteditable]")) return;
       if (document.querySelector(".panel-root, .menu, [role='dialog'], dialog[open], .upnext")) return;
@@ -171,12 +171,14 @@ export default function Watch() {
     );
   }
   if (isError || !data) {
+    const gone = (error as { status?: number })?.status === 404;
     return (
       <div className="watch-page container">
-        <StateMessage kind={(error as { status?: number })?.status === 404 ? "notFound" : "error"}
-          title={(error as Error)?.message || "Couldn’t load this title."}
-          body="Check your connection and try again."
-          actions={<><Button variant="solid" icon={<RotateCcw size={18} />} onClick={() => refetch()}>Try again</Button><Button variant="ghost" onClick={() => nav(-1)}>Go back</Button></>} />
+        {gone
+          ? <StateMessage kind="notFound" page align="center" title="This title isn’t available." body="The link may be broken, or the title was removed."
+              actions={<><Button variant="solid" onClick={() => nav("/")}>Go home</Button><Button variant="ghost" onClick={() => nav("/search")}>Search</Button></>} />
+          : <StateMessage kind="error" page align="center" title={(error as Error)?.message || "Couldn’t load this title."} body="Check your connection and try again."
+              actions={<><Button variant="solid" icon={<RotateCcw size={18} />} onClick={() => refetch()}>Try again</Button><Button variant="ghost" onClick={() => nav(-1)}>Go back</Button></>} />}
       </div>
     );
   }
@@ -199,7 +201,15 @@ export default function Watch() {
     if (seasonN != null) setRailSeason(seasonN);
     const rail = document.querySelector<HTMLElement>(".watch-rail");
     const row = rail?.querySelector<HTMLElement>(".epi[data-current] .epi-hit") ?? rail?.querySelector<HTMLElement>(".epi-hit");
-    (row ?? rail)?.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    const behavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (rail && matchMedia("(max-width: 1023px)").matches) {
+      // stacked: bring the list up under the sticky player (scroll-margin in watch.css); the
+      // list head when the current episode still fits below it, else the current row itself
+      const ep = row?.closest<HTMLElement>(".epi");
+      const room = innerHeight - (stage?.offsetHeight ?? 0);
+      const target = ep && ep.getBoundingClientRect().bottom - rail.getBoundingClientRect().top > room ? ep : rail;
+      target.scrollIntoView({ block: "start", behavior });
+    } else (row ?? rail)?.scrollIntoView({ block: "nearest", behavior });
     row?.focus({ preventScroll: true });
   };
   const what = isTv ? epCode : "this movie";
@@ -289,7 +299,7 @@ export default function Watch() {
           </div>
 
           <div className="watch-info">
-            {!unaired && (
+            {!unaired && ssState !== "finding" && (
               <SourceStatus state={ssState} provider={current ? sources.name(current) : undefined}
                 quality={current ? qualityLabel(playH || current.quality) || undefined : undefined} audio={audioFact || undefined}
                 checked={slow ? sources.progress.settled : undefined} total={slow ? sources.progress.total : undefined}

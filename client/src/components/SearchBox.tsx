@@ -57,7 +57,7 @@ export default function SearchBox({ value, onChange, onSubmit, className, inputR
   const { data, isFetching } = useSuggest(debounced);
   const fix = typing && data?.didYouMean && data.didYouMean.toLowerCase() !== q.toLowerCase() ? data.didYouMean : undefined;
   const opts: Opt[] = !open ? [] : typing
-    ? [...(data?.items ?? []).slice(0, 8).map((c, i): Opt => ({ id: `${id}-t${i}`, kind: "title", c })), { id: `${id}-all`, kind: "all" }]
+    ? [...(data?.items ?? []).filter((c) => c.posterUrl || c.year).slice(0, 8).map((c, i): Opt => ({ id: `${id}-t${i}`, kind: "title", c })), { id: `${id}-all`, kind: "all" }]
     : q || inline ? [] : rec.slice(0, 6).map((r, i): Opt => ({ id: `${id}-r${i}`, kind: "recent", q: r }));
   const loading = typing && !data && isFetching;
   const shown = open && (opts.length > 0 || loading);

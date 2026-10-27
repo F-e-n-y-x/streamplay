@@ -17,7 +17,6 @@
 /* Filters panel */
 .browse-panel { display: flex; flex-direction: column; gap: var(--space-6); padding: var(--space-2) var(--space-2) var(--space-4); }
 .browse-panel-sec h3 { margin: 0 0 var(--space-3); font: var(--type-title); }
-.browse-panel-sec .list-group { margin-inline: calc(-1 * var(--space-2)); }
 .browse-chips { display: flex; flex-wrap: wrap; gap: var(--space-2); }
 
 /* tablet: sort tabs become a menu below 900px */

@@ -5,7 +5,7 @@ import { useAddonCatalog, useScrapers } from "../../lib/queries";
 import type { AddonKind, AddonPreview, CatalogEntry, ScraperRepo } from "../../lib/types";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import { Button, FilterChip, IconButton, ListGroup, ListRow, Panel, Skeleton, SkeletonText, StateMessage, StatusDot, toast } from "../../components/ui";
-import { AlertCircle, Check, ChevronDown, Shield, Trash2 } from "../../components/icons";
+import { AlertCircle, Check, ChevronDown, Lock, Shield, Trash2 } from "../../components/icons";
 import { AdminGate, Group, adminMessage, useAdmin } from "./shared";
 
 const MAX_PER_KIND = 20;
@@ -275,10 +275,11 @@ function Catalog({ canAdd, onAdd }: { canAdd: boolean; onAdd: (e: CatalogEntry) 
                       <div className="cat-head">
                         <span className="addon-name">{e.name}</span>
                         {e.added ? <span className="cat-added"><Check size={16} aria-hidden="true" /> Added</span>
-                          : <Button size="sm" disabled={!canAdd} onClick={() => onAdd(e)} aria-label={`${e.needsConfig ? "Set up" : "Add"} ${e.name}`}>{e.needsConfig ? "Set up" : "Add"}</Button>}
+                          : <Button size="sm" disabled={!canAdd} icon={canAdd ? undefined : <Lock size={14} aria-hidden="true" />} title={canAdd ? undefined : "Unlock with the admin token above to add addons"} onClick={() => onAdd(e)} aria-label={`${e.needsConfig ? "Set up" : "Add"} ${e.name}`}>{e.needsConfig ? "Set up" : "Add"}</Button>}
                       </div>
                       <Flags e={e} />
-                      <p className="cat-desc">{e.description}</p>
+                      {/* clamped to 3 lines: tap to read the rest (screen readers get it all anyway) */}
+                      <p className="cat-desc" title={e.description} onClick={(ev) => ev.currentTarget.toggleAttribute("data-open")}>{e.description}</p>
                       <p className="addon-meta">
                         {[e.scraperCount ? `${e.scraperCount} scrapers` : "", e.lastUpdated ? `Updated ${ago(e.lastUpdated)}` : ""].filter(Boolean).join(" · ") || host(e.manifestUrl)}
                       </p>

@@ -43,13 +43,13 @@ export default function Watchlist() {
         <h1 className="t-h1">My List</h1>
         {tab === "saved" && favs.length > 1 && (
           <Menu label="Sort by" align="end" items={SORTS.map((s) => ({ label: s.label, checked: sort === s.value, onSelect: () => setSort(s.value) }))}
-            trigger={(p) => <Button {...p} variant="ghost" size="sm">{SORTS.find((s) => s.value === sort)!.label}<ChevronDown size={16} aria-hidden="true" /></Button>} />
+            trigger={(p) => <Button {...p} variant="secondary">{SORTS.find((s) => s.value === sort)!.label}<ChevronDown size={16} aria-hidden="true" /></Button>} />
         )}
       </div>
       <Tabs id="mylist" label="My List" value={tab} onChange={setTab} className="mylist-tabs" items={[
         { value: "saved", label: favs.length ? <>Saved <span className="tab-count">{favs.length}</span></> : "Saved" },
-        { value: "continue", label: "Continue watching" },
-        { value: "history", label: "History" },
+        { value: "continue", label: cont.length ? <>Continue watching <span className="tab-count">{cont.length}</span></> : "Continue watching" },
+        { value: "history", label: hist.length ? <>History <span className="tab-count">{hist.length}</span></> : "History" },
       ]} />
       <div role="tabpanel" id={`mylist-panel-${tab}`} aria-labelledby={`mylist-tab-${tab}`} className="mylist-panel">
         {tab === "saved" ? <Saved favs={favs} sort={sort} /> : tab === "continue" ? <Continue items={cont} /> : <History items={hist} />}

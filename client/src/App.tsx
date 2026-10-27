@@ -32,7 +32,7 @@ function NotFound() {
   useDocTitle("Not found");
   return (
     <div className="container">
-      <StateMessage kind="notFound" title="This page doesn’t exist" body="The link may be old, or the title was removed."
+      <StateMessage kind="notFound" page align="center" title="This page doesn’t exist" body="The link may be old, or the title was removed."
         actions={<><Button variant="solid" to="/">Go home</Button><Button variant="ghost" to="/search">Search</Button></>} />
     </div>
   );

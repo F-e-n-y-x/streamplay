@@ -80,7 +80,7 @@
   }
   .rail-head { flex-direction: row; align-items: center; justify-content: space-between; flex-wrap: wrap; }
   .rail-head .tabs { flex: 1 1 100%; }
-  .rail-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--surface-3) transparent; margin-right: calc(-1 * var(--space-2)); padding-right: var(--space-2); }
+  .rail-scroll { flex: 1; overflow-y: auto; -webkit-mask-image: linear-gradient(#000 calc(100% - 2rem), transparent); mask-image: linear-gradient(#000 calc(100% - 2rem), transparent); overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--surface-3) transparent; margin-right: calc(-1 * var(--space-2)); padding-right: var(--space-2); }
 }
 
 /* ── stacked: tablet portrait + phone. The player is the top of the page. ── */
@@ -90,10 +90,16 @@
   html[data-page="watch"] .nav-chips, html[data-page="watch"] .tabbar { display: none; }
   html[data-page="watch"] .header { position: relative; }
   .watch-page { padding-top: var(--space-4); }   /* breathing room under the app bar */
+  /* flatten the grid so the sticky player's containing block is the whole page, not .watch-main
+     (else it scrolls away once the info block ends, before the episode list) */
+  .watch-grid, .watch-main { display: contents; }
+  .watch-rail { margin-top: var(--space-8); }
   .watch-stage-slot { position: sticky; top: 0; z-index: 120; padding-top: var(--safe-top); background: var(--background); }
-  .watch-grid { gap: var(--space-8); }
+  /* ☰ scrolls the list here: land just below the sticky player */
+  .watch-rail, .watch-rail .epi { scroll-margin-top: calc(var(--stage-h, 0px) + var(--safe-top) + var(--space-3)); }
 }
 @media (max-width: 767px) {
+  .watch-page { padding-top: 0; }   /* the player sits flush under the app bar */
   .watch-page { padding-inline: calc(var(--space-4) + var(--safe-left)) calc(var(--space-4) + var(--safe-right)); }
   .watch-stage-slot { margin-inline: calc(-1 * (var(--space-4) + var(--safe-left))) calc(-1 * (var(--space-4) + var(--safe-right))); background: #000; }
   .watch-stage { border-radius: 0; }
@@ -112,3 +118,5 @@
   .watch-page .watch-stage-slot { position: fixed; inset: 0; z-index: 300; margin: 0; padding: 0; background: #000; }
   .watch-page .watch-stage { height: 100dvh; aspect-ratio: auto; border-radius: 0; }
 }
+
+@media (pointer: coarse) { .watch-info .source-status .btn { min-height: var(--hit-min); } }

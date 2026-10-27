@@ -54,8 +54,19 @@ const ADDON_ENV: Record<AddonKind, string> = { nuvio: 'NUVIO_PLUGINS', stremio: 
 const splitUrls = (v?: string): string[] => (v || '').split(',').map((x) => x.trim()).filter(Boolean);
 
 /** Active manifest URLs: the UI list when one was saved, else the env var. */
+/** Installed out of the box when the env var is UNSET (set it to "" for none):
+ *  readable-source Nuvio repos — Yoru's (successor of tapframe) and D3adlyRocket's Nuvio-TV. */
+const DEFAULT_ADDONS: Record<AddonKind, string[]> = {
+    nuvio: [
+        'https://raw.githubusercontent.com/yoruix/nuvio-providers/refs/heads/main/manifest.json',
+        'https://raw.githubusercontent.com/D3adlyRocket/Nuvio-TV/refs/heads/main/manifest.json',
+    ],
+    stremio: [],
+};
+
 export function getAddonUrls(k: AddonKind): string[] {
-    return cfg[k] ?? splitUrls(process.env[ADDON_ENV[k]]);
+    const env = process.env[ADDON_ENV[k]];
+    return cfg[k] ?? (env === undefined ? DEFAULT_ADDONS[k] : splitUrls(env));
 }
 
 /** Save the UI list (validated http(s), max 20), or `null` to fall back to the env var. */

@@ -26,9 +26,14 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans);
   font: var(--type-body);
+  word-spacing: 0.05em;   /* Plus Jakarta's narrow space made "Read more" read as "Readmore" at 13–15px */
   -webkit-font-smoothing: antialiased;
   transition: --background var(--duration-tint) var(--ease-in-out);
+  --page-bg: var(--background);   /* the page ground, readable inside .media-dark (which redefines --background) */
 }
+button, input, select, textarea { word-spacing: inherit; }   /* UA sheets reset it on controls */
+/* light theme: the always-dark hero / title art fades into the light page instead of ending on a hard edge */
+[data-theme="light"] :is(.hero, .title-hero)::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; z-index: 0; height: var(--space-10); background: linear-gradient(transparent, var(--page-bg)); pointer-events: none; }
 /* Ambient tint: useAmbient() sets --tint-dark/--tint-light on <body> + .tinted. The
    ground takes the tint; surfaces are derived from it so cards stay in the same hue. */
 [data-theme="dark"] body.tinted { --background: var(--tint-dark); }
@@ -386,6 +391,9 @@ button:disabled { cursor: default; }
 .state-msg-body { margin: 0; font: var(--type-body); color: var(--muted-foreground); max-width: 52ch; }
 .state-msg-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
 .state-msg[data-align="center"] .state-msg-actions { justify-content: center; }
+.state-msg[data-page] { padding-block: var(--space-16) var(--space-10); }
+.state-msg[data-page] > svg { width: 2.5rem; height: 2.5rem; }
+.state-msg[data-page] .state-msg-title { font: var(--type-h1); letter-spacing: var(--track-h1); }
 .state-msg details { margin-top: var(--space-3); font: var(--type-meta); color: var(--subtle-foreground); max-width: 100%; }
 .state-msg summary { cursor: pointer; border-radius: var(--radius-xs); }
 .state-msg pre { margin: var(--space-2) 0 0; font-family: var(--font-mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere; }

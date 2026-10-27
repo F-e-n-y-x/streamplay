@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link, NavLink, useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import SearchBox from "./SearchBox";
-import { Bookmark, Clapperboard, Globe, Home, MonitorPlay, Play, Search, Settings as SettingsIcon, Sparkles, X } from "./icons";
+import { Bookmark, Clapperboard, Globe, Home, MonitorPlay, Search, Settings as SettingsIcon, Sparkles, X } from "./icons";
 import { IconButton } from "./ui";
 
 const SECTIONS = [
@@ -72,8 +72,12 @@ export default function Header() {
       <header className={overHero ? "header media-dark" : "header"} data-over-art={onArt ? "" : undefined} data-over-hero={overHero ? "" : undefined} data-watch={onWatch ? "" : undefined}>
         <div className="header-inner">
           <Link to="/" className="brand" aria-label="StreamPlay home">
-            <span className="mark" aria-hidden="true"><Play size={16} fill="currentColor" /></span>
-            <span className="brand-name">StreamPlay</span>
+            {/* Scrubber mark: a drawn "s" on the red progress bar (public/icon.svg) */}
+            <svg className="mark" viewBox="0 0 280 362" aria-hidden="true">
+              <path d="M200 58.76C185 31.4 164 20 140 20C98 20 68 42.8 68 79.28C68 120.32 104 126.02 143 134C185 141.98 213.5 154.52 213.5 193.28C213.5 229.76 182 248 140 248C110 248 86 236.6 72.5 211.52" fill="none" stroke="currentColor" strokeWidth="40" strokeLinecap="round" />
+              <rect y="322" width="280" height="40" rx="20" fill="var(--accent)" />
+            </svg>
+            <span className="brand-name">streamplay</span>
           </Link>
 
           <nav ref={navRef} className="nav-links" aria-label="Primary">

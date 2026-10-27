@@ -9,7 +9,7 @@
  *   - Navigations → network-first, falling back to the cached shell when offline.
  *   - skipWaiting + clients.claim so a new SW/version activates immediately (no stale trap).
  */
-const VERSION = 'streamplay-v3';
+const VERSION = 'streamplay-v4';
 const SHELL = '/index.html';
 
 self.addEventListener('install', (e) => {

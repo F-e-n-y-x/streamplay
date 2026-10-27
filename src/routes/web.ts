@@ -351,11 +351,13 @@ async function fuzzySearch(q: string, req: any, base: Card[]) {
         .sort((a, b) => b.score - a.score)
         .map(x => x.c);
     const top = ranked[0];
-    const fix = top && [...fixes].sort((a, b) => similarity(b, top.title) - similarity(a, top.title))[0];
+    // fixes are already closest-to-typed first: take the first that names one of the top hits, so the
+    // dropdown and the results page agree ("abngers" → "avengers", not whichever sequel ranked first)
+    const fix = fixes.find(f => ranked.slice(0, 3).some(c => similarity(f, c.title) >= 0.7));
     // a correct prefix ("breaking" → Breaking Bad) is not a typo: no "Did you mean"
     const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
     const isPrefix = ranked.slice(0, 3).some(c => norm(c.title).startsWith(norm(q)));
-    const v = { items: ranked.slice(0, 20), didYouMean: top && !isPrefix && similarity(q, top.title) < 0.9 ? (fix && similarity(fix, top.title) >= 0.7 ? fix : top.title) : undefined };
+    const v = { items: ranked.slice(0, 20), didYouMean: top && !isPrefix && similarity(q, top.title) < 0.9 ? (fix ?? top.title) : undefined };
     if (fuzzyCache.size > 1000) fuzzyCache.clear();
     if (!partial) fuzzyCache.set(key, { at: Date.now(), v });
     return v;
@@ -662,7 +664,10 @@ router.get('/title/:type/:id', async (req, res) => {
                 name: c.name, character: c.character, profileUrl: tmdbImg(c.profile_path, 'w185'),
             })),
             recommendations: (d.recommendations?.results || []).filter((r: any) => r.poster_path).slice(0, 18).map((r: any) => toCard(r)),
-            trailerKeys: (d.videos?.results || []).filter((v: any) => v.site === 'YouTube' && /trailer|teaser/i.test(v.type)).map((v: any) => v.key),
+            // official trailers first: TMDB's order often leads with fan re-uploads ("Trailer #3 [4K] [FTD-0706]")
+            trailerKeys: (d.videos?.results || []).filter((v: any) => v.site === 'YouTube' && /trailer|teaser/i.test(v.type))
+                .sort((a: any, b: any) => (+!a.official - +!b.official) || (+(a.type !== 'Trailer') - +(b.type !== 'Trailer')))
+                .map((v: any) => v.key),
             seasons,
             originalLanguage: lang,
             metaSource,
