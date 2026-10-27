@@ -71,11 +71,12 @@ import { MoviesDriveProvider } from './moviesdrive'; // upstream files removed (
 import { Hdmovie2Provider } from './hdmovie2';     // hdmo2.com domain degraded (404s)
 
 /**
- * Providers served by /api/streams (run concurrently per request).
+ * Built-in scrapers. OFF by default since 2.0 — sources come from the Nuvio/Stremio
+ * addons (NUVIO_PLUGINS / STREMIO_ADDONS). Set BUILTIN_PROVIDERS=on to serve them again.
  * Cloudflare-gated providers (UHDMovies, MoviesMod, TopMovies, MultiMovies,
  * CineMacity, ...) rely on FLARESOLVERR_URL being set in `.env`.
  */
-export const providers: Provider[] = [
+export const builtinProviders: Provider[] = [
     // === Anime first ===
     // Dedicated anime providers run (and rank) ahead of the generic movie/TV
     // sources for anime titles. Each early-returns for non-anime content, so this
@@ -119,7 +120,11 @@ export const providers: Provider[] = [
     BollyflixProvider,
     CineMacityProvider,
     HDRezkaProvider,      // large movies + series catalog with multiple audio tracks (rezka.ag)
-    // subtitles
+];
+
+/** Active built-ins: the subtitle providers always, the scrapers only with BUILTIN_PROVIDERS=on. */
+export const providers: Provider[] = [
+    ...(process.env.BUILTIN_PROVIDERS === 'on' ? builtinProviders : []),
     SubtitleApiProvider,
     WyzieSubsProvider,
 ];
@@ -171,7 +176,7 @@ const PROVIDER_KINDS: Record<string, ContentKind[]> = {
     // anime — the dedicated anime providers cover that with better sub/dub handling.
     hdrezka: ['movie', 'series', 'asian'],
 };
-for (const p of providers) if (PROVIDER_KINDS[p.id]) p.kinds = PROVIDER_KINDS[p.id];
+for (const p of builtinProviders) if (PROVIDER_KINDS[p.id]) p.kinds = PROVIDER_KINDS[p.id];
 
 /** Built-ins + the admin-configured Nuvio plugins / Stremio addons (loaded at runtime). */
 export const getProviders = (): Provider[] => [...providers, ...nuvioProviders(), ...stremioProviders()];

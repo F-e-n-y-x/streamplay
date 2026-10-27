@@ -91,7 +91,7 @@ export const mapStremioStreams = (label: string, items: any[], d?: LinkData): { 
             // ponytail: that path doesn't forward `headers`; fine for UA-only addons (PenguPlay).
             const mkv = /\.mkv(\?|$)/i.test(s.url) || /\.mkv$/i.test(filename) || (bh.notWebReady === true && /\b(mkv|hevc|x265|h\.?265)\b/i.test(all));
             http.push({
-                server, link: s.url, type: /\.m3u8(\?|$)/i.test(s.url) || /\b(hls|m3u8)\b/i.test(desc) ? 'm3u8' : 'mp4',
+                server, link: s.url, origin: src || undefined, description: desc, type: /\.m3u8(\?|$)/i.test(s.url) || /\b(hls|m3u8)\b/i.test(desc) ? 'm3u8' : 'mp4',
                 ...(quality ? { quality } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}), ...(mkv ? { debrid: true } : {}),
             });
         } else if (typeof s?.infoHash === 'string' && /^[0-9a-f]{40}$/i.test(s.infoHash)) {

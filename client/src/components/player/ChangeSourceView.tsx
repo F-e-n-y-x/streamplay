@@ -2,7 +2,7 @@ import { useState } from "react";
 import { copyText } from "../../lib/clipboard";
 import { updateSettings, useSettings } from "../../lib/settings";
 import { browserOk, isDirect, qualityLabel, type SourceLink, type Sources } from "../../lib/useSources";
-import { Badge, Button, ListGroup, ListRow, StateMessage, StatusDot, toast } from "../ui";
+import { Button, ListGroup, ListRow, StateMessage, StatusDot, toast } from "../ui";
 import { Check, ChevronDown, RotateCcw } from "../icons";
 
 type Tone = "success" | "warning" | "error" | "neutral";
@@ -78,23 +78,27 @@ export default function ChangeSourceView({ sources, anime, onPicked }: { sources
   const fold = (list: SourceLink[]) => {
     const m = new Map<string, SourceLink[]>();
     for (const l of list) {
-      const k = `${l.providerId}|${l.quality || 0}|${audioOf(l, primary, anime)}|${l.type === "iframe"}`;
+      const k = `${l.providerId}|${l.origin ?? ""}|${l.quality || 0}|${audioOf(l, primary, anime)}|${l.type === "iframe"}`;
       m.set(k, [...(m.get(k) ?? []), l]);
     }
     return [...m.entries()];
   };
 
+  // Row = "Addon · 4K · Site" / specs line / size · audio · status (the release-formatter layout)
   const row = (l: SourceLink, label: string) => {
     const st = statusOf(l, failed[l.url]);
     const on = l.url === current?.url;
-    const audio = audioOf(l, primary, anime);
+    const langs = l.languages ?? [];
+    const audio = langs.length ? langs.slice(0, 3).join(", ") + (langs.length > 3 ? ` +${langs.length - 3}` : "") : audioOf(l, primary, anime);
+    const specs = [...(l.specs ?? []), l.container].filter(Boolean).join(" · ");
     return (
-      <ListRow key={l.url} className="cs-row" kind="choice" checked={on} title={label} description={st.text} tooltip={l.variant || l.name}
-        leading={<StatusDot tone={st.tone} />} onClick={() => pick(l)}
-        trailing={<>
-          {l.quality ? <Badge>{qualityLabel(l.quality)}</Badge> : null}
-          {audio && <Badge>{audio}</Badge>}
-        </>} />
+      <ListRow key={l.url} className="cs-row" kind="choice" checked={on} tooltip={l.variant || l.name}
+        title={[label, qualityLabel(l.quality), l.origin].filter(Boolean).join(" · ")}
+        description={<>
+          {specs && <span className="cs-spec">{specs}</span>}
+          <span className="cs-meta">{[l.size, audio && `Audio: ${audio}`, st.text].filter(Boolean).join(" · ")}</span>
+        </>}
+        leading={<StatusDot tone={st.tone} />} onClick={() => pick(l)} />
     );
   };
 
@@ -129,7 +133,7 @@ export default function ChangeSourceView({ sources, anime, onPicked }: { sources
                 <div key={k} className="cs-fold">
                   {row(ls[0], base)}
                   {ls.length > 1 && (open[k]
-                    ? ls.slice(1).map((l, i) => row(l, `${base} · Server ${i + 2}`))
+                    ? ls.slice(1).map((l) => row(l, base))
                     : <button type="button" className="cs-more btn-link" onClick={() => setOpen((o) => ({ ...o, [k]: true }))}>{ls.length - 1} more from {name(ls[0])}</button>)}
                 </div>
               );

@@ -24,6 +24,12 @@ export interface SourceLink extends StreamLink {
   hidden?: boolean;
   score?: number;
   recommended?: boolean;
+  /** Source-list facts (server-parsed): site behind an addon, release specs, size, audio languages, container */
+  origin?: string;
+  specs?: string[];
+  size?: string;
+  languages?: string[];
+  container?: string;
   failures?: { count24h: number; lastAt?: number; lastReason?: "timeout" | "http" | "decode" | "geo" };
 }
 

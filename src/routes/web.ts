@@ -13,7 +13,7 @@ import { runWithWarp, normalizeWarpMode, warpConfigured, warpConfig, probeWarpSo
 import { runWithSignal } from '../utils/reqctx';
 import { flareSolverrEndpoints, probeFlareSolverr, flareSolverrLoad } from '../utils/flaresolverr';
 import { recordProvider, providerShouldRun, providerStat, providerPriority, recordPlayback, recordVerify, providerHidden, providerReliability } from '../utils/providerStats';
-import { probeStream, scoreSource, detectAudio, parseReport, webReadyOf, mbpsOf, ScorePrefs, GOOD_SCORE, audioTracks, failReason, FailReason } from '../utils/sourceProbe';
+import { probeStream, scoreSource, detectAudio, parseReport, webReadyOf, mbpsOf, streamFacts, ScorePrefs, GOOD_SCORE, audioTracks, failReason, FailReason } from '../utils/sourceProbe';
 import { rateLimit } from './sync';
 import { torznabPublic, setTorznab, addonPublic, setAddonUrls, AddonKind } from '../utils/serverConfig';
 import { reloadNuvio, nuvioStatus } from '../extractors/nuvio';
@@ -1281,6 +1281,9 @@ router.get('/sources/stream', async (req, res) => {
                             audio: audio || undefined, verified: 'unknown',
                             // the URL path counts too: CDNs file HEVC under /h265/, names end .mkv
                             webReady: webReadyOf(`${label} ${s.link.split('?')[0]}`, undefined, (s as any).notWebReady), mbps: mbpsOf(label),
+                            // source-list facts: inner source (addon streams), specs/size/languages, container
+                            origin: (s as any).origin, ...streamFacts(label),
+                            container: s.type === 'm3u8' ? 'HLS' : /\.mpd(\?|$)/i.test(s.link) ? 'DASH' : /\.mkv(\?|$)/i.test(s.link) || /\.mkv\b/i.test(label) ? 'MKV' : s.type === 'mp4' ? 'MP4' : undefined,
                         };
                         if (!torrentMode && s.type !== 'iframe' && !s.link.startsWith('magnet:') && i < PROBES_PER_PROVIDER) {
                             const pr = await probeStream(s.link, s.type, s.headers);

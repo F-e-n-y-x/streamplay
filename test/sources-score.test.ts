@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import os from 'os';
 import path from 'path';
 process.env.PROVIDER_STATS_FILE = path.join(os.tmpdir(), `sp-stats-test-${process.pid}.json`);
-import { sniffMedia, parsePlaylist, scoreSource, parseReport, langScore, webReadyOf, mbpsOf, GOOD_SCORE, audioTracks, failReason } from '../src/utils/sourceProbe';
+import { sniffMedia, parsePlaylist, scoreSource, streamFacts, parseReport, langScore, webReadyOf, mbpsOf, GOOD_SCORE, audioTracks, failReason } from '../src/utils/sourceProbe';
 import { recordPlayback, recordVerify, providerHidden, providerReliability } from '../src/utils/providerStats';
 
 const ts = () => { const b = Buffer.alloc(188 * 4); for (let i = 0; i < 4; i++) b[i * 188] = 0x47; return b; };
@@ -118,4 +118,12 @@ test('audioTracks + failReason: structured audio and failure buckets for the sou
 test('scoreSource: a trickling server loses to a fast one', () => {
     const base = { verified: true as const, type: 'm3u8', quality: 1080, latencyMs: 1500, reliability: 0.8 };
     assert.ok(scoreSource({ ...base, kbps: 600 }) < scoreSource({ ...base, quality: 720, kbps: 20000 }));
+});
+
+test('streamFacts: specs, size and languages from a release name', () => {
+    const f = streamFacts('Breaking.Bad.S01E01.2160p.NF.WEB-DL.Hindi.DDP5.1.English.x265.HDR · 9.45 GB');
+    assert.deepEqual(f.specs, ['WEB-DL', 'HEVC', 'HDR', 'DD+', '5.1']);
+    assert.equal(f.size, '9.45 GB');
+    assert.deepEqual(f.languages, ['Hindi', 'English']);
+    assert.equal(streamFacts('1.6 GiB').size, '1.6 GB');
 });

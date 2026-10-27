@@ -231,6 +231,12 @@
 .cs-head { display: flex; align-items: center; gap: var(--space-3); margin: var(--space-3) var(--space-4) var(--space-1); font: var(--type-caption); color: var(--muted-foreground); }
 .cs-head::after { content: ""; flex: 1; height: 1px; background: var(--border); }
 .cs-row .status-dot { margin: 0 var(--space-1); }
+.cs-row { align-items: flex-start; }
+.cs-row .status-dot { margin-top: 0.4rem; }
+.cs-row .list-row-title { font-weight: 600; }
+.cs-spec, .cs-meta { display: block; overflow-wrap: anywhere; }
+.cs-spec { color: var(--foreground); opacity: 0.85; }
+.cs-meta { color: var(--muted-foreground); }
 .cs-row .list-row-trail { gap: var(--space-1); }
 .cs-more { display: block; margin: 0 0 var(--space-2) 2.75rem; padding: var(--space-1) 0; font: var(--type-meta); }
 .cs-extra { margin-top: var(--space-3); padding-top: var(--space-2); border-top: 1px solid var(--border); }

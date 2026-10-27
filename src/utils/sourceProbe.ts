@@ -197,6 +197,26 @@ const NOT_WEB_RE = /\b(vlc|mkv|x265|h\.?265|hevc|10.?bit|ddp?(\s?[257]\.[01])?|d
 /** false = browser likely can't decode it (flag from the extractor, sniffed MKV, or codec tokens in the label). */
 export const webReadyOf = (label: string, format?: string, notWebReady?: boolean): boolean =>
     !(notWebReady || format === 'mkv' || NOT_WEB_RE.test(label));
+/** Release facts for the source list, parsed from a stream's label/file name:
+ *  specs ("WEB-DL", "HEVC", "HDR", "DD+ 5.1"…), size ("1.6 GB") and every audio language named. */
+const SPECS: [RegExp, string][] = [
+    [/\bremux\b/i, 'REMUX'], [/\bblu-?ray\b|\bbdrip\b/i, 'BluRay'], [/\bweb-?dl\b/i, 'WEB-DL'], [/\bweb-?rip\b/i, 'WEBRip'], [/\bhdtv\b/i, 'HDTV'],
+    [/\b(hevc|x265|h\.?265)\b/i, 'HEVC'], [/\b(x264|h\.?264|avc)\b/i, 'H.264'], [/\bav1\b/i, 'AV1'],
+    [/\b(dv|dovi|dolby ?vision)\b/i, 'Dolby Vision'], [/\bhdr10\+/i, 'HDR10+'], [/\bhdr(10)?\b(?!\+)/i, 'HDR'], [/\b10-?bit\b/i, '10-bit'],
+    [/\batmos\b/i, 'Atmos'], [/\bdts-?hd\b/i, 'DTS-HD'], [/\bdts\b(?!-?hd)/i, 'DTS'], [/\b(ddp|dd\+|e-?ac-?3)/i, 'DD+'], [/\b(dd|ac-?3)\b(?!\+)/i, 'DD'], [/\baac\b/i, 'AAC'],
+    [/(?<!\d)7[ .]1(?!\d)/, '7.1'], [/(?<!\d)5[ .]1(?!\d)/, '5.1'],   // "DDP5.1": no word boundary before the 5
+];
+const LANG_ALIAS: Record<string, string> = { hin: 'Hindi', eng: 'English', tam: 'Tamil', tel: 'Telugu', jpn: 'Japanese', kor: 'Korean' };
+export function streamFacts(text: string): { specs: string[]; size?: string; languages: string[] } {
+    const specs = SPECS.filter(([re]) => re.test(text)).map(([, n]) => n);
+    const sz = /(\d+(?:\.\d+)?)\s*(GB|GiB|MB|MiB)\b/i.exec(text);
+    const languages = [...new Set([
+        ...LANGS.filter((l) => new RegExp('\\b' + l + '\\b', 'i').test(text)),
+        ...Object.entries(LANG_ALIAS).filter(([k]) => new RegExp(`\\b${k}\\b`, 'i').test(text)).map(([, v]) => v),
+    ])];
+    return { specs, ...(sz ? { size: `${sz[1]} ${sz[2].replace(/i/i, '').toUpperCase()}` } : {}), languages };
+}
+
 /** Bitrate hint ("~46.4 Mbps") from a stream label, else undefined. */
 export const mbpsOf = (label: string): number | undefined => {
     const m = /(\d+(?:\.\d+)?)\s*Mbps/i.exec(label);

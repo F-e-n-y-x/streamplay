@@ -9,6 +9,9 @@ export interface Stream {
     /** This `link` is a debrid-cached DIRECT http file (not a magnet): route it through
      *  /api/torrent/http (range passthrough for mp4, on-the-fly remux for mkv). */
     debrid?: boolean;
+    /** Addon streams: the site behind the addon ("VidFast") and its free-text release notes. */
+    origin?: string;
+    description?: string;
 }
 
 export interface Subtitle {
