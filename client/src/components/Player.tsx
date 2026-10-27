@@ -280,6 +280,15 @@ export function VideoPlayer({ source, title, subtitle, poster, startingLabel, re
     + `.vp .shaka-text-container span,.vp .shaka-text-container div{color:${S.subtitleColor}!important;background:rgba(0,0,0,${S.subtitleBgOpacity})!important}`;
 
   useEffect(() => { if (video.current) video.current.playbackRate = rate; }, [rate]);
+  // Save the exact position when leaving (navigation, tab close) — the 8 s timer misses short watches.
+  const progressRef = useRef(onProgress);
+  progressRef.current = onProgress;
+  useEffect(() => {
+    const el = video.current;
+    const flush = () => { if (el && el.duration > 0 && el.currentTime > 0) progressRef.current?.(el.currentTime, el.duration); };
+    window.addEventListener("pagehide", flush);
+    return () => { window.removeEventListener("pagehide", flush); flush(); };
+  }, []);
   useEffect(() => { if (playingHeight) onHeight?.(playingHeight); }, [playingHeight]);   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { onPlayingChange?.(playing); }, [playing]);   // eslint-disable-line react-hooks/exhaustive-deps
 

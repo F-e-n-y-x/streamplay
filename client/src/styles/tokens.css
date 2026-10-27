@@ -51,8 +51,8 @@
 
     /* Text over artwork (hero, title backdrop). Player chrome has its own pair. */
     --scrim-media: linear-gradient(to top, rgba(10, 10, 12, 1) 0%, rgba(10, 10, 12, 0.85) 30%, rgba(10, 10, 12, 0) 70%);
-    --player-scrim-top: linear-gradient(rgba(0, 0, 0, 0.7), transparent 120px);
-    --player-scrim-bottom: linear-gradient(transparent, rgba(0, 0, 0, 0.8) 160px);
+    --player-scrim-top: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.3) 55%, transparent);   /* %: always fades to 0 inside the bar — fixed px left a hard edge */
+    --player-scrim-bottom: linear-gradient(transparent, rgba(0, 0, 0, 0.4) 45%, rgba(0, 0, 0, 0.8));
 
     /* Elevation: dark relies on surface steps; shadows only from level 2 up */
     --elevation-2: 0 8px 24px rgba(0, 0, 0, 0.5);    /* menus, popovers, toast */

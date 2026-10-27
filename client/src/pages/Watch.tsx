@@ -112,10 +112,11 @@ export default function Watch() {
     return ns ? { label: `S${ns.seasonNumber} · E1`, go: go(ns.seasonNumber, 1) } : null;
   }, [isTv, seasons, seasonN, episodeN, eps, tid, nav]);
 
-  // Embeds can't report progress — record that it was started so it shows in history.
+  // Record "started" as soon as a source is picked, so even a few seconds (or an embed,
+  // which can't report progress) shows in history; real progress overwrites it.
   useEffect(() => {
-    if (!data || current?.type !== "iframe" || getHistoryEntry(ttype, tid, seasonN, episodeN)) return;
-    putHistory({ id: tid, type: ttype, title: data.title, posterUrl: data.posterUrl, backdropUrl: data.backdropUrl, season: seasonN, episode: episodeN, position: 0, duration: 0, provider: sources.name(current), sourceType: "iframe" });
+    if (!data || !current || getHistoryEntry(ttype, tid, seasonN, episodeN)) return;
+    putHistory({ id: tid, type: ttype, title: data.title, posterUrl: data.posterUrl, backdropUrl: data.backdropUrl, season: seasonN, episode: episodeN, position: 0, duration: 0, provider: sources.name(current), sourceType: current.type });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current, data, ttype, tid, seasonN, episodeN]);
 

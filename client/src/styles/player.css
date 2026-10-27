@@ -256,3 +256,15 @@
   .ep-panel .epi { --thumb: 5.5rem; padding: var(--space-2); gap: var(--space-2); }
   .ep-panel .epi-synopsis, .ep-panel .epi-more { display: none; }
 }
+
+/* in-player side panels (Episodes / Settings / Change source): dark glass over the picture */
+.panel-root[data-contained] .panel {
+  background: rgba(10, 10, 12, 0.92);
+  border-left-color: rgba(255, 255, 255, 0.08);
+}
+@supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .panel-root[data-contained] .panel {
+    background: rgba(10, 10, 12, 0.72);
+    -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);
+  }
+}

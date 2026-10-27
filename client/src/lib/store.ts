@@ -156,7 +156,7 @@ export function continueWatching(): HistoryEntry[] {
     if (h.duration <= 0) { out.push(h); continue; }   // embed ("started", no progress reported)
     const next = nextUp(h);
     if (next) out.push(next);
-    else if (h.position > 5 && !isComplete(h)) out.push(h);
+    else if (!isComplete(h)) out.push(h);   // any progress, even a few seconds
   }
   return out;
 }
